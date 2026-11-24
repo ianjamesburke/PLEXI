@@ -91,6 +91,25 @@ pub struct HostModel {
     pub(crate) strips: HashMap<u64, crate::strip::Strip>,
     /// Latest resolved strip presentation snapshot per context (`context_id -> StripLayout`).
     pub(crate) strip_layouts: HashMap<u64, PublishedStripSnapshot>,
+    pickers: crate::host::picker::Pickers,
+}
+
+/// A command into the model's reducers.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum HostAction {
+    Picker(
+        crate::host::picker::PickerId,
+        crate::host::picker::PickerCommand,
+    ),
+}
+
+/// What the model asks the host to do after an action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HostEffect {
+    Picker(
+        crate::host::picker::PickerId,
+        crate::host::picker::PickerEffect,
+    ),
 }
 
 #[derive(Debug)]
@@ -101,6 +120,24 @@ pub(crate) struct PublishedStripSnapshot {
 }
 
 impl HostModel {
+    pub(crate) fn apply(&mut self, action: HostAction) -> Vec<HostEffect> {
+        match action {
+            HostAction::Picker(id, command) => self
+                .pickers
+                .apply(id, command)
+                .into_iter()
+                .map(|effect| HostEffect::Picker(id, effect))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn picker(
+        &self,
+        id: crate::host::picker::PickerId,
+    ) -> Option<&crate::host::picker::PickerState> {
+        self.pickers.get(id)
+    }
+
     pub(crate) fn pane_selection(&self, window: u64) -> Option<&PaneSelection> {
         self.pane_selections.get(&window)
     }
@@ -276,6 +313,7 @@ impl HostModel {
             pane_lifecycle: HashMap::new(),
             strips: HashMap::new(),
             strip_layouts: HashMap::new(),
+            pickers: Default::default(),
         }
     }
 

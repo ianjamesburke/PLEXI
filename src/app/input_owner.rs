@@ -79,19 +79,47 @@ impl PlexiApp {
     /// derivation behind [`Self::input_captured_by_overlay`] and
     /// [`Self::input_owner`] — never re-derive it elsewhere.
     pub(crate) fn overlay_surface(&self) -> Option<OverlaySurface> {
-        if self.attention_queue.decision_overlay.is_some() {
-            return Some(OverlaySurface::DecisionOverlay);
+        // The focus stack's top is the one answer (stint 1391).
+        match self.focus_stack.top() {
+            Some(FocusKind::AttentionQueue) => {
+                Some(if self.attention_queue.decision_overlay.is_some() {
+                    OverlaySurface::DecisionOverlay
+                } else {
+                    OverlaySurface::AttentionQueue
+                })
+            }
+            Some(kind) => Some(OverlaySurface::Layer(kind)),
+            None => match self.zoom.level {
+                crate::app::zoom::ZoomLevel::Columns => None,
+                crate::app::zoom::ZoomLevel::TreeAtlas => Some(OverlaySurface::TreeAtlas),
+            },
         }
-        if self.attention_queue.open {
-            return Some(OverlaySurface::AttentionQueue);
+    }
+
+    /// A press in this pass's remaining input belongs to the surface on top
+    /// of the focus stack, which keeps it until every button is up. (The
+    /// palette records its own presses as it routes them.)
+    pub(crate) fn note_pointer_press_owner(&mut self, ctx: &egui::Context) {
+        let pressed = ctx.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::PointerButton { pressed: true, .. }))
+        });
+        if pressed && self.focus_stack.press_owner().is_none() {
+            if let Some(top) = self.focus_stack.top() {
+                self.focus_stack.own_press(top);
+            }
         }
-        if let Some(kind) = self.focus_stack.last() {
-            return Some(OverlaySurface::Layer(*kind));
-        }
-        match self.zoom.level {
-            crate::app::zoom::ZoomLevel::Columns => None,
-            crate::app::zoom::ZoomLevel::TreeAtlas => Some(OverlaySurface::TreeAtlas),
-        }
+    }
+
+    /// Whether egui's hit test for this pass could already see the surface
+    /// that owns the press: it uses the layout of the pass before. When it
+    /// could not, pane widgets may have been hit and must not act.
+    pub(crate) fn press_owner_was_drawn(&self, ctx: &egui::Context) -> bool {
+        let pass = ctx.cumulative_pass_nr();
+        self.focus_stack
+            .press_owner()
+            .is_none_or(|owner| pass > 0 && self.focus_stack.drawn_in(owner, pass - 1))
     }
 
     /// Derive this frame's input owner from host state. Precedence:
@@ -373,6 +401,7 @@ pub(crate) fn pane_receives_ipc_text(ctx: &egui::Context, pane_id: PaneId) -> bo
 const PREVIOUS_SURFACES_ID: &str = "plexi_text_surfaces_previous_frame";
 const PREVIOUS_OWNER_ID: &str = "plexi_input_owner_previous_frame";
 const FRAME_INPUT_OWNER_ID: &str = "plexi_frame_input_owner";
+const POINTER_ADMITTED_ID: &str = "plexi_pointer_admitted";
 
 /// Publish the host input owner for the frame that is about to render.
 /// egui widget focus is only reconciled at the end of the frame, so a pane
@@ -384,6 +413,23 @@ pub(crate) fn publish_frame_input_owner(ctx: &egui::Context, owner: InputOwner) 
             .data
             .insert_temp(Id::new(FRAME_INPUT_OWNER_ID), owner);
     });
+}
+
+/// Publish whether panes and tab strips may act on this pass's pointer
+/// buttons: false while a surface on the focus stack owns the press.
+pub(crate) fn publish_pointer_admission(ctx: &egui::Context, admitted: bool) {
+    ctx.memory_mut(|memory| {
+        memory
+            .data
+            .insert_temp(Id::new(POINTER_ADMITTED_ID), admitted);
+    });
+}
+
+/// This pass's published admission. Isolated widget renders that are not a
+/// host frame publish nothing, and nothing owns their pointer.
+pub(crate) fn pointer_admitted(ctx: &egui::Context) -> bool {
+    ctx.memory(|memory| memory.data.get_temp::<bool>(Id::new(POINTER_ADMITTED_ID)))
+        .unwrap_or(true)
 }
 
 /// `Some(true)` when this frame's published owner is `pane_id`, `Some(false)`

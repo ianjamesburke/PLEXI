@@ -237,6 +237,7 @@ fn screenshot_attention_queue_all_states_themes() {
         .collect();
         app.sync_attention_queue();
         app.attention_queue.open = true;
+        app.sync_attention_queue_layer();
     });
     for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
         h.with_app_mut(|app| {
@@ -291,6 +292,7 @@ fn screenshot_attention_queue_realistic_asks_and_results() {
         );
         app.sync_attention_queue();
         app.attention_queue.open = true;
+        app.sync_attention_queue_layer();
     });
 
     h.run_steps(4);

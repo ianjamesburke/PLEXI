@@ -1,14 +1,16 @@
-use egui::RichText;
-
 use super::user_command_run::{spawn_shell_step, HostStepOutcome, UserCommandRun};
 use crate::app::PlexiApp;
+use crate::host::model::{HostAction, HostEffect};
+use crate::host::picker::{
+    PickerCommand, PickerEffect, PickerId, PickerRow, RowAction, RowKey, COMMANDS_SOURCE,
+    PALETTE_STOPS,
+};
 use crate::ui::{
     hints::{HintBar, HintGroup},
-    labels::description_label,
-    list::{ListRow, ListRowPips},
+    list::ListRowPips,
     overlay::ModalShell,
+    picker::{is_field_input, picker_key},
     style,
-    text_field::TextField,
 };
 
 enum PaletteEntry {
@@ -50,21 +52,6 @@ enum PaletteEntry {
         preview: String,
         search_text: String,
     },
-    /// A pane running an agent, anywhere in the host. Enter focuses it.
-    Agent {
-        context_id: u64,
-        window_id: u64,
-        pane_id: u64,
-        /// Hook-reported agent name (`PaneAgentState::agent`).
-        agent_name: String,
-        /// Owning context, live state, and the active tool when reported.
-        secondary: String,
-        state: crate::protocol::AgentState,
-        /// True when this pane is the focused pane of its own window — drives
-        /// the state dot's focused/dim rendering, same as every other pip.
-        focused: bool,
-        search_text: String,
-    },
     /// A downloaded build waiting for a restart. Pinned as the first row;
     /// Enter restarts into it (`PaletteCommand::RestartToUpdate`).
     UpdateReady {
@@ -82,53 +69,153 @@ enum PaletteEntry {
     },
 }
 
-impl PaletteEntry {
-    /// Stable identity for a result while the palette is live.  Display order
-    /// is deliberately not an identity: agents can update their state and
-    /// panes can close while the user is deciding what to open.
-    fn selection_key(&self) -> String {
+/// Why a parked context row refuses Enter.
+const PARKED_UNAVAILABLE: &str = "Parked · no live window to restore";
+
+/// The Commands stop's row identity: the stable-id half of a picker row key,
+/// and the only thing activation resolves from. Display order is never an
+/// identity: panes close and agents change state while the palette is open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CommandRowId {
+    Command(PaletteCommand),
+    Focus(PaletteFocusTarget),
+    Unavailable(String),
+    View(String),
+    Builtin(&'static str),
+    Note(std::path::PathBuf),
+    UserCommand {
+        name: String,
+        scope: crate::cli::UserCommandScope,
+    },
+    UpdateReady(String),
+}
+
+impl CommandRowId {
+    fn stable_id(&self) -> String {
         match self {
-            PaletteEntry::Command { command, .. } => format!("command:{command:?}"),
-            PaletteEntry::Context { target, .. } => format!(
-                "context:{}:{}:{}",
+            CommandRowId::Command(command) => {
+                let name = PALETTE_COMMANDS
+                    .iter()
+                    .find(|entry| entry.command == *command)
+                    .map_or("", |entry| entry.name);
+                format!("cmd/{name}")
+            }
+            CommandRowId::Focus(target) => format!(
+                "focus/{}/{}/{}",
                 target.context_id,
                 target.window_id,
-                target.pane_id.unwrap_or_default()
+                target
+                    .pane_id
+                    .map_or_else(|| "-".to_string(), |id| id.to_string())
             ),
-            PaletteEntry::UnavailableContext { name, .. } => format!("unavailable:{name}"),
-            PaletteEntry::Agent {
-                window_id, pane_id, ..
-            } => format!("agent:{window_id}:{pane_id}"),
-            PaletteEntry::View { id, .. } => format!("app:{id}"),
-            PaletteEntry::Builtin { id, .. } => format!("builtin:{id}"),
-            PaletteEntry::Note { path, .. } => format!("note:{}", path.display()),
-            PaletteEntry::UserCommand { name, scope, .. } => format!("run:{scope:?}:{name}"),
-            PaletteEntry::UpdateReady { version, .. } => format!("update-ready:{version}"),
-        }
-    }
-
-    fn group_rank(&self) -> usize {
-        match self {
-            PaletteEntry::UpdateReady { .. }
-            | PaletteEntry::Context { .. }
-            | PaletteEntry::UnavailableContext { .. } => 0,
-            PaletteEntry::Agent { .. } => 1,
-            PaletteEntry::Note { .. } => 2,
-            PaletteEntry::View { .. } | PaletteEntry::Builtin { .. } => 3,
-            PaletteEntry::Command { .. } => 4,
-            PaletteEntry::UserCommand { .. } => 5,
-        }
-    }
-
-    /// Tie-break within an equal (query, group) rank: an agent waiting on a
-    /// human surfaces above an equally-scoring one that is not. This is the
-    /// only state-aware ordering in the palette.
-    fn state_rank(&self) -> usize {
-        match self {
-            PaletteEntry::Agent { state, .. } if *state == crate::protocol::AgentState::Blocked => {
-                0
+            CommandRowId::Unavailable(name) => format!("parked/{name}"),
+            CommandRowId::View(id) => format!("view/{id}"),
+            CommandRowId::Builtin(id) => format!("builtin/{id}"),
+            CommandRowId::Note(path) => format!("note/{}", native_path_key(path)),
+            CommandRowId::UserCommand { name, scope } => {
+                format!("run/{}/{name}", user_command_scope_id(*scope))
             }
-            _ => 1,
+            CommandRowId::UpdateReady(version) => format!("update/{version}"),
+        }
+    }
+
+    fn key(&self) -> RowKey {
+        RowKey::new(COMMANDS_SOURCE, &self.stable_id())
+    }
+
+    /// The row's one action: what Enter and a click run.
+    fn action(&self) -> RowAction {
+        match self {
+            CommandRowId::Command(_)
+            | CommandRowId::UserCommand { .. }
+            | CommandRowId::UpdateReady(_) => RowAction {
+                id: "run",
+                label: "run",
+            },
+            CommandRowId::Focus(_) | CommandRowId::Unavailable(_) => RowAction {
+                id: "focus",
+                label: "focus",
+            },
+            CommandRowId::View(_) | CommandRowId::Builtin(_) | CommandRowId::Note(_) => RowAction {
+                id: "open",
+                label: "open",
+            },
+        }
+    }
+}
+
+/// A collision-free spelling of a native path for a row key: the tagged hex
+/// of its Unix bytes or Windows wide units. Display text is lossy for
+/// non-UTF-8 names, so it is never an identity; labels and search keep it.
+fn native_path_key(path: &std::path::Path) -> String {
+    use std::fmt::Write;
+    let mut key = String::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        key.push_str("u:");
+        for byte in path.as_os_str().as_bytes() {
+            let _ = write!(key, "{byte:02x}");
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        key.push_str("w:");
+        for unit in path.as_os_str().encode_wide() {
+            let _ = write!(key, "{unit:04x}");
+        }
+    }
+    key
+}
+
+/// One answer of the Commands source: its rows' pane pips and the owned
+/// target behind every row key, installed together with the rows of
+/// `generation`. Activation takes its target from here before close cleanup
+/// drops the answer.
+pub(crate) struct PaletteAnswer {
+    generation: u64,
+    pips: std::collections::HashMap<RowKey, ListRowPips>,
+    targets: std::collections::HashMap<RowKey, CommandRowId>,
+}
+
+fn user_command_scope_id(scope: crate::cli::UserCommandScope) -> &'static str {
+    match scope {
+        crate::cli::UserCommandScope::Workspace => "workspace",
+        crate::cli::UserCommandScope::Global => "global",
+    }
+}
+
+impl PaletteEntry {
+    fn row_id(&self) -> CommandRowId {
+        match self {
+            PaletteEntry::Command { command, .. } => CommandRowId::Command(command.clone()),
+            PaletteEntry::Context { target, .. } => CommandRowId::Focus(*target),
+            PaletteEntry::UnavailableContext { name, .. } => {
+                CommandRowId::Unavailable(name.clone())
+            }
+            PaletteEntry::View { id, .. } => CommandRowId::View(id.clone()),
+            PaletteEntry::Builtin { id, .. } => CommandRowId::Builtin(id),
+            PaletteEntry::Note { path, .. } => CommandRowId::Note(path.clone()),
+            PaletteEntry::UserCommand { name, scope, .. } => CommandRowId::UserCommand {
+                name: name.clone(),
+                scope: *scope,
+            },
+            PaletteEntry::UpdateReady { version, .. } => CommandRowId::UpdateReady(version.clone()),
+        }
+    }
+
+    /// Section header and group order.
+    fn group(&self) -> (&'static str, u32) {
+        match self {
+            PaletteEntry::UpdateReady { .. } => ("", 0),
+            PaletteEntry::Context { .. } | PaletteEntry::UnavailableContext { .. } => {
+                ("CONTEXTS", 0)
+            }
+            PaletteEntry::Note { .. } => ("NOTES", 2),
+            PaletteEntry::View { .. } | PaletteEntry::Builtin { .. } => ("Plugins", 3),
+            PaletteEntry::Command { .. } => ("COMMANDS", 4),
+            PaletteEntry::UserCommand { .. } => ("RUN", 5),
         }
     }
 
@@ -139,7 +226,6 @@ impl PaletteEntry {
             | PaletteEntry::UnavailableContext { name, .. }
             | PaletteEntry::View { name, .. }
             | PaletteEntry::UserCommand { name, .. } => name.as_str(),
-            PaletteEntry::Agent { agent_name, .. } => agent_name.as_str(),
             PaletteEntry::Note { title, .. } => title.as_str(),
             PaletteEntry::UpdateReady { .. } => "Restart to update",
         }
@@ -150,7 +236,6 @@ impl PaletteEntry {
             PaletteEntry::Command { search_text, .. } => search_text,
             PaletteEntry::Context { search_text, .. }
             | PaletteEntry::UnavailableContext { search_text, .. }
-            | PaletteEntry::Agent { search_text, .. }
             | PaletteEntry::View { search_text, .. }
             | PaletteEntry::Builtin { search_text, .. }
             | PaletteEntry::Note { search_text, .. }
@@ -159,19 +244,15 @@ impl PaletteEntry {
         }
     }
 
-    fn query_rank(&self, query: &str) -> i64 {
+    /// Match score for a non-empty normalized query, higher is better.
+    fn score(&self, query: &str) -> Option<i64> {
         if query.is_empty() {
-            return self.group_rank() as i64;
+            return None;
         }
-        let search_text = self.search_text_str();
-        let candidate =
-            crate::search::CandidateInput::new(self.primary_label()).with_secondary(search_text);
-        if let Some(m) =
-            crate::search::score_candidate(query, &candidate, std::time::SystemTime::UNIX_EPOCH)
-        {
-            return -m.total;
-        }
-        i64::MAX
+        let candidate = crate::search::CandidateInput::new(self.primary_label())
+            .with_secondary(self.search_text_str());
+        crate::search::score_candidate(query, &candidate, std::time::SystemTime::UNIX_EPOCH)
+            .map(|m| m.total)
     }
 
     fn matches_query(&self, query: &str) -> bool {
@@ -185,6 +266,83 @@ impl PaletteEntry {
                 std::time::SystemTime::UNIX_EPOCH,
             )
             .is_some()
+    }
+
+    /// The picker row for this entry, plus its pane-pip decoration.
+    fn into_row(self, query: &str, shortcut: Option<String>) -> (PickerRow, Option<ListRowPips>) {
+        let id = self.row_id();
+        let (group, group_rank) = self.group();
+        let score = self.score(query);
+        let mut unavailable = None;
+        let mut pips = None;
+        let (title, secondary, chips): (String, String, Vec<&'static str>) = match self {
+            PaletteEntry::Command {
+                name, description, ..
+            } => {
+                let secondary = match shortcut {
+                    Some(shortcut) => format!("{description} · {shortcut}"),
+                    None => description.to_string(),
+                };
+                (name.to_string(), secondary, vec!["cmd"])
+            }
+            PaletteEntry::Context {
+                name,
+                workspace_name,
+                metadata_chips,
+                pane_pips,
+                ..
+            } => {
+                pips = pane_pips;
+                (name, workspace_name, metadata_chips)
+            }
+            PaletteEntry::UnavailableContext { name, .. } => {
+                unavailable = Some(PARKED_UNAVAILABLE);
+                (name, String::new(), vec!["ctx", "parked", "unavailable"])
+            }
+            PaletteEntry::View {
+                name,
+                description,
+                running_in_background,
+                is_workspace_local,
+                ..
+            } => (
+                name,
+                description,
+                plugin_metadata_chips(running_in_background, is_workspace_local).to_vec(),
+            ),
+            PaletteEntry::Builtin {
+                name, description, ..
+            } => (
+                name.to_string(),
+                description.to_string(),
+                vec!["view", "Bundled"],
+            ),
+            PaletteEntry::Note { title, preview, .. } => (title, preview, vec!["text"]),
+            PaletteEntry::UpdateReady { version, .. } => (
+                format!("Update ready: v{version}"),
+                "Restart to update · asks before closing running panes".to_string(),
+                vec!["update"],
+            ),
+            PaletteEntry::UserCommand {
+                name,
+                secondary,
+                scope,
+                ..
+            } => (name, secondary, vec!["run", user_command_scope_id(scope)]),
+        };
+        let row = PickerRow {
+            key: id.key(),
+            title,
+            secondary,
+            chips,
+            group,
+            group_rank,
+            score,
+            pinned: matches!(id, CommandRowId::UpdateReady(_)),
+            unavailable,
+            actions: vec![id.action()],
+        };
+        (row, pips)
     }
 }
 
@@ -516,79 +674,6 @@ fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// Order palette rows for display. Every group stays one contiguous run, so
-/// the render loop's once-per-group section headers stay attached to their
-/// own rows. An empty query keeps the fixed group order. A typed query orders
-/// groups by their best member's relevance (fixed order breaks ties), so a
-/// direct title match in a later group is never buried under an incidental
-/// description match in an earlier one, and the first row is the best match.
-fn sort_palette_entries(entries: &mut [PaletteEntry], query: &str) {
-    if query.is_empty() {
-        entries.sort_by_key(|entry| (entry.group_rank(), entry.state_rank()));
-        return;
-    }
-    let mut best_in_group: std::collections::HashMap<usize, i64> = std::collections::HashMap::new();
-    for entry in entries.iter() {
-        let rank = entry.query_rank(query);
-        best_in_group
-            .entry(entry.group_rank())
-            .and_modify(|best| *best = (*best).min(rank))
-            .or_insert(rank);
-    }
-    entries.sort_by_cached_key(|entry| {
-        let group = entry.group_rank();
-        (
-            best_in_group[&group],
-            group,
-            entry.query_rank(query),
-            entry.state_rank(),
-        )
-    });
-}
-
-/// Preserve the user's target across a live rebuild.  If that target was
-/// removed, deliberately leave no selection; clamping its former index would
-/// make Enter operate on a different row without the user's input.
-fn reconcile_palette_selection(
-    entries: &[PaletteEntry],
-    selected: &mut usize,
-    selected_key: &mut Option<String>,
-) {
-    match selected_key {
-        Some(key) => {
-            if let Some(index) = entries
-                .iter()
-                .position(|entry| entry.selection_key() == *key)
-            {
-                *selected = index;
-            } else {
-                // An empty key means a live result was removed. Keep that
-                // explicit no-selection state until the user navigates or
-                // changes the query, rather than selecting a replacement.
-                *selected_key = Some(String::new());
-            }
-        }
-        None if !entries.is_empty() => {
-            *selected = (*selected).min(entries.len() - 1);
-            *selected_key = Some(entries[*selected].selection_key());
-        }
-        None => {}
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PaletteAction {
-    RunCommand(PaletteCommand),
-    Focus(PaletteFocusTarget),
-    OpenView(String),
-    LaunchBuiltin(&'static str),
-    OpenNote(std::path::PathBuf),
-    RunUserCommand {
-        name: String,
-        scope: crate::cli::UserCommandScope,
-    },
-}
-
 /// Saved command execution is serviced by logic, preserving step order and
 /// failure handling while keeping admission I/O out of UI dispatch.
 #[derive(Clone)]
@@ -601,37 +686,6 @@ pub(crate) struct PendingUserCommand {
     source_context: u64,
     source_tile: Option<egui_tiles::TileId>,
     caller: Option<u64>,
-}
-
-fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
-    match entry {
-        PaletteEntry::Command { command, .. } => Some(PaletteAction::RunCommand(command.clone())),
-        PaletteEntry::Context { target, .. } => Some(PaletteAction::Focus(*target)),
-        PaletteEntry::UnavailableContext { name, .. } => {
-            log::warn!("palette: parked context '{name}' has no live window to restore");
-            None
-        }
-        PaletteEntry::Agent {
-            context_id,
-            window_id,
-            pane_id,
-            ..
-        } => Some(PaletteAction::Focus(PaletteFocusTarget {
-            context_id: *context_id,
-            window_id: *window_id,
-            pane_id: Some(*pane_id),
-        })),
-        PaletteEntry::View { id, .. } => Some(PaletteAction::OpenView(id.clone())),
-        PaletteEntry::Builtin { id, .. } => Some(PaletteAction::LaunchBuiltin(id)),
-        PaletteEntry::Note { path, .. } => Some(PaletteAction::OpenNote(path.clone())),
-        PaletteEntry::UserCommand { name, scope, .. } => Some(PaletteAction::RunUserCommand {
-            name: name.clone(),
-            scope: *scope,
-        }),
-        PaletteEntry::UpdateReady { .. } => {
-            Some(PaletteAction::RunCommand(PaletteCommand::RestartToUpdate))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -873,111 +927,6 @@ fn palette_pane_rows_for_context(
     rows
 }
 
-/// One palette row per agent-bearing pane. Unlike the context rows, these are
-/// sourced from every window of every context — the fleet is addressable from
-/// wherever you happen to be standing.
-struct AgentRow {
-    context_id: u64,
-    window_id: u64,
-    pane_id: u64,
-    /// One-based position among agent panes in the owning context. This keeps
-    /// same-name squad members distinguishable without exposing tree ids.
-    context_agent_index: usize,
-    agent_name: String,
-    pane_title: String,
-    context_name: String,
-    state: crate::protocol::AgentState,
-    detail: Option<String>,
-    focused: bool,
-}
-
-fn agent_state_label(state: &crate::protocol::AgentState) -> &'static str {
-    match state {
-        crate::protocol::AgentState::Working => "working",
-        crate::protocol::AgentState::Blocked => "blocked",
-        crate::protocol::AgentState::NeedsYou => "needs_you",
-        crate::protocol::AgentState::Idle => "idle",
-        crate::protocol::AgentState::Interrupted => "interrupted",
-        crate::protocol::AgentState::Failed => "failed",
-        crate::protocol::AgentState::ExitedUnreported => "exited without report",
-        crate::protocol::AgentState::Completed => "completed",
-    }
-}
-
-/// Secondary line for an agent row: owning context, live state, and the
-/// hook-reported detail (the active tool) when there is one.
-fn agent_row_secondary(
-    context_name: &str,
-    context_agent_index: usize,
-    state: &crate::protocol::AgentState,
-    detail: Option<&str>,
-) -> String {
-    let mut parts = Vec::new();
-    if !context_name.is_empty() {
-        parts.push(context_name.to_string());
-    }
-    parts.push(format!("agent {context_agent_index}"));
-    parts.push(agent_state_label(state).to_string());
-    if let Some(detail) = detail.filter(|d| !d.is_empty()) {
-        parts.push(detail.to_string());
-    }
-    parts.join(" · ")
-}
-
-fn palette_agent_rows(
-    windows: &[crate::host::context::Window],
-    context_names: &[(u64, String)],
-) -> Vec<AgentRow> {
-    let mut rows = Vec::new();
-    let mut context_agent_counts = std::collections::HashMap::<u64, usize>::new();
-    for win in windows {
-        let Some(root) = win.tree.root() else {
-            continue;
-        };
-        let context_name = context_names
-            .iter()
-            .find(|(id, _)| *id == win.context_id)
-            .map(|(_, name)| name.clone())
-            .unwrap_or_default();
-        let focused_pane_id =
-            win.focused_pane
-                .and_then(|tile_id| match win.tree.tiles.get(tile_id) {
-                    Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
-                    _ => None,
-                });
-        for pane_id in crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, root) {
-            let Some(pane) = win.panes.get(&pane_id) else {
-                continue;
-            };
-            let Some(agent) = pane.agent() else {
-                continue;
-            };
-            let context_agent_index = context_agent_counts.entry(win.context_id).or_default();
-            *context_agent_index += 1;
-            let (pane_title, _) = pane_row_identity(pane, context_names);
-            // A hook that reports no agent name still gets a nameable row.
-            let agent_name = if agent.agent.is_empty() {
-                pane_title.clone()
-            } else {
-                agent.agent.clone()
-            };
-            rows.push(AgentRow {
-                context_id: win.context_id,
-                window_id: win.window_id,
-                pane_id,
-                context_agent_index: *context_agent_index,
-                agent_name,
-                pane_title,
-                context_name: context_name.clone(),
-                state: agent.state.clone(),
-                detail: agent.detail.clone(),
-                focused: Some(pane_id) == focused_pane_id,
-            });
-        }
-    }
-    rows
-}
-
 /// Display name + type chip for a palette pane row.
 fn pane_row_identity(
     pane: &crate::host::pane::Pane,
@@ -1110,9 +1059,20 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
-        let query = normalized_palette_query(&self.palette_query);
-        let colors = self.colors;
+    /// The Commands stop's source: today's rows for `raw_query`, and the
+    /// pane-pip decoration of each row that carries one. Files and agents
+    /// never appear here; they have their own stops.
+    fn palette_command_rows(
+        &mut self,
+        raw_query: &str,
+    ) -> (
+        Vec<PickerRow>,
+        std::collections::HashMap<RowKey, ListRowPips>,
+        std::collections::HashMap<RowKey, CommandRowId>,
+    ) {
+        #[cfg(test)]
+        palette_test_log::source_called();
+        let query = normalized_palette_query(raw_query);
 
         // ── Window entries (active context first, then by visit recency) ──
         // Two-tier sort: panes whose window belongs to the active context float
@@ -1149,32 +1109,6 @@ impl PlexiApp {
             .iter()
             .map(|c| (c.context_id, c.name.to_string()))
             .collect();
-
-        // ── Agent panes (every window, every context) ───────────────────────
-        // Collected fresh each frame, never snapshotted at open time: agent
-        // state arrives over pane IPC (`set_agent_state`) while the palette is
-        // up, and the rows must show it live.
-        let agent_rows = if self
-            .config
-            .agents
-            .as_ref()
-            .and_then(|a| a.palette_agent_results)
-            .unwrap_or(false)
-        {
-            palette_agent_rows(&self.windows, &context_names)
-        } else {
-            vec![]
-        };
-        if self.palette_agent_count_logged != Some(agent_rows.len()) {
-            self.palette_agent_count_logged = Some(agent_rows.len());
-            log::info!("palette: collected {} agent panes", agent_rows.len());
-        }
-        // An agent pane is represented once — by its agent row when one is
-        // emitted, which carries strictly more (agent name, live state, active
-        // tool) than the plain pane row would. With agent rows off, it stays
-        // an ordinary pane row so it is still findable by name.
-        let agent_pane_ids: std::collections::HashSet<u64> =
-            agent_rows.iter().map(|r| r.pane_id).collect();
 
         let ctx_entries: Vec<PaletteEntry> = {
             // Context-scoped unpacking: the ACTIVE context expands to one row
@@ -1247,9 +1181,6 @@ impl PlexiApp {
                         active_focused_tile,
                         &self.pane_focus_history,
                     ) {
-                        if agent_pane_ids.contains(&row.pane_id) {
-                            continue;
-                        }
                         let search_text = searchable_text(&[row.name.as_str(), c.name.as_str()]);
                         if query.is_empty() || search_text.contains(&query) {
                             ctx_entries.push(PaletteEntry::Context {
@@ -1309,9 +1240,6 @@ impl PlexiApp {
                             active_focused_tile,
                             &self.pane_focus_history,
                         ) {
-                            if agent_pane_ids.contains(&row.pane_id) {
-                                continue;
-                            }
                             // A context-name match keeps this context collapsed.
                             // Only the pane's own title pierces the collapse.
                             let search_text = searchable_text(&[row.name.as_str()]);
@@ -1345,36 +1273,6 @@ impl PlexiApp {
             ctx_entries
         };
         entries.extend(ctx_entries);
-
-        // Agent rows match on agent name, pane title, and context name through
-        // the same substring matcher every other result type uses.
-        for row in agent_rows {
-            let search_text = searchable_text(&[
-                row.agent_name.as_str(),
-                row.pane_title.as_str(),
-                row.context_name.as_str(),
-                agent_state_label(&row.state),
-                row.detail.as_deref().unwrap_or_default(),
-            ]);
-            if !query.is_empty() && !search_text.contains(&query) {
-                continue;
-            }
-            entries.push(PaletteEntry::Agent {
-                context_id: row.context_id,
-                window_id: row.window_id,
-                pane_id: row.pane_id,
-                secondary: agent_row_secondary(
-                    &row.context_name,
-                    row.context_agent_index,
-                    &row.state,
-                    row.detail.as_deref(),
-                ),
-                agent_name: row.agent_name,
-                state: row.state,
-                focused: row.focused,
-                search_text,
-            });
-        }
 
         // ── Note entries ────────────────────────────────────────────────────
         for note in self
@@ -1528,493 +1426,930 @@ impl PlexiApp {
             }
         }
 
-        sort_palette_entries(&mut entries, &query);
         if let Some(entry) = update_ready_entry(self.update_status.ready(), &query) {
-            entries.insert(0, entry);
+            entries.push(entry);
         }
+        let mut rows = Vec::with_capacity(entries.len());
+        let mut pips = std::collections::HashMap::new();
+        let mut targets = std::collections::HashMap::new();
+        for entry in entries {
+            let shortcut = match &entry {
+                PaletteEntry::Command { command, .. } => self.palette_shortcut(command),
+                _ => None,
+            };
+            let target = entry.row_id();
+            let (row, row_pips) = entry.into_row(&query, shortcut);
+            if let Some(row_pips) = row_pips {
+                pips.insert(row.key.clone(), row_pips);
+            }
+            targets.insert(row.key.clone(), target);
+            rows.push(row);
+        }
+        (rows, pips, targets)
+    }
 
-        let total = entries.len();
-        reconcile_palette_selection(
-            &entries,
-            &mut self.palette_selected,
-            &mut self.palette_selected_key,
-        );
+    pub(crate) fn command_palette_open(&self) -> bool {
+        self.host
+            .picker(PickerId::Palette)
+            .is_some_and(|picker| picker.is_open())
+    }
 
-        // ── Keyboard nav ───────────────────────────────────────────────────
-        let mut action: Option<PaletteAction> = None;
-        let prev_selected = self.palette_selected;
-
-        // The toggle that opened the palette also dismisses it, so it is read
-        // from the (config-overridable) binding table rather than hardcoded —
-        // a user who rebinds it can close with the same key they opened with.
-        let toggle = self.key_bindings.toggle_command_palette;
-
-        ctx.input_mut(|input| {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-                self.show_command_palette = false;
-            }
-            if input.consume_key(toggle.0, toggle.1) {
-                self.show_command_palette = false;
-            }
-            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::J))
-                && total > 0
-                && self.palette_selected < total - 1
-            {
-                self.palette_selected += 1;
-                self.palette_selected_key = Some(entries[self.palette_selected].selection_key());
-            }
-            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::K))
-                && self.palette_selected > 0
-            {
-                self.palette_selected -= 1;
-                self.palette_selected_key = Some(entries[self.palette_selected].selection_key());
-            }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                action = self
-                    .palette_selected_key
-                    .as_ref()
-                    .and_then(|key| entries.iter().find(|entry| entry.selection_key() == *key))
-                    .and_then(action_for_palette_entry);
-            }
+    /// Open the palette on its first stop with `query` typed. Callers resolve
+    /// the open-time caches (`palette_workspace_root`, notes, user commands)
+    /// first.
+    pub(crate) fn open_command_palette(&mut self, query: &str) {
+        self.palette_input.reset(query);
+        self.apply_palette_command(PickerCommand::Open {
+            stop: PALETTE_STOPS[0].id,
+            query: query.to_owned(),
         });
+        self.palette_input.opening = self
+            .focus_stack
+            .opening(crate::app::FocusKind::CommandPalette)
+            .map(|opening| opening.id);
+    }
 
-        if let Some(action) = action {
-            self.run_palette_selection(action);
+    pub(crate) fn close_command_palette(&mut self) {
+        self.apply_palette_command(PickerCommand::Close);
+    }
+
+    /// Run one picker command through the model and service its effects in
+    /// order. `Query` is answered from `App::logic` (`refresh_command_palette`),
+    /// so no source I/O runs on the draw path. `Activate` comes before
+    /// `Closed`; the row runs after the close, with focus synchronized once.
+    pub(crate) fn apply_palette_command(&mut self, command: PickerCommand) {
+        let effects = self
+            .host
+            .apply(HostAction::Picker(PickerId::Palette, command));
+        if effects.is_empty() {
             return;
         }
-
-        if !self.show_command_palette {
-            return;
-        }
-
-        // ── Render ─────────────────────────────────────────────────────────
-        // 0.8: the palette is a launcher, not a workspace — filling nearly
-        // the whole screen height read as massive.
-        let palette_max_list_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
-        let modal_response = ModalShell::centered("command_palette")
-            .own_scroll()
-            .width(style::MODAL_WIDTH_PALETTE)
-            .escape(true)
-            .show(ctx, &colors, |ui| {
-                let te_id = egui::Id::new("palette_search");
-                let te = ui
-                    .scope_builder(
-                        egui::UiBuilder::new().layer_id(egui::LayerId::new(
-                            egui::Order::Tooltip,
-                            te_id.with("paint_layer"),
-                        )),
-                        |ui| {
-                            TextField::singleline(te_id, "Jump to context or launch plugin...")
-                                .surface(crate::ui::focus::SurfaceKey::Overlay(
-                                    crate::app::input_owner::OverlaySurface::Layer(
-                                        crate::app::FocusKind::CommandPalette,
-                                    ),
-                                ))
-                                .log_name("command_palette")
-                                .show(ui, &mut self.palette_query, &colors)
-                        },
-                    )
-                    .inner;
-                if te.changed() {
-                    self.palette_selected = 0;
-                    self.palette_selected_key = None;
-                }
-
-                ui.add_space(style::SPACE_SM);
-
-                if entries.is_empty() {
-                    ui.scope(|ui| {
-                        ui.set_max_width(ui.available_width());
-                        description_label(ui, "No matching contexts or plugins", &colors);
-                    });
-                    return;
-                }
-
-                let mut click_action: Option<PaletteAction> = None;
-                let mut hover_select: Option<usize> = None;
-                let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
-                let should_scroll = self.palette_selected != prev_selected;
-                let mut shown_contexts_header = false;
-                let mut shown_agents_header = false;
-                let mut shown_apps_header = false;
-                let mut shown_notes_header = false;
-                let mut shown_commands_header = false;
-                let mut shown_run_header = false;
-
-                let scroll_reset = std::mem::take(&mut self.palette_scroll_reset);
-                let mut scroll_area = egui::ScrollArea::vertical()
-                    // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
-                    .animated(false)
-                    .id_salt("palette_list")
-                    .max_height(palette_max_list_h)
-                    .min_scrolled_height(palette_max_list_h)
-                    .auto_shrink([false, false]);
-                if scroll_reset {
-                    scroll_area = scroll_area.vertical_scroll_offset(0.0);
-                }
-                scroll_area.show(ui, |ui| {
-                    // available_width — the scroll area reserves a
-                    // scrollbar gutter; forcing the modal width would
-                    // push rows back under the bar.
-                    ui.set_width(ui.available_width());
-
-                    for (i, entry) in entries.iter().enumerate() {
-                        let is_selected = self.palette_selected_key.as_deref()
-                            == Some(entries[i].selection_key().as_str());
-
-                        match entry {
-                            PaletteEntry::Command {
-                                command,
-                                name,
-                                description,
-                                ..
-                            } => {
-                                if !shown_commands_header {
-                                    shown_commands_header = true;
-                                    ui.add_space(style::SPACE_XS);
-                                    ui.label(
-                                        RichText::new("COMMANDS")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.add_space(style::SPACE_XS);
-                                }
-                                let description = match self.palette_shortcut(command) {
-                                    Some(shortcut) => format!("{description} · {shortcut}"),
-                                    None => (*description).to_string(),
-                                };
-                                let row_response = ListRow::new(name)
-                                    .metadata_chips(&["cmd"])
-                                    .secondary(&description)
-                                    .selected(is_selected)
-                                    .show(ui, &colors);
-                                if is_selected {
-                                    row_response.scroll_into_view(ui, should_scroll);
-                                }
-                                if row_response.row_clicked() {
-                                    click_action = action_for_palette_entry(entry);
-                                }
-                                if row_response.row_hovered() {
-                                    hover_select = Some(i);
-                                }
-                            }
-                            PaletteEntry::Context {
-                                name,
-                                workspace_name,
-                                metadata_chips,
-                                pane_pips,
-                                ..
-                            } => {
-                                if !shown_contexts_header {
-                                    shown_contexts_header = true;
-                                    ui.add_space(style::SPACE_XS);
-                                    ui.label(
-                                        RichText::new("CONTEXTS")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.add_space(style::SPACE_XS);
-                                }
-                                let mut row = ListRow::new(name.as_str())
-                                    .metadata_chips(metadata_chips)
-                                    .secondary(workspace_name.as_str())
-                                    .selected(is_selected);
-                                if let Some(pips) = pane_pips.clone() {
-                                    row = row.pane_pips(pips);
-                                }
-                                let row_response = row.show(ui, &colors);
-                                if is_selected {
-                                    row_response.scroll_into_view(ui, should_scroll);
-                                }
-
-                                if row_response.row_clicked() {
-                                    click_action = action_for_palette_entry(entry);
-                                }
-                                if row_response.row_hovered() {
-                                    hover_select = Some(i);
-                                }
-                            }
-                            PaletteEntry::UnavailableContext { name, .. } => {
-                                if !shown_contexts_header {
-                                    shown_contexts_header = true;
-                                    ui.add_space(style::SPACE_XS);
-                                    ui.label(
-                                        RichText::new("CONTEXTS")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.add_space(style::SPACE_XS);
-                                }
-                                // This is deliberately not a click target: there
-                                // is no window to focus, and switching the
-                                // router alone would leave it out of sync with
-                                // active_window. The row makes that state
-                                // explicit instead of silently losing it.
-                                ListRow::new(name.as_str())
-                                    .metadata_chips(&["ctx", "parked", "unavailable"])
-                                    .secondary("Parked · no live window to restore")
-                                    .selected(is_selected)
-                                    .show(ui, &colors);
-                            }
-                            PaletteEntry::Agent {
-                                agent_name,
-                                secondary,
-                                state,
-                                focused,
-                                ..
-                            } => {
-                                if !shown_agents_header {
-                                    shown_agents_header = true;
-                                    ui.add_space(style::SPACE_XS);
-                                    ui.label(
-                                        RichText::new("AGENTS")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.add_space(style::SPACE_XS);
-                                }
-                                // The dot goes through the shared pip lane, so
-                                // palette, sidebar, and pane chrome can never
-                                // disagree about what a state looks like.
-                                let row_response = ListRow::new(agent_name.as_str())
-                                    .metadata_chips(&["agent"])
-                                    .secondary(secondary.as_str())
-                                    .pane_pips(ListRowPips {
-                                        count: 1,
-                                        focused_idx: focused.then_some(0),
-                                        activities: vec![Some(state.clone())],
-                                        static_health_pips: Vec::new(),
-                                    })
-                                    .selected(is_selected)
-                                    .show(ui, &colors);
-                                if is_selected {
-                                    row_response.scroll_into_view(ui, should_scroll);
-                                }
-                                if row_response.row_clicked() {
-                                    click_action = action_for_palette_entry(entry);
-                                }
-                                if row_response.row_hovered() {
-                                    hover_select = Some(i);
-                                }
-                            }
-                            PaletteEntry::View {
-                                name,
-                                description,
-                                running_in_background,
-                                is_workspace_local,
-                                ..
-                            } => {
-                                if !shown_apps_header {
-                                    shown_apps_header = true;
-                                    ui.add_space(style::SPACE_XS);
-                                    ui.label(
-                                        RichText::new("Plugins")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.add_space(style::SPACE_XS);
-                                }
-
-                                let row = ListRow::new(name.as_str())
-                                    .metadata_chips(plugin_metadata_chips(
-                                        *running_in_background,
-                                        *is_workspace_local,
-                                    ))
-                                    .secondary(description)
-                                    .selected(is_selected);
-
-                                let row_response = row.show(ui, &colors);
-                                if is_selected {
-                                    row_response.scroll_into_view(ui, should_scroll);
-                                }
-
-                                if row_response.row_clicked() {
-                                    click_action = action_for_palette_entry(entry);
-                                }
-                                if row_response.row_hovered() {
-                                    hover_select = Some(i);
-                                }
-                            }
-                            PaletteEntry::Builtin {
-                                name, description, ..
-                            } => {
-                                if !shown_apps_header {
-                                    shown_apps_header = true;
-                                    ui.add_space(style::SPACE_XS);
-                                    ui.label(
-                                        RichText::new("Plugins")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.add_space(style::SPACE_XS);
-                                }
-
-                                let row_response = ListRow::new(name)
-                                    .metadata_chips(&["view", "Bundled"])
-                                    .secondary(description)
-                                    .selected(is_selected)
-                                    .show(ui, &colors);
-
-                                if is_selected {
-                                    row_response.scroll_into_view(ui, should_scroll);
-                                }
-                                if row_response.row_clicked() {
-                                    click_action = action_for_palette_entry(entry);
-                                }
-                                if row_response.row_hovered() {
-                                    hover_select = Some(i);
-                                }
-                            }
-                            PaletteEntry::Note { title, preview, .. } => {
-                                if !shown_notes_header {
-                                    shown_notes_header = true;
-                                    ui.add_space(style::SPACE_XS);
-                                    ui.label(
-                                        RichText::new("NOTES")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.add_space(style::SPACE_XS);
-                                }
-                                let row = ListRow::new(title.as_str())
-                                    .metadata_chips(&["text"])
-                                    .secondary(preview.as_str())
-                                    .selected(is_selected);
-                                let row_response = row.show(ui, &colors);
-                                if is_selected {
-                                    row_response.scroll_into_view(ui, should_scroll);
-                                }
-                                if row_response.row_clicked() {
-                                    click_action = action_for_palette_entry(entry);
-                                }
-                                if row_response.row_hovered() {
-                                    hover_select = Some(i);
-                                }
-                            }
-                            PaletteEntry::UpdateReady { version, .. } => {
-                                let title = format!("Update ready: v{version}");
-                                let row_response = ListRow::new(&title)
-                                    .metadata_chips(&["update"])
-                                    .secondary(
-                                        "Restart to update · asks before closing running panes",
-                                    )
-                                    .selected(is_selected)
-                                    .show(ui, &colors);
-                                if is_selected {
-                                    row_response.scroll_into_view(ui, should_scroll);
-                                }
-                                if row_response.row_clicked() {
-                                    click_action = action_for_palette_entry(entry);
-                                }
-                                if row_response.row_hovered() {
-                                    hover_select = Some(i);
-                                }
-                            }
-                            PaletteEntry::UserCommand {
-                                name,
-                                secondary,
-                                scope,
-                                ..
-                            } => {
-                                if !shown_run_header {
-                                    shown_run_header = true;
-                                    ui.add_space(style::SPACE_XS);
-                                    ui.label(
-                                        RichText::new("RUN")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
-                                    ui.add_space(style::SPACE_XS);
-                                }
-                                let chips: &[&str] = match scope {
-                                    crate::cli::UserCommandScope::Workspace => {
-                                        &["run", "workspace"]
-                                    }
-                                    crate::cli::UserCommandScope::Global => &["run", "global"],
-                                };
-                                let row_response = ListRow::new(name.as_str())
-                                    .metadata_chips(chips)
-                                    .secondary(secondary.as_str())
-                                    .selected(is_selected)
-                                    .show(ui, &colors);
-                                if is_selected {
-                                    row_response.scroll_into_view(ui, should_scroll);
-                                }
-                                if row_response.row_clicked() {
-                                    click_action = action_for_palette_entry(entry);
-                                }
-                                if row_response.row_hovered() {
-                                    hover_select = Some(i);
-                                }
-                            }
+        let mut activation = None;
+        for HostEffect::Picker(id, effect) in effects {
+            match effect {
+                PickerEffect::Query {
+                    source,
+                    text,
+                    generation,
+                } => log::debug!(
+                    "palette: {id:?} query generation {generation} ({} chars) waits for source '{source}' in logic",
+                    text.chars().count()
+                ),
+                PickerEffect::Activate { stamp, row, action } => {
+                    // Owned before `Closed` drops the answer it came from.
+                    let target = self
+                        .palette_answer
+                        .as_ref()
+                        .filter(|answer| answer.generation == stamp.generation)
+                        .and_then(|answer| answer.targets.get(&row))
+                        .cloned();
+                    match target {
+                        Some(target) if target.action().id == action => {
+                            activation = Some(target);
                         }
-                    }
-                });
-
-                ui.add_space(style::SPACE_SM);
-                let hints = [
-                    HintGroup::alternatives(&[&["\u{2318}", "j"], &["\u{2318}", "k"]], "navigate"),
-                    HintGroup::new(&["\u{21b5}"], "open"),
-                    HintGroup::new(&["esc"], "dismiss"),
-                ];
-                HintBar::new(&hints).show(ui, &colors);
-
-                if let Some(i) = hover_select {
-                    if mouse_moved {
-                        self.palette_selected = i;
-                        self.palette_selected_key = Some(entries[i].selection_key());
+                        Some(_) => log::warn!("palette: row has no action '{action}'"),
+                        None => log::warn!("palette: no target for an activated row"),
                     }
                 }
-
-                if let Some(act) = click_action {
-                    self.run_palette_selection(act);
+                PickerEffect::Closed => {
+                    self.palette_input.reset("");
+                    self.palette_answer = None;
                 }
-            });
-
-        if modal_response.dismissed {
-            self.show_command_palette = false;
-            self.palette_query.clear();
-            self.palette_selected = 0;
-            self.palette_selected_key = None;
+            }
+        }
+        self.sync_command_palette_focus();
+        if let Some(target) = activation {
+            self.run_palette_selection(target);
         }
     }
 
-    /// Execute a palette interaction after keyboard and mouse have resolved
-    /// the same stable entry action.
-    fn run_palette_selection(&mut self, action: PaletteAction) {
-        // Bounded: the result kind and query length only, never the query text.
-        let kind = match &action {
-            PaletteAction::RunCommand(_) => "command",
-            PaletteAction::Focus(_) => "focus",
-            PaletteAction::OpenView(_) => "view",
-            PaletteAction::LaunchBuiltin(_) => "builtin",
-            PaletteAction::OpenNote(_) => "note",
-            PaletteAction::RunUserCommand { .. } => "user-command",
+    /// Answer the open stop's current query: a new query's first answer, and
+    /// every later pass so live rows (pane state, context pips, update ready)
+    /// stay current. Serviced from `App::logic`, never from drawing.
+    pub(crate) fn refresh_command_palette(&mut self) {
+        let Some((source, query, generation)) = self
+            .host
+            .picker(PickerId::Palette)
+            .filter(|picker| picker.is_open())
+            .map(|picker| {
+                (
+                    picker.active_stop().source,
+                    picker.query().to_owned(),
+                    picker.generation(),
+                )
+            })
+        else {
+            return;
         };
-        log::info!(
-            "palette: running {kind} result for a {}-char query",
-            self.palette_query.chars().count()
+        // A deferred Enter completes only while the palette still owns input.
+        if !self.palette_owns_input() {
+            self.apply_palette_command(PickerCommand::Yield);
+        }
+        #[cfg(test)]
+        if let Some(scripted) = palette_test_log::scripted_answer(generation, &query) {
+            self.answer_scripted(generation, scripted);
+            return;
+        }
+        let rows = match source {
+            COMMANDS_SOURCE => {
+                let (rows, pips, targets) = self.palette_command_rows(&query);
+                // Installed with its rows: an Enter this answer completes
+                // resolves against exactly this table.
+                self.palette_answer = Some(PaletteAnswer {
+                    generation,
+                    pips,
+                    targets,
+                });
+                rows
+            }
+            other => {
+                log::warn!("palette: no source '{other}'");
+                Vec::new()
+            }
+        };
+        self.apply_palette_command(PickerCommand::Rows {
+            generation,
+            rows,
+            done: true,
+        });
+    }
+
+    /// A scripted test answer in place of the Commands source: rows named
+    /// by view id, each targeting `CommandRowId::View`, installed exactly as
+    /// the source's answer is. A stale generation's answer is rejected with
+    /// its targets.
+    #[cfg(test)]
+    fn answer_scripted(&mut self, current: u64, scripted: Option<(u64, Vec<String>, bool)>) {
+        let Some((generation, ids, done)) = scripted else {
+            return;
+        };
+        let targets: std::collections::HashMap<RowKey, CommandRowId> = ids
+            .iter()
+            .map(|id| {
+                let target = CommandRowId::View(id.clone());
+                (target.key(), target)
+            })
+            .collect();
+        let rows = ids
+            .iter()
+            .map(|id| PickerRow {
+                key: CommandRowId::View(id.clone()).key(),
+                title: id.clone(),
+                secondary: String::new(),
+                chips: Vec::new(),
+                group: "",
+                group_rank: 0,
+                score: None,
+                pinned: false,
+                unavailable: None,
+                actions: vec![CommandRowId::View(id.clone()).action()],
+            })
+            .collect();
+        if generation == current {
+            self.palette_answer = Some(PaletteAnswer {
+                generation,
+                pips: std::collections::HashMap::new(),
+                targets,
+            });
+        }
+        self.apply_palette_command(PickerCommand::Rows {
+            generation,
+            rows,
+            done,
+        });
+    }
+
+    /// Whether this session's palette is the surface that owns input: its
+    /// opening is the focus stack's top, not merely open beneath a surface
+    /// it handed focus to.
+    pub(crate) fn palette_owns_input(&self) -> bool {
+        self.command_palette_open()
+            && self.focus_stack.top_opening().is_some_and(|top| {
+                top.kind == crate::app::FocusKind::CommandPalette
+                    && Some(top.id) == self.palette_input.opening
+            })
+    }
+
+    /// Note, in `App::logic`, that this pass's input belongs to the open
+    /// session, before a deferred activation can close it and hand the
+    /// pass to whatever takes focus next.
+    pub(crate) fn note_palette_input_owner(&mut self, ctx: &egui::Context) {
+        self.palette_input.owned_pass = self.palette_owns_input().then(|| ctx.cumulative_pass_nr());
+    }
+
+    /// The palette's ordered input adapter, run once at the start of
+    /// `App::ui`, before close-key rewriting, Quick Note preemption or any
+    /// owner takes input (stint 1391). egui has already folded the delivery,
+    /// so it saw both edges of every key and drives the results' scroll area
+    /// natively; this reads egui's ordered `events` and gives the palette its
+    /// share in arrival order:
+    /// - while the palette owns input, host chords and picker keys resolve at
+    ///   their own position (the close chord, Quick Note, the binding table
+    ///   with overlay rules, then the picker's keys). The field is egui's own
+    ///   text edit and reads its edits when it draws, so a command that
+    ///   follows an edit (or a pointer activation) waits until the field and
+    ///   rows have drawn this pass, then acts in order
+    ///   (`finish_palette_draw`). An edit that follows such a command waits
+    ///   for the next pass's field, ahead of that pass's own input;
+    /// - a Cmd+P from a pane ends the old owner's share at its position. The
+    ///   input before it finishes through the normal host and pane dispatch
+    ///   of this pass; the session opens after that (`finish_palette_opening`)
+    ///   and what followed the chord is its own;
+    /// - once a session closes, the rest of its delivery is still its own, as
+    ///   is the input of a pass whose logic closed it, and a press or phased
+    ///   scroll it began stays its own until released or ended.
+    ///
+    /// What the palette takes leaves `events`, so no later reader (the
+    /// binding table, a pane, a terminal) acts on it. Key releases stay, so
+    /// the binding table retires the release claims of the chords it saw.
+    /// A press the palette owns is recorded on the focus stack, which is what
+    /// pane and tab readers of egui's folded pointer state check.
+    pub(crate) fn route_palette_input(&mut self, ctx: &egui::Context) {
+        let pass = ctx.cumulative_pass_nr();
+        let logic_owned = self.palette_input.owned_pass.take() == Some(pass);
+        self.palette_input.fed.clear();
+        let stale = std::mem::take(&mut self.palette_input.after_draw);
+        if !stale.is_empty() {
+            log::info!(
+                "palette: {} input event(s) waiting for a draw that never came were dropped",
+                stale.len()
+            );
+        }
+        self.palette_input.activation_at = None;
+        self.palette_input.hover_at = None;
+        let waiting = std::mem::take(&mut self.palette_input.waiting);
+        if !waiting.is_empty() {
+            if self.palette_owns_input() {
+                log::debug!(
+                    "palette: {} waiting field edit(s) lead this pass",
+                    waiting.len()
+                );
+                ctx.input_mut(|i| {
+                    let fresh = std::mem::replace(&mut i.events, waiting);
+                    i.events.extend(fresh);
+                });
+            } else {
+                log::info!(
+                    "palette: {} waiting field edit(s) expired with their session",
+                    waiting.len()
+                );
+            }
+        }
+        // A release lost to another window: egui holds no button and this
+        // delivery releases none, so every gesture is over.
+        if ctx.input(|i| {
+            !i.pointer.any_down()
+                && !i
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::PointerButton { pressed: false, .. }))
+        }) {
+            self.palette_input.held.clear();
+            self.palette_input.pane_held.clear();
+        }
+        let owns = self.palette_owns_input();
+        let continuing = !self.palette_input.held.is_empty() || self.palette_input.scrolling;
+        if !owns && !logic_owned && !continuing {
+            let opening = self.overlay_surface().is_none()
+                && ctx.input(|i| i.events.iter().any(|e| self.palette_toggle_chord(e)));
+            if !opening {
+                let events = ctx.input(|i| i.events.clone());
+                for event in &events {
+                    self.note_pane_pointer(event);
+                }
+                return;
+            }
+        }
+        let events = ctx.input_mut(|i| std::mem::take(&mut i.events));
+        let mut kept = Vec::with_capacity(events.len());
+        let mut closed_session = logic_owned;
+        let mut dropped = 0usize;
+        // Whether the field has focus to edit with. egui's own begin-of-pass
+        // handling (an Escape in this delivery) may have dropped focus the
+        // field held last pass; the reconciler gives it back.
+        let field_focused = ctx.memory(|m| {
+            m.has_focus(palette_field_id()) || m.had_focus_last_frame(palette_field_id())
+        });
+        let mut order = DrawOrder::default();
+        for (index, event) in events.into_iter().enumerate() {
+            let release = matches!(event, egui::Event::Key { pressed: false, .. });
+            // A gesture a pane took keeps its moves and release, whoever
+            // owns input now.
+            if self.pane_gesture_continues(&event) {
+                self.note_pane_pointer(&event);
+                kept.push(event);
+                continue;
+            }
+            if self.palette_owns_input() {
+                closed_session = true;
+                self.note_palette_pointer(&event);
+                if self.take_owned_palette_event(ctx, index, &event, field_focused, &mut order) {
+                    continue;
+                }
+                if release || !is_palette_input(&event) || is_field_input(&event) {
+                    kept.push(event);
+                }
+                continue;
+            }
+            if self.palette_input.opener.is_some() {
+                if release || !is_palette_input(&event) {
+                    kept.push(event);
+                } else if is_field_input(&event) {
+                    self.palette_input.opening_tail.push(event);
+                } else {
+                    self.note_palette_pointer(&event);
+                }
+                continue;
+            }
+            if closed_session || self.palette_pointer_continues(&event) {
+                if release || !is_palette_input(&event) {
+                    kept.push(event);
+                } else {
+                    self.note_palette_pointer(&event);
+                    dropped += 1;
+                }
+                continue;
+            }
+            if self.overlay_surface().is_none() && self.palette_toggle_chord(&event) {
+                log::info!("palette: opening chord at input {index} of its delivery");
+                // Resolved here, so the chord's release claim is in place for
+                // a key-up later in this delivery; it acts after the old
+                // owner has finished what came before it.
+                self.palette_input.opener =
+                    Some(self.palette_host_actions(&event).unwrap_or_default());
+                continue;
+            }
+            self.note_pane_pointer(&event);
+            kept.push(event);
+        }
+        if dropped > 0 {
+            log::info!("palette: {dropped} input event(s) after its session closed were its own");
+        }
+        if !ctx.input(|i| i.pointer.any_down()) {
+            self.palette_input.held.clear();
+            self.palette_input.pane_held.clear();
+        }
+        ctx.input_mut(|i| {
+            let late = std::mem::replace(&mut i.events, kept);
+            i.events.extend(late);
+        });
+    }
+
+    /// One event while the palette owns input. Returns whether a host chord
+    /// or the picker took it (a release nobody claimed stays for egui's
+    /// other readers).
+    fn route_owned_palette_event(
+        &mut self,
+        ctx: &egui::Context,
+        index: usize,
+        event: &egui::Event,
+    ) -> bool {
+        let close = self.key_bindings.close_pane;
+        let quick_note = self.key_bindings.open_quick_note;
+        if let egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } = event
+        {
+            if *key == close.1 && modifiers.matches_logically(close.0) {
+                self.claimed_host_key_releases.insert(close.1);
+                self.close_command_palette();
+                return true;
+            }
+            if *key == quick_note.1
+                && crate::host::keys::modifiers_match_exact_for_os(
+                    modifiers,
+                    &quick_note.0,
+                    cfg!(target_os = "macos"),
+                )
+                && self.is_quick_note_preemptable()
+            {
+                self.dismiss_preemptable_modal();
+                self.open_quick_note_modal();
+                self.sync_command_palette_focus();
+                log::info!("quick_note: opened by preempting the palette at input {index}");
+                return true;
+            }
+        }
+        if let Some(actions) = self.palette_host_actions(event) {
+            for action in actions {
+                log::debug!("palette: input {index} -> host {action:?}");
+                self.dispatch_host_action(action, ctx);
+            }
+            // A chord that handed focus to another surface (the Attention
+            // Queue, an approval) ends the session, and any Enter it froze.
+            if self.command_palette_open() && !self.palette_owns_input() {
+                log::info!(
+                    "palette: handed off to {:?}; closing",
+                    self.overlay_surface()
+                );
+                self.close_command_palette();
+            }
+            return true;
+        }
+        match picker_key(event, self.palette_input.composing) {
+            Some(command) => {
+                log::debug!("palette: input {index} -> {command:?}");
+                self.apply_palette_command(command);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the palette acts on this key press itself rather than leaving
+    /// it to the field: its close chord, Quick Note, a host chord, or a
+    /// picker key. Nothing is claimed by asking.
+    fn palette_command_key(&self, event: &egui::Event) -> bool {
+        let egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let close = self.key_bindings.close_pane;
+        let quick_note = self.key_bindings.open_quick_note;
+        if *key == close.1 && modifiers.matches_logically(close.0) {
+            return true;
+        }
+        if *key == quick_note.1
+            && crate::host::keys::modifiers_match_exact_for_os(
+                modifiers,
+                &quick_note.0,
+                cfg!(target_os = "macos"),
+            )
+            && self.is_quick_note_preemptable()
+        {
+            return true;
+        }
+        if picker_key(event, self.palette_input.composing).is_some() {
+            return true;
+        }
+        let mut single =
+            crate::app::input_router::PlexiInput::synthetic(vec![event.clone()], *modifiers);
+        let mut releases = self.claimed_host_key_releases.clone();
+        crate::host::keys::poll_actions(
+            &mut single,
+            &self.binding_table,
+            &mut releases,
+            false,
+            false,
+            true,
+            self.show_shortcuts,
         );
-        self.show_command_palette = false;
-        self.palette_query.clear();
-        self.palette_selected_key = None;
-        match action {
-            PaletteAction::RunCommand(command) => self.run_palette_command(command),
-            PaletteAction::RunUserCommand { name, scope } => self.run_user_command(&name, scope),
-            PaletteAction::Focus(target) => self.focus_palette_target(target),
-            PaletteAction::OpenView(id) => self.launch_view_by_id(&id),
-            PaletteAction::LaunchBuiltin(id) => self.launch_builtin_by_id(id),
-            PaletteAction::OpenNote(path) => {
-                let path_str = path.display().to_string();
-                if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path) {
+        single.is_empty()
+    }
+
+    /// After this pass's host and pane dispatch: apply a Cmd+P found in the
+    /// delivery. The input that followed it waits for the new field.
+    pub(crate) fn finish_palette_opening(&mut self, ctx: &egui::Context) {
+        let Some(actions) = self.palette_input.opener.take() else {
+            return;
+        };
+        let tail = std::mem::take(&mut self.palette_input.opening_tail);
+        for action in actions {
+            self.dispatch_host_action(action, ctx);
+        }
+        if self.palette_owns_input() {
+            log::info!(
+                "palette: opened; {} input event(s) after its chord wait for its field",
+                tail.len()
+            );
+            self.palette_input.waiting = tail;
+            ctx.request_repaint();
+        } else if !tail.is_empty() {
+            log::info!(
+                "palette: the opening chord opened nothing; {} input event(s) after it dropped",
+                tail.len()
+            );
+        }
+    }
+
+    /// One event while the palette owns input, in order. Returns whether the
+    /// palette took it; what it leaves stays in `events` for egui (field
+    /// edits, unclaimed key releases, accessibility requests).
+    fn take_owned_palette_event(
+        &mut self,
+        ctx: &egui::Context,
+        index: usize,
+        event: &egui::Event,
+        field_focused: bool,
+        order: &mut DrawOrder,
+    ) -> bool {
+        match event {
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                ..
+            }
+            | egui::Event::AccessKitActionRequest(_) => {
+                // The draw decides whether this activated a row or the scrim;
+                // commands after it wait for that.
+                self.palette_input.activation_at.get_or_insert(index);
+                order.deferring = true;
+                // egui reads accessibility requests from `events`.
+                return !matches!(event, egui::Event::AccessKitActionRequest(_));
+            }
+            egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_) => {
+                // A hover lands when the rows draw; a command after it waits.
+                self.palette_input.hover_at = Some(index);
+                order.moved = true;
+                return true;
+            }
+            egui::Event::Key { pressed: false, .. } => {
+                return self.palette_host_actions(event).is_some();
+            }
+            _ => {}
+        }
+        if self.palette_command_key(event) {
+            if matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::ArrowUp | egui::Key::ArrowDown,
+                    ..
+                }
+            ) {
+                // The arrow moves the picker's selection; egui must not also
+                // walk focus out of the field with it.
+                ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+            }
+            if order.deferring || order.field_dirty || order.moved {
+                order.deferring = true;
+                self.palette_input.after_draw.push((index, event.clone()));
+            } else {
+                self.route_owned_palette_event(ctx, index, event);
+            }
+            return true;
+        }
+        if is_field_input(event) {
+            if order.deferring || !field_focused {
+                order.deferring = true;
+                self.palette_input.after_draw.push((index, event.clone()));
+                return true;
+            }
+            self.note_palette_composition(event);
+            order.field_dirty = true;
+            self.palette_input.fed.push(event.clone());
+            return false;
+        }
+        is_palette_input(event)
+    }
+
+    /// Follow the field's IME composition: preedit text means composing,
+    /// a commit or the IME going away ends it.
+    fn note_palette_composition(&mut self, event: &egui::Event) {
+        if let egui::Event::Ime(ime) = event {
+            self.palette_input.composing = match ime {
+                egui::ImeEvent::Preedit(text) => !text.is_empty(),
+                egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled => false,
+                egui::ImeEvent::Enabled => self.palette_input.composing,
+            };
+        }
+    }
+
+    /// After the field and rows drew this pass: publish the field's
+    /// committed text, then act on what followed it in the delivery, in
+    /// arrival order: commands, a row or scrim activation, a hover. An edit
+    /// behind one of them waits for the next pass's field; a pointer action
+    /// behind such an edit bound rows that edit replaces, so it is dropped.
+    fn finish_palette_draw(
+        &mut self,
+        ctx: &egui::Context,
+        rows: crate::ui::picker::RowsResponse,
+        dismissed: bool,
+    ) {
+        // The field has read its edits: no later reader may act on them.
+        // Input before an opening Cmd+P stays the pane's.
+        let fed = std::mem::take(&mut self.palette_input.fed);
+        ctx.input_mut(|i| {
+            for event in fed.iter().rev() {
+                if let Some(at) = i.events.iter().rposition(|e| e == event) {
+                    i.events.remove(at);
+                }
+            }
+        });
+        let after = std::mem::take(&mut self.palette_input.after_draw);
+        let activation_at = self.palette_input.activation_at.take();
+        let hover_at = self.palette_input.hover_at.take();
+        if !self.palette_owns_input() {
+            return;
+        }
+        let query = self
+            .host
+            .picker(PickerId::Palette)
+            .map(|picker| picker.query().to_owned());
+        if !self.palette_input.composing && query.as_deref() != Some(&self.palette_input.draft) {
+            let draft = self.palette_input.draft.clone();
+            log::debug!("palette: field committed {} char(s)", draft.chars().count());
+            self.apply_palette_command(PickerCommand::QueryEdited(draft));
+        }
+        enum Step {
+            Input(egui::Event),
+            Picker(PickerCommand),
+        }
+        let mut steps: Vec<(usize, Step)> = after
+            .into_iter()
+            .map(|(index, event)| (index, Step::Input(event)))
+            .collect();
+        if let Some(at) = activation_at {
+            if let Some(hit) = rows.clicked {
+                steps.push((at, Step::Picker(PickerCommand::Click(hit))));
+            } else if dismissed {
+                steps.push((at, Step::Picker(PickerCommand::Close)));
+            }
+        }
+        if let (Some(at), Some(hit)) = (hover_at, rows.hovered) {
+            steps.push((at, Step::Picker(PickerCommand::Hover(hit))));
+        }
+        steps.sort_by_key(|(index, _)| *index);
+        let mut steps = steps.into_iter();
+        let mut dropped = 0usize;
+        while let Some((index, step)) = steps.next() {
+            if !self.palette_owns_input() {
+                dropped += 1 + steps.len();
+                break;
+            }
+            match step {
+                Step::Picker(command) => {
+                    log::debug!("palette: input {index} -> {command:?} after the draw");
+                    self.apply_palette_command(command);
+                }
+                Step::Input(event) if self.palette_command_key(&event) => {
+                    self.route_owned_palette_event(ctx, index, &event);
+                }
+                Step::Input(event) => {
+                    self.palette_input.waiting.push(event);
+                    for (_, rest) in steps.by_ref() {
+                        match rest {
+                            Step::Input(event) => self.palette_input.waiting.push(event),
+                            Step::Picker(_) => dropped += 1,
+                        }
+                    }
+                    log::debug!(
+                        "palette: {} input event(s) wait for the next field pass",
+                        self.palette_input.waiting.len()
+                    );
+                    ctx.request_repaint();
+                }
+            }
+        }
+        if dropped > 0 {
+            log::info!("palette: {dropped} input step(s) after the session's end were dropped");
+        }
+    }
+
+    /// Whether the binding table reads `event` as the palette's own chord,
+    /// by its matching rules (exact chords and their order).
+    fn palette_toggle_chord(&self, event: &egui::Event) -> bool {
+        let egui::Event::Key {
+            pressed: true,
+            modifiers,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let mut single =
+            crate::app::input_router::PlexiInput::synthetic(vec![event.clone()], *modifiers);
+        let mut releases = self.claimed_host_key_releases.clone();
+        crate::host::keys::poll_actions(
+            &mut single,
+            &self.binding_table,
+            &mut releases,
+            false,
+            false,
+            true,
+            self.show_shortcuts,
+        )
+        .contains(&crate::host::keys::Action::ToggleCommandPalette)
+    }
+
+    /// Whether `event` continues a gesture pressed before the palette owned
+    /// input: its moves and release stay with the pane that took the press.
+    fn pane_gesture_continues(&self, event: &egui::Event) -> bool {
+        match event {
+            egui::Event::PointerButton {
+                button,
+                pressed: false,
+                ..
+            } => self.palette_input.pane_held.contains(button),
+            egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_) => {
+                !self.palette_input.pane_held.is_empty()
+            }
+            _ => false,
+        }
+    }
+
+    fn note_pane_pointer(&mut self, event: &egui::Event) {
+        if let egui::Event::PointerButton {
+            button, pressed, ..
+        } = event
+        {
+            let held = &mut self.palette_input.pane_held;
+            if *pressed {
+                if !held.contains(button) {
+                    held.push(*button);
+                }
+            } else {
+                held.retain(|b| b != button);
+            }
+        }
+    }
+
+    /// Whether `event` continues a press or phased scroll a session began.
+    fn palette_pointer_continues(&self, event: &egui::Event) -> bool {
+        match event {
+            egui::Event::PointerButton { .. }
+            | egui::Event::PointerMoved(_)
+            | egui::Event::MouseMoved(_) => !self.palette_input.held.is_empty(),
+            egui::Event::MouseWheel { .. } => self.palette_input.scrolling,
+            _ => false,
+        }
+    }
+
+    /// Track the pointer gestures a session owns; its presses are recorded
+    /// on the focus stack.
+    fn note_palette_pointer(&mut self, event: &egui::Event) {
+        match event {
+            egui::Event::PointerButton {
+                button, pressed, ..
+            } => {
+                let held = &mut self.palette_input.held;
+                if *pressed {
+                    if !held.contains(button) {
+                        held.push(*button);
+                    }
+                    self.focus_stack
+                        .own_press(crate::app::FocusKind::CommandPalette);
+                } else {
+                    held.retain(|b| b != button);
+                }
+            }
+            egui::Event::MouseWheel { phase, .. } => match phase {
+                egui::TouchPhase::Start => self.palette_input.scrolling = true,
+                egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                    self.palette_input.scrolling = false;
+                }
+                egui::TouchPhase::Move => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// The host actions a key event triggers while the palette owns input,
+    /// or `None` when no binding claims it. Releases of claimed host chords
+    /// are claimed too.
+    fn palette_host_actions(
+        &mut self,
+        event: &egui::Event,
+    ) -> Option<Vec<crate::host::keys::Action>> {
+        let egui::Event::Key { modifiers, .. } = event else {
+            return None;
+        };
+        let mut single =
+            crate::app::input_router::PlexiInput::synthetic(vec![event.clone()], *modifiers);
+        let actions = crate::host::keys::poll_actions(
+            &mut single,
+            &self.binding_table,
+            &mut self.claimed_host_key_releases,
+            false,
+            false,
+            true,
+            self.show_shortcuts,
+        );
+        single.is_empty().then_some(actions)
+    }
+
+    pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
+        let colors = self.colors;
+        let Some(picker) = self
+            .host
+            .picker(PickerId::Palette)
+            .filter(|picker| picker.is_open())
+        else {
+            return;
+        };
+        // 0.8: the palette is a launcher, not a workspace — filling nearly
+        // the whole screen height read as massive.
+        let max_list_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
+        let enter_label = picker
+            .selected()
+            .and_then(|key| picker.rows().iter().find(|row| row.key == *key))
+            .and_then(|row| row.actions.first())
+            .map_or("open", |action| action.label);
+        let stops = picker.stops();
+        let next_stop = (stops.len() > 1).then(|| {
+            let active = stops
+                .iter()
+                .position(|stop| stop.id == picker.active_stop().id)
+                .unwrap_or(0);
+            stops[(active + 1) % stops.len()].label.to_lowercase()
+        });
+        let pips = |key: &RowKey| {
+            self.palette_answer
+                .as_ref()
+                .and_then(|answer| answer.pips.get(key))
+                .cloned()
+        };
+        let draft = &mut self.palette_input.draft;
+        let mut rows = crate::ui::picker::RowsResponse::default();
+        #[cfg(test)]
+        let mut modal_rect = egui::Rect::NOTHING;
+        // Escape is a picker key routed in order; the shell reports only the
+        // scrim's click-away.
+        let dismissed = ModalShell::centered("command_palette")
+            .own_scroll()
+            .width(style::MODAL_WIDTH_PALETTE)
+            .show(ctx, &colors, |ui| {
+                crate::ui::picker::field(
+                    ui,
+                    picker,
+                    draft,
+                    palette_field_id(),
+                    crate::ui::focus::SurfaceKey::Overlay(
+                        crate::app::input_owner::OverlaySurface::Layer(
+                            crate::app::FocusKind::CommandPalette,
+                        ),
+                    ),
+                    &colors,
+                );
+                ui.add_space(style::SPACE_SM);
+                rows = crate::ui::picker::results(
+                    ui,
+                    picker,
+                    max_list_h,
+                    "No matching contexts or plugins",
+                    &pips,
+                    &colors,
+                );
+                ui.add_space(style::SPACE_SM);
+                let mut hints = vec![
+                    HintGroup::alternatives(&[&["\u{2318}", "j"], &["\u{2318}", "k"]], "navigate"),
+                    HintGroup::new(&["\u{21b5}"], enter_label),
+                ];
+                if let Some(next) = next_stop.as_deref() {
+                    hints.push(HintGroup::new(&["tab"], next));
+                }
+                hints.push(HintGroup::new(&["esc"], "dismiss"));
+                HintBar::new(&hints).show(ui, &colors);
+                #[cfg(test)]
+                {
+                    modal_rect = ui.min_rect().expand2(egui::vec2(
+                        f32::from(style::MODAL_PADDING_H),
+                        f32::from(style::MODAL_PADDING_V),
+                    ));
+                }
+            })
+            .dismissed;
+        // A discarded sizing pass was never seen.
+        if !ctx.will_discard() {
+            #[cfg(test)]
+            {
+                self.palette_input.drawn = Some((rows.rects.clone(), modal_rect));
+            }
+        }
+        self.finish_palette_draw(ctx, rows, dismissed);
+    }
+
+    /// Execute a Commands-stop row.
+    fn run_palette_selection(&mut self, id: CommandRowId) {
+        #[cfg(test)]
+        palette_test_log::activated(id.key());
+        // Bounded: the result kind only, never the query or row text.
+        let kind = match &id {
+            CommandRowId::Command(_) => "command",
+            CommandRowId::Focus(_) => "focus",
+            CommandRowId::Unavailable(_) => "unavailable",
+            CommandRowId::View(_) => "view",
+            CommandRowId::Builtin(_) => "builtin",
+            CommandRowId::Note(_) => "note",
+            CommandRowId::UserCommand { .. } => "user-command",
+            CommandRowId::UpdateReady(_) => "update-ready",
+        };
+        log::info!("palette: running {kind} result");
+        match id {
+            CommandRowId::Command(command) => self.run_palette_command(command),
+            CommandRowId::UpdateReady(_) => {
+                self.run_palette_command(PaletteCommand::RestartToUpdate)
+            }
+            CommandRowId::UserCommand { name, scope } => self.run_user_command(&name, scope),
+            CommandRowId::Focus(target) => self.focus_palette_target(target),
+            CommandRowId::Unavailable(name) => {
+                log::warn!("palette: parked context '{name}' has no live window to restore");
+            }
+            CommandRowId::View(id) => self.launch_view_by_id(&id),
+            CommandRowId::Builtin(id) => self.launch_builtin_by_id(id),
+            CommandRowId::Note(path) => {
+                if let Some(pane_id) = self.find_open_note_pane(&path) {
                     log::info!("palette: note already open in pane {pane_id}, navigating");
                     self.pane_navigate(pane_id);
-                } else {
-                    log::info!("palette: opening note {:?} in new pane", path);
-                    let _ =
-                        self.launch_view_by_id_with_layout("text-editor", None, &[path_str], None);
+                } else if let Err(error) = self.open_text_editor_at_path(path) {
+                    log::error!("palette: opening a note in a new pane failed: {error}");
                 }
             }
         }
@@ -2075,6 +2410,7 @@ impl PlexiApp {
             PaletteCommand::OpenAttention => {
                 self.sync_attention_queue();
                 self.attention_queue.open = true;
+                self.sync_attention_queue_layer();
                 self.attention_queue.selected_idx = 0;
                 log::info!(
                     "attention_queue: opened source=palette-needs-attention items={}",
@@ -3117,9 +3453,129 @@ impl PlexiApp {
 }
 
 #[cfg(test)]
+impl PlexiApp {
+    pub(crate) fn palette_selected_key(&self) -> Option<String> {
+        self.host
+            .picker(PickerId::Palette)
+            .and_then(|picker| picker.selected())
+            .map(|key| key.as_str().to_owned())
+    }
+
+    pub(crate) fn palette_selected_index(&self) -> Option<usize> {
+        let picker = self.host.picker(PickerId::Palette)?;
+        let key = picker.selected()?;
+        picker.rows().iter().position(|row| row.key == *key)
+    }
+
+    /// Replace the field's text as typing would, for tests that set a
+    /// query directly.
+    #[cfg(test)]
+    pub(crate) fn set_palette_query(&mut self, query: &str) {
+        self.palette_input.draft = query.to_owned();
+        self.apply_palette_command(PickerCommand::QueryEdited(query.to_owned()));
+    }
+}
+
+/// The palette's query field.
+fn palette_field_id() -> egui::Id {
+    egui::Id::new("palette_search")
+}
+
+/// Where this delivery's commands go relative to the draw.
+#[derive(Default)]
+struct DrawOrder {
+    /// The field took an edit this pass: a later command waits for it.
+    field_dirty: bool,
+    /// A command, an activation or an edit already waits for the draw, so
+    /// everything after it waits too.
+    deferring: bool,
+    /// The pointer moved: a command after it waits for the hover.
+    moved: bool,
+}
+
+/// Person input a palette session owns: keys, text, clipboard, IME and
+/// pointer edges, moves and scrolling. Window, screenshot and accessibility
+/// events stay where they are.
+fn is_palette_input(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key { .. }
+            | egui::Event::Text(_)
+            | egui::Event::Paste(_)
+            | egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Ime(_)
+            | egui::Event::PointerMoved(_)
+            | egui::Event::MouseMoved(_)
+            | egui::Event::PointerButton { .. }
+            | egui::Event::PointerGone
+            | egui::Event::MouseWheel { .. }
+            | egui::Event::Touch { .. }
+    )
+}
+
+/// Test-only observation of the palette's production path: which rows ran,
+/// in order, and how often the Commands source answered. Per test thread.
+#[cfg(test)]
+pub(crate) mod palette_test_log {
+    use crate::host::picker::RowKey;
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static ACTIVATED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static SOURCE_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn activated(key: RowKey) {
+        ACTIVATED.with(|log| log.borrow_mut().push(key.as_str().to_owned()));
+    }
+
+    pub(super) fn source_called() {
+        SOURCE_CALLS.with(|calls| calls.set(calls.get() + 1));
+    }
+
+    /// The row keys run since the last take, in activation order.
+    pub(crate) fn take_activations() -> Vec<String> {
+        ACTIVATED.with(|log| std::mem::take(&mut *log.borrow_mut()))
+    }
+
+    /// Commands-source answers since the last take.
+    pub(crate) fn take_source_calls() -> usize {
+        SOURCE_CALLS.with(|calls| calls.replace(0))
+    }
+
+    /// A script answering the palette's query in `App::logic` instead of the
+    /// Commands source: given the current generation and query, the
+    /// generation answered, the row view ids and `done`; `None` answers
+    /// nothing this pass.
+    pub(crate) type Script = Box<dyn FnMut(u64, &str) -> Option<(u64, Vec<String>, bool)>>;
+
+    thread_local! {
+        static SCRIPT: RefCell<Option<Script>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn set_script(script: Option<Script>) {
+        SCRIPT.with(|slot| *slot.borrow_mut() = script);
+    }
+
+    /// `None` when unscripted; otherwise this pass's scripted answer.
+    pub(super) fn scripted_answer(
+        generation: u64,
+        query: &str,
+    ) -> Option<Option<(u64, Vec<String>, bool)>> {
+        SCRIPT.with(|slot| {
+            slot.borrow_mut()
+                .as_mut()
+                .map(|script| script(generation, query))
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::host::pane::{Pane, PortalPane};
+    use crate::host::picker::PickerState;
     use crate::ui::list::ListRowPips;
 
     #[test]
@@ -3352,7 +3808,7 @@ mod tests {
                         &ctx,
                     );
                 } else {
-                    h.app.run_palette_selection(PaletteAction::RunUserCommand {
+                    h.app.run_palette_selection(CommandRowId::UserCommand {
                         name: "gate-test".into(),
                         scope: crate::cli::UserCommandScope::Workspace,
                     });
@@ -3542,7 +3998,7 @@ mod tests {
     fn palette_update_ready_row_only_when_ready_and_restarts() {
         assert!(update_ready_entry(None, "").is_none());
         let entry = update_ready_entry(Some("0.5.1"), "").expect("ready row on empty query");
-        assert_eq!(entry.selection_key(), "update-ready:0.5.1");
+        assert_eq!(entry.row_id(), CommandRowId::UpdateReady("0.5.1".into()));
         for query in ["restart", "update", "0.5.1"] {
             assert!(
                 update_ready_entry(Some("0.5.1"), query).is_some(),
@@ -3550,10 +4006,9 @@ mod tests {
             );
         }
         assert!(update_ready_entry(Some("0.5.1"), "zzqx").is_none());
-        assert_eq!(
-            action_for_palette_entry(&entry),
-            Some(PaletteAction::RunCommand(PaletteCommand::RestartToUpdate))
-        );
+        let (row, _) = entry.into_row("", None);
+        assert!(row.pinned, "the ready row leads the list");
+        assert_eq!(row.actions[0].id, "run");
 
         let mut h = crate::testing::HostHarness::new();
         h.app.run_palette_command(PaletteCommand::RestartToUpdate);
@@ -3576,10 +4031,7 @@ mod tests {
     }
 
     fn open_palette_and_press_enter(h: &mut crate::testing::HostHarness) {
-        h.app.show_command_palette = true;
-        h.app.palette_selected = 0;
-        h.app.palette_selected_key = None;
-        h.app.sync_command_palette_focus();
+        h.app.open_command_palette("");
         h.run_frames(1);
         h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
     }
@@ -3592,7 +4044,7 @@ mod tests {
         crate::app::quit::test_restart_scheduler::take();
         let mut h = harness_with_ready_update();
         open_palette_and_press_enter(&mut h);
-        assert!(!h.app.show_command_palette);
+        assert!(!h.app.command_palette_open());
         assert!(h.app.show_changelog, "the restart confirm opens");
         assert!(h.app.update_confirm_prompt);
         assert!(
@@ -3600,14 +4052,15 @@ mod tests {
             "the first Enter must never restart"
         );
         assert_eq!(
-            h.app.focus_stack.last(),
+            h.app.focus_stack.top().as_ref(),
             Some(&crate::app::FocusKind::Changelog)
         );
 
-        // The second Enter confirms, and the same frame's logic pass takes
-        // the restart. A frame after the window hides would reach
-        // `exit_host`, so the test stops here.
+        // The second Enter confirms; the logic pass it requests takes the
+        // restart. A frame after the window hides would reach `exit_host`,
+        // so the test stops after that logic-only pass.
         h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+        h.hidden_frame();
         assert_eq!(crate::app::quit::test_restart_scheduler::take(), 1);
         assert!(!h.app.update_confirm_prompt);
         assert!(!h.app.update_quit_pending);
@@ -3645,14 +4098,14 @@ mod tests {
         h.app.run_palette_command(command.clone());
         assert!(h.app.show_changelog);
         assert_eq!(
-            h.app.focus_stack.last(),
+            h.app.focus_stack.top().as_ref(),
             Some(&crate::app::FocusKind::Changelog)
         );
         h.app.run_palette_command(command);
         assert!(h.app.show_changelog);
         assert_eq!(
-            h.app.focus_stack.as_slice(),
-            &[crate::app::FocusKind::Changelog]
+            h.app.focus_stack.kinds().collect::<Vec<_>>(),
+            [crate::app::FocusKind::Changelog]
         );
         h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
         assert!(!h.app.show_changelog);
@@ -3758,7 +4211,7 @@ mod tests {
 
     #[test]
     fn empty_palette_puts_commands_after_apps() {
-        let mut entries = vec![
+        let entries = vec![
             PaletteEntry::Command {
                 command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
                 name: "Open config",
@@ -3787,11 +4240,11 @@ mod tests {
             },
         ];
 
-        sort_palette_entries(&mut entries, "");
+        let entries = ranked(entries, "");
 
-        assert!(matches!(entries[0], PaletteEntry::Context { .. }));
-        assert!(matches!(entries[1], PaletteEntry::View { .. }));
-        assert!(matches!(entries[2], PaletteEntry::Command { .. }));
+        assert_eq!(row_kind(&entries[0]), "focus");
+        assert_eq!(row_kind(&entries[1]), "view");
+        assert_eq!(row_kind(&entries[2]), "cmd");
     }
 
     #[test]
@@ -3815,18 +4268,16 @@ mod tests {
 
         assert!(parked.matches_query("release"));
         assert!(unavailable.matches_query("window"));
-        assert_eq!(parked.group_rank(), 0);
-        assert_eq!(unavailable.group_rank(), 0);
+        assert_eq!(parked.group().1, 0);
+        assert_eq!(unavailable.group().1, 0);
     }
 
-    /// The render loop's `shown_contexts_header` flag prints CONTEXTS the
-    /// first time it sees a `PaletteEntry::Context` row and never again;
-    /// that's gated on group_rank() putting every Context row in one
-    /// contiguous leading block on an empty query, and on there being no
-    /// Context row at all to key off of when the group is empty.
+    /// The results painter prints CONTEXTS when the row group changes to it,
+    /// so every Context row must land in one contiguous leading block on an
+    /// empty query, and no CONTEXTS group exists without a Context row.
     #[test]
     fn contexts_header_shows_once_for_a_leading_context_block_and_never_without_one() {
-        let mut with_contexts = vec![
+        let with_contexts = vec![
             PaletteEntry::View {
                 id: "balls".to_string(),
                 name: "Balls".to_string(),
@@ -3860,14 +4311,12 @@ mod tests {
                 search_text: "workspace b".to_string(),
             },
         ];
-        sort_palette_entries(&mut with_contexts, "");
+        let with_contexts = ranked(with_contexts, "");
 
-        // Both Context rows land in one leading block, so the render loop's
-        // shown_contexts_header flag flips true on the first and stays true
-        // (never fires again) through the second.
-        assert!(matches!(with_contexts[0], PaletteEntry::Context { .. }));
-        assert!(matches!(with_contexts[1], PaletteEntry::Context { .. }));
-        assert!(matches!(with_contexts[2], PaletteEntry::View { .. }));
+        // Both Context rows land in one leading block under one header.
+        assert_eq!(row_kind(&with_contexts[0]), "focus");
+        assert_eq!(row_kind(&with_contexts[1]), "focus");
+        assert_eq!(row_kind(&with_contexts[2]), "view");
 
         let without_contexts = vec![PaletteEntry::View {
             id: "balls".to_string(),
@@ -3878,28 +4327,89 @@ mod tests {
             search_text: "balls demo".to_string(),
         }];
         assert!(
-            !without_contexts
+            !ranked(without_contexts, "")
                 .iter()
-                .any(|e| matches!(e, PaletteEntry::Context { .. })),
-            "no Context row means shown_contexts_header never flips true, so CONTEXTS never renders"
+                .any(|row| row.group == "CONTEXTS"),
+            "no Context row means CONTEXTS never renders"
         );
     }
 
-    /// The render loop prints each section header the first time it meets a
-    /// row of that group, so a group split into two runs would attach its
-    /// later rows to another group's header. Returns the group of each run.
-    fn palette_group_runs(entries: &[PaletteEntry]) -> Vec<usize> {
-        let mut runs: Vec<usize> = Vec::new();
-        for entry in entries {
-            if runs.last() != Some(&entry.group_rank()) {
-                runs.push(entry.group_rank());
+    /// Rank `entries` through the picker reducer exactly as the Commands
+    /// stop does, and return the rows in display order.
+    fn ranked(entries: Vec<PaletteEntry>, query: &str) -> Vec<PickerRow> {
+        ranked_state(entries, query).rows().to_vec()
+    }
+
+    fn ranked_state(entries: Vec<PaletteEntry>, query: &str) -> PickerState {
+        let mut state = PickerState::new(PALETTE_STOPS);
+        state.apply(PickerCommand::Open {
+            stop: PALETTE_STOPS[0].id,
+            query: query.to_string(),
+        });
+        answer(&mut state, entries, query);
+        state
+    }
+
+    fn answer(state: &mut PickerState, entries: Vec<PaletteEntry>, query: &str) {
+        let normalized = normalized_palette_query(query);
+        let rows = entries
+            .into_iter()
+            .map(|entry| entry.into_row(&normalized, None).0)
+            .collect();
+        let generation = state.generation();
+        state.apply(PickerCommand::Rows {
+            generation,
+            rows,
+            done: true,
+        });
+    }
+
+    /// The row's kind, the stable id up to its first \`/\`.
+    fn row_kind(row: &PickerRow) -> &str {
+        row.key.stable_id().split('/').next().unwrap_or_default()
+    }
+
+    /// Click a listed row of the open palette, the pointer's path to
+    /// activation.
+    fn click_row(h: &mut crate::testing::HostHarness, id: CommandRowId) {
+        // Rows are answered on the next logic pass.
+        h.run_frames(1);
+        let key = id.key();
+        assert!(
+            h.app
+                .host
+                .picker(PickerId::Palette)
+                .is_some_and(|picker| picker.rows().iter().any(|row| row.key == key)),
+            "{id:?} must be listed in the open palette"
+        );
+        let stamp = h
+            .app
+            .host
+            .picker(PickerId::Palette)
+            .expect("palette picker")
+            .rows_stamp();
+        h.app
+            .apply_palette_command(PickerCommand::Click(crate::host::picker::Hit {
+                stamp,
+                key,
+            }));
+    }
+
+    /// The results painter prints a section header each time the group
+    /// changes, so a group split into two runs would attach its later rows
+    /// to another group's header. Returns the group of each run.
+    fn palette_group_runs(rows: &[PickerRow]) -> Vec<u32> {
+        let mut runs: Vec<u32> = Vec::new();
+        for row in rows {
+            if runs.last() != Some(&row.group_rank) {
+                runs.push(row.group_rank);
             }
         }
         runs
     }
 
-    fn assert_each_group_is_one_run(entries: &[PaletteEntry]) {
-        let runs = palette_group_runs(entries);
+    fn assert_each_group_is_one_run(rows: &[PickerRow]) {
+        let runs = palette_group_runs(rows);
         let mut seen = runs.clone();
         seen.sort_unstable();
         seen.dedup();
@@ -3944,33 +4454,33 @@ mod tests {
     #[test]
     fn typed_query_selects_direct_title_match_above_incidental_description_match_across_groups() {
         for query in ["file", "file explorer"] {
-            let mut entries = vec![
-                todo_view_entry(),
-                registered_command_entry(file_explorer_command()),
-            ];
-            sort_palette_entries(&mut entries, query);
-
+            let state = ranked_state(
+                vec![
+                    todo_view_entry(),
+                    registered_command_entry(file_explorer_command()),
+                ],
+                query,
+            );
+            let rows = state.rows();
             assert_eq!(
-                action_for_palette_entry(&entries[0]),
-                Some(PaletteAction::RunCommand(file_explorer_command())),
+                rows[0].key,
+                CommandRowId::Command(file_explorer_command()).key(),
                 "query {query:?} must rank File Explorer's title match first"
             );
             // A fresh query selects the first displayed row, and Enter acts on it.
-            let mut selected = 0;
-            let mut selected_key = None;
-            reconcile_palette_selection(&entries, &mut selected, &mut selected_key);
-            assert_eq!(selected, 0);
-            assert_eq!(selected_key, Some(entries[0].selection_key()));
-            assert_each_group_is_one_run(&entries);
+            assert_eq!(state.selected(), Some(&rows[0].key));
+            assert_each_group_is_one_run(rows);
         }
 
         // Description-only discovery survives: Todo still matches "file",
         // just below the direct title match.
         let todo = todo_view_entry();
         assert!(todo.matches_query("file"));
-        let mut entries = vec![todo, registered_command_entry(file_explorer_command())];
-        sort_palette_entries(&mut entries, "file");
-        assert!(matches!(entries[1], PaletteEntry::View { ref id, .. } if id == "todo"));
+        let rows = ranked(
+            vec![todo, registered_command_entry(file_explorer_command())],
+            "file",
+        );
+        assert_eq!(rows[1].key, CommandRowId::View("todo".into()).key());
     }
 
     #[test]
@@ -3983,7 +4493,7 @@ mod tests {
             is_workspace_local: false,
             search_text: search_text.to_string(),
         };
-        let mut entries = vec![
+        let entries = vec![
             // Weak app: "open" only in its description text.
             view("viewer", "Viewer", "viewer demo open anything"),
             PaletteEntry::Command {
@@ -4003,21 +4513,21 @@ mod tests {
             },
         ];
 
-        sort_palette_entries(&mut entries, "open");
+        let entries = ranked(entries, "open");
 
         // The group holding the strongest match leads; each group stays one
         // run, so every header sits above its own rows.
         assert_each_group_is_one_run(&entries);
         assert_eq!(palette_group_runs(&entries), vec![4, 3]);
-        assert_eq!(entries[0].primary_label(), "Open config");
-        assert_eq!(entries[1].primary_label(), "Quick Note");
-        assert_eq!(entries[2].primary_label(), "Reopen");
-        assert_eq!(entries[3].primary_label(), "Viewer");
+        assert_eq!(entries[0].title, "Open config");
+        assert_eq!(entries[1].title, "Quick Note");
+        assert_eq!(entries[2].title, "Reopen");
+        assert_eq!(entries[3].title, "Viewer");
     }
 
     #[test]
     fn typed_query_with_equal_relevance_keeps_default_group_order() {
-        let mut entries = vec![
+        let entries = vec![
             PaletteEntry::Command {
                 command: PaletteCommand::Host(crate::host::keys::Action::OpenChangelog),
                 name: "Changelog",
@@ -4034,40 +4544,39 @@ mod tests {
             },
         ];
 
-        sort_palette_entries(&mut entries, "changelog");
+        let entries = ranked(entries, "changelog");
 
-        assert!(matches!(entries[0], PaletteEntry::View { .. }));
-        assert!(matches!(entries[1], PaletteEntry::Command { .. }));
+        assert_eq!(row_kind(&entries[0]), "view");
+        assert_eq!(row_kind(&entries[1]), "cmd");
     }
 
     #[test]
     fn palette_selection_follows_its_target_when_relevance_reorders_groups() {
-        let mut entries = vec![
-            todo_view_entry(),
-            registered_command_entry(file_explorer_command()),
-        ];
-        sort_palette_entries(&mut entries, "file");
-        // The user moves to the incidental Todo row.
-        let mut selected = 1;
-        let mut selected_key = Some(entries[1].selection_key());
-
-        // A rebuild with the same query, collected in a different order.
-        let mut rebuilt = vec![
-            registered_command_entry(file_explorer_command()),
-            todo_view_entry(),
-        ];
-        sort_palette_entries(&mut rebuilt, "file");
-        reconcile_palette_selection(&rebuilt, &mut selected, &mut selected_key);
-
-        assert_eq!(
-            action_for_palette_entry(&rebuilt[selected]),
-            Some(PaletteAction::OpenView("todo".to_string()))
+        let mut state = ranked_state(
+            vec![
+                todo_view_entry(),
+                registered_command_entry(file_explorer_command()),
+            ],
+            "file",
         );
+        // The user moves to the incidental Todo row.
+        state.apply(PickerCommand::Move(crate::host::picker::Step::Down));
+        // A rebuild with the same query, collected in a different order.
+        answer(
+            &mut state,
+            vec![
+                registered_command_entry(file_explorer_command()),
+                todo_view_entry(),
+            ],
+            "file",
+        );
+        let selected = state.selected().expect("selection kept");
+        assert_eq!(*selected, CommandRowId::View("todo".to_string()).key());
     }
 
     #[test]
     fn empty_palette_puts_user_commands_below_host_commands() {
-        let mut entries = vec![
+        let entries = vec![
             PaletteEntry::UserCommand {
                 name: "build".to_string(),
                 secondary: "cargo build".to_string(),
@@ -4090,16 +4599,16 @@ mod tests {
             },
         ];
 
-        sort_palette_entries(&mut entries, "");
+        let entries = ranked(entries, "");
 
-        assert!(matches!(entries[0], PaletteEntry::View { .. }));
-        assert!(matches!(entries[1], PaletteEntry::Command { .. }));
-        assert!(matches!(entries[2], PaletteEntry::UserCommand { .. }));
+        assert_eq!(row_kind(&entries[0]), "view");
+        assert_eq!(row_kind(&entries[1]), "cmd");
+        assert_eq!(row_kind(&entries[2]), "run");
     }
 
     #[test]
     fn typed_query_surfaces_user_command_by_name() {
-        let mut entries = vec![
+        let entries = vec![
             PaletteEntry::View {
                 // Only a substring match for "test" (inside "fastest").
                 id: "fastest".to_string(),
@@ -4119,9 +4628,9 @@ mod tests {
 
         // The exact-name user command outranks the app's mid-word substring,
         // so its group leads; each group stays one contiguous run.
-        sort_palette_entries(&mut entries, "test");
-        assert!(matches!(entries[0], PaletteEntry::UserCommand { .. }));
-        assert!(matches!(entries[1], PaletteEntry::View { .. }));
+        let entries = ranked(entries, "test");
+        assert_eq!(row_kind(&entries[0]), "run");
+        assert_eq!(row_kind(&entries[1]), "view");
     }
 
     #[test]
@@ -4165,105 +4674,114 @@ mod tests {
         );
     }
 
+    /// Every row kind has its own key, and the Commands answer maps each key
+    /// to the owned target activation runs.
     #[test]
-    fn agent_search_includes_state_and_active_tool() {
-        use crate::protocol::AgentState;
-
-        let search = searchable_text(&[
-            "implementer",
-            "build pane",
-            "squad-alpha",
-            agent_state_label(&AgentState::Blocked),
-            "Bash",
-        ]);
-        assert!(search.contains("blocked"));
-        assert!(search.contains("bash"));
-    }
-
-    #[test]
-    fn palette_selection_survives_reorder_and_clears_on_removal() {
-        let app = PaletteEntry::View {
-            id: "alpha".to_string(),
-            name: "Alpha".to_string(),
-            description: String::new(),
-            running_in_background: false,
-            is_workspace_local: false,
-            search_text: "alpha".to_string(),
-        };
-        let command = PaletteEntry::Command {
-            command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
-            name: "Open config",
-            description: "Edit config",
-            search_text: "open config",
-        };
-        let mut selected = 1;
-        let mut key = Some(command.selection_key());
-        let reordered = vec![command, app];
-
-        reconcile_palette_selection(&reordered, &mut selected, &mut key);
-        assert_eq!(selected, 0);
-        assert_eq!(key.as_deref(), Some("command:Host(OpenConfig)"));
-
-        reconcile_palette_selection(&reordered[1..], &mut selected, &mut key);
-        assert_eq!(key.as_deref(), Some(""));
-        assert!(key
-            .as_ref()
-            .and_then(|key| reordered[1..]
-                .iter()
-                .find(|entry| entry.selection_key() == *key))
-            .and_then(action_for_palette_entry)
-            .is_none());
-    }
-
-    #[test]
-    fn agent_mesh_gate_hook_reported_agent_focuses_when_off() {
-        let _experiments = crate::release::set_test_experiments(&[]);
-        // Hook-reported rows represent user-started agents, independently of mesh.
-        let entry = PaletteEntry::Agent {
-            context_id: 7,
-            window_id: 7,
-            pane_id: 42,
-            agent_name: "claude-code".into(),
-            secondary: String::new(),
-            state: crate::protocol::AgentState::Working,
-            focused: false,
-            search_text: "claude-code".into(),
-        };
-        assert_eq!(
-            action_for_palette_entry(&entry),
-            Some(PaletteAction::Focus(PaletteFocusTarget {
+    fn command_row_keys_are_distinct_and_answer_their_targets() {
+        let ids = [
+            CommandRowId::Command(file_explorer_command()),
+            CommandRowId::Command(PaletteCommand::StatePreset("okabe-ito")),
+            CommandRowId::Focus(PaletteFocusTarget {
                 context_id: 7,
-                window_id: 7,
-                pane_id: Some(42)
-            }))
-        );
-    }
-
-    #[test]
-    fn palette_mouse_and_enter_resolve_the_same_action() {
-        let _experiments =
-            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
-        let entry = PaletteEntry::Agent {
-            context_id: 7,
-            window_id: 7,
-            pane_id: 42,
-            agent_name: "reviewer".to_string(),
-            secondary: String::new(),
-            state: crate::protocol::AgentState::Blocked,
-            focused: false,
-            search_text: "reviewer blocked".to_string(),
-        };
-        let click = action_for_palette_entry(&entry);
-        let enter = action_for_palette_entry(&entry);
-        assert_eq!(
-            click,
-            Some(PaletteAction::Focus(PaletteFocusTarget {
-                context_id: 7,
-                window_id: 7,
+                window_id: 70,
                 pane_id: Some(42),
-            }))
+            }),
+            CommandRowId::Focus(PaletteFocusTarget {
+                context_id: 7,
+                window_id: 70,
+                pane_id: None,
+            }),
+            CommandRowId::Unavailable("parked/work".into()),
+            CommandRowId::View("todo".into()),
+            CommandRowId::Builtin("assistant"),
+            CommandRowId::Note(std::path::PathBuf::from("/tmp/notes/a:b.md")),
+            CommandRowId::UserCommand {
+                name: "deploy/all".into(),
+                scope: crate::cli::UserCommandScope::Global,
+            },
+            CommandRowId::UpdateReady("0.5.1".into()),
+        ];
+        let keys: std::collections::HashSet<_> = ids.iter().map(CommandRowId::key).collect();
+        assert_eq!(keys.len(), ids.len());
+
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        let note = std::path::PathBuf::from("/tmp/notes/a:b.md");
+        h.app.palette_notes = vec![note_entry(note.clone())];
+        h.app.open_command_palette("");
+        h.run_frames(1);
+        let answer = h.app.palette_answer.as_ref().expect("an installed answer");
+        let rows = h
+            .app
+            .host
+            .picker(PickerId::Palette)
+            .expect("palette")
+            .rows();
+        assert!(rows.iter().all(|row| answer.targets.contains_key(&row.key)));
+        assert_eq!(
+            answer.targets.get(&CommandRowId::Note(note.clone()).key()),
+            Some(&CommandRowId::Note(note))
         );
-        assert_eq!(click, enter);
+    }
+
+    /// Sources run in \`App::logic\`: an edit only starts a new generation,
+    /// and a logic-only pass (a hidden window skips \`ui\`) answers it.
+    #[test]
+    fn palette_query_is_answered_in_logic_not_on_the_draw_path() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        h.app.open_command_palette("");
+        h.run_frames(1);
+        h.app.set_palette_query("keyboard");
+        let picker = |h: &crate::testing::HostHarness| {
+            let picker = h.app.host.picker(PickerId::Palette).expect("palette");
+            (
+                picker.is_loading(),
+                picker.rows().first().map(|row| row.title.clone()),
+            )
+        };
+        assert!(picker(&h).0, "the edit ran no source on the draw path");
+        h.hidden_frame();
+        assert_eq!(
+            picker(&h),
+            (false, Some("Keyboard shortcuts".to_string())),
+            "the logic pass answered the edited query"
+        );
+    }
+
+    fn note_entry(path: std::path::PathBuf) -> crate::notes::NotePickerEntry {
+        crate::notes::NotePickerEntry {
+            title: path.display().to_string(),
+            path,
+            preview: String::new(),
+            search_text: String::new(),
+            tier_label: None,
+            modified: None,
+        }
+    }
+
+    /// Round 1 and 2: a note key is the native path, never its display.
+    /// `n\xff.md` and the literal `n\u{FFFD}.md` display the same and are two
+    /// keys. Restoring a `display()`-based key fails this.
+    #[cfg(unix)]
+    #[test]
+    fn note_keys_never_collide_on_display_lossy_paths() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/notes/n\xff.md"));
+        let lossy = std::path::PathBuf::from("/tmp/notes/n\u{FFFD}.md");
+        assert_eq!(raw.display().to_string(), lossy.display().to_string());
+        assert_ne!(
+            CommandRowId::Note(raw).key(),
+            CommandRowId::Note(lossy).key()
+        );
+    }
+
+    #[test]
+    fn palette_command_names_are_unique_row_ids() {
+        let mut names: Vec<_> = PALETTE_COMMANDS.iter().map(|entry| entry.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), PALETTE_COMMANDS.len());
     }
 
     #[test]
@@ -4416,252 +4934,6 @@ mod tests {
             context_id,
             tree_history: Default::default(),
         }
-    }
-
-    #[test]
-    fn agent_rows_collect_from_every_window_and_context() {
-        use crate::protocol::AgentState;
-
-        let squad = window_of(
-            7,
-            70,
-            vec![
-                (
-                    10,
-                    test_agent_pane(10, "claude", "impl-a", AgentState::Working, Some("Bash")),
-                ),
-                (
-                    11,
-                    test_agent_pane(11, "claude", "tester", AgentState::Blocked, None),
-                ),
-                (12, test_pane(12)),
-            ],
-            1,
-        );
-        let other_ctx = window_of(
-            8,
-            80,
-            vec![(
-                20,
-                test_agent_pane(20, "codex", "reviewer", AgentState::Idle, None),
-            )],
-            0,
-        );
-        let names = vec![(7, "squad-alpha".to_string()), (8, "plexi".to_string())];
-
-        let rows = palette_agent_rows(&[squad, other_ctx], &names);
-
-        // The non-agent pane is skipped; both contexts contribute.
-        assert_eq!(
-            rows.iter().map(|r| r.pane_id).collect::<Vec<_>>(),
-            vec![10, 11, 20]
-        );
-        assert_eq!(
-            rows.iter()
-                .map(|r| r.agent_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["impl-a", "tester", "reviewer"]
-        );
-        assert_eq!(
-            rows.iter()
-                .map(|r| r.context_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["squad-alpha", "squad-alpha", "plexi"]
-        );
-        // The stable window id must address the owning window, not the active one.
-        assert_eq!(rows[2].window_id, 80);
-        assert_eq!(
-            rows.iter()
-                .map(|r| r.context_agent_index)
-                .collect::<Vec<_>>(),
-            vec![1, 2, 1]
-        );
-        // Focus is per-window: pane 11 in the squad, pane 20 in the other context.
-        assert_eq!(
-            rows.iter().map(|r| r.focused).collect::<Vec<_>>(),
-            vec![false, true, true]
-        );
-        assert_eq!(rows[0].detail.as_deref(), Some("Bash"));
-    }
-
-    #[test]
-    fn squad_panes_sharing_a_title_and_agent_name_stay_distinguishable() {
-        use crate::protocol::AgentState;
-
-        // stint 0568 commonly launches the same agent command N times. Those
-        // panes can share both title and reported agent name.
-        let squad = window_of(
-            7,
-            70,
-            vec![
-                (
-                    10,
-                    test_agent_pane(10, "claude", "claude-code", AgentState::Working, None),
-                ),
-                (
-                    11,
-                    test_agent_pane(11, "claude", "claude-code", AgentState::Idle, None),
-                ),
-                (
-                    12,
-                    test_agent_pane(12, "claude", "claude-code", AgentState::Blocked, None),
-                ),
-            ],
-            0,
-        );
-        let names = vec![(7, "squad-alpha".to_string())];
-        let rows = palette_agent_rows(&[squad], &names);
-
-        let search: Vec<String> = rows
-            .iter()
-            .map(|r| {
-                searchable_text(&[
-                    r.agent_name.as_str(),
-                    r.pane_title.as_str(),
-                    r.context_name.as_str(),
-                ])
-            })
-            .collect();
-
-        // Search still reaches the whole squad, while the visible one-based
-        // positions distinguish otherwise identical rows.
-        assert_eq!(
-            search.iter().filter(|s| s.contains("claude")).count(),
-            3,
-            "the shared pane title must reach every squad member"
-        );
-        assert_eq!(
-            rows.iter()
-                .map(|r| r.context_agent_index)
-                .collect::<Vec<_>>(),
-            vec![1, 2, 3]
-        );
-        // The context name reaches the whole squad — jump by squad, then pick.
-        assert_eq!(
-            search.iter().filter(|s| s.contains("squad-alpha")).count(),
-            3
-        );
-    }
-
-    #[test]
-    fn blocked_agent_outranks_equally_scoring_agent() {
-        use crate::protocol::AgentState;
-
-        let agent = |agent_name: &str, state: AgentState| PaletteEntry::Agent {
-            context_id: 1,
-            window_id: 1,
-            pane_id: 10,
-            agent_name: agent_name.to_string(),
-            secondary: String::new(),
-            state,
-            focused: false,
-            search_text: "claude squad-alpha".to_string(),
-        };
-
-        let mut entries = vec![
-            agent("idle-one", AgentState::Idle),
-            agent("working-one", AgentState::Working),
-            agent("blocked-one", AgentState::Blocked),
-        ];
-        sort_palette_entries(&mut entries, "claude");
-
-        match &entries[0] {
-            PaletteEntry::Agent { agent_name, .. } => assert_eq!(agent_name, "blocked-one"),
-            other => panic!("expected an agent row first, got {:?}", other.group_rank()),
-        }
-        // Non-blocked rows keep their relative order — the sort is stable and
-        // state only breaks exact ties.
-        match (&entries[1], &entries[2]) {
-            (
-                PaletteEntry::Agent {
-                    agent_name: second, ..
-                },
-                PaletteEntry::Agent {
-                    agent_name: third, ..
-                },
-            ) => {
-                assert_eq!(second, "idle-one");
-                assert_eq!(third, "working-one");
-            }
-            _ => panic!("expected agent rows"),
-        }
-    }
-
-    #[test]
-    fn agent_state_never_reorders_other_result_types() {
-        use crate::protocol::AgentState;
-
-        // A blocked agent must not jump ahead of a context row that scores the
-        // same — state ordering is scoped to the agent group.
-        let mut entries = vec![
-            PaletteEntry::Context {
-                target: PaletteFocusTarget {
-                    context_id: 1,
-                    window_id: 1,
-                    pane_id: None,
-                },
-                name: "claude-ctx".to_string(),
-                workspace_name: String::new(),
-                metadata_chips: vec!["ctx"],
-                pane_pips: None,
-                search_text: "claude-ctx".to_string(),
-            },
-            PaletteEntry::Agent {
-                context_id: 1,
-                window_id: 1,
-                pane_id: 10,
-                agent_name: "blocked-one".to_string(),
-                secondary: String::new(),
-                state: AgentState::Blocked,
-                focused: false,
-                search_text: "claude-ctx".to_string(),
-            },
-        ];
-        sort_palette_entries(&mut entries, "claude");
-
-        assert!(matches!(entries[0], PaletteEntry::Context { .. }));
-        assert!(matches!(entries[1], PaletteEntry::Agent { .. }));
-    }
-
-    #[test]
-    fn agent_secondary_reads_context_state_and_active_tool() {
-        use crate::protocol::AgentState;
-
-        assert_eq!(
-            agent_row_secondary("squad-alpha", 2, &AgentState::Working, Some("Bash")),
-            "squad-alpha · agent 2 · working · Bash"
-        );
-        assert_eq!(
-            agent_row_secondary("squad-alpha", 1, &AgentState::Blocked, None),
-            "squad-alpha · agent 1 · blocked"
-        );
-        // An empty detail string is not a detail.
-        assert_eq!(
-            agent_row_secondary("plexi", 3, &AgentState::Idle, Some("")),
-            "plexi · agent 3 · idle"
-        );
-        // A context with no resolvable name still yields a usable line.
-        assert_eq!(
-            agent_row_secondary("", 1, &AgentState::Idle, None),
-            "agent 1 · idle"
-        );
-    }
-
-    #[test]
-    fn agent_row_falls_back_to_pane_title_when_the_hook_reports_no_name() {
-        use crate::protocol::AgentState;
-
-        let win = window_of(
-            7,
-            70,
-            vec![(
-                10,
-                test_agent_pane(10, "claude", "", AgentState::Idle, None),
-            )],
-            0,
-        );
-        let rows = palette_agent_rows(&[win], &[(7, "squad-alpha".to_string())]);
-        assert_eq!(rows[0].agent_name, "claude");
     }
 
     #[test]
@@ -4903,12 +5175,10 @@ mod tests {
     /// Open the palette, type `query`, and press Enter through the real
     /// frame path so the open-palette selection code runs end to end.
     fn run_open_palette(h: &mut crate::testing::HostHarness, query: &str) {
-        h.app.show_command_palette = true;
-        h.app.palette_query = query.to_string();
-        h.app.sync_command_palette_focus();
+        h.app.open_command_palette(query);
         h.run_frames(3);
         assert!(
-            h.app.show_command_palette,
+            h.app.command_palette_open(),
             "palette must stay open for {query:?}"
         );
         h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
@@ -4923,7 +5193,7 @@ mod tests {
         h.app.ui_scale_persist_at = None;
         run_open_palette(&mut h, "reset ui scale");
         assert_eq!(h.app.ui_scale, 1.0);
-        assert!(!h.app.show_command_palette);
+        assert!(!h.app.command_palette_open());
         assert!(
             h.app.ui_scale_persist_at.is_some(),
             "palette scale change must schedule persistence like the shortcut"
@@ -4950,7 +5220,7 @@ mod tests {
         assert_eq!(font(&h), initial + 2.0);
         run_open_palette(&mut h, "reset text size");
         assert_eq!(font(&h), initial);
-        assert!(!h.app.show_command_palette);
+        assert!(!h.app.command_palette_open());
     }
 
     #[test]
@@ -5064,6 +5334,7 @@ mod tests {
         h.focus_pane(pane).run_frames(2);
         let before = h.pane_count();
         h.app.attention_queue.open = true;
+        h.app.sync_attention_queue_layer();
         palette_action(&mut h, Action::ClosePane);
         assert!(
             !h.app.attention_queue.open,
@@ -5081,6 +5352,7 @@ mod tests {
         use crate::host::keys::Action;
         let mut h = crate::testing::HostHarness::new();
         h.app.attention_queue.open = true;
+        h.app.sync_attention_queue_layer();
         palette_action(&mut h, Action::ContextZoomOut);
         assert!(!h.app.attention_queue.open);
     }
@@ -5567,7 +5839,7 @@ mod tests {
 
         // Open the palette in this workspace via Cmd+P: no user commands yet.
         h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
-        assert!(h.app.show_command_palette);
+        assert!(h.app.command_palette_open());
         assert_eq!(
             h.app.palette_workspace_root.as_deref(),
             Some(ws_root.as_path())
@@ -5578,9 +5850,8 @@ mod tests {
         );
 
         // Select "Edit commands": creates commands.toml from template and opens a split editor.
-        h.app
-            .run_palette_selection(PaletteAction::RunCommand(PaletteCommand::EditCommands));
-        assert!(!h.app.show_command_palette);
+        click_row(&mut h, CommandRowId::Command(PaletteCommand::EditCommands));
+        assert!(!h.app.command_palette_open());
         assert!(
             commands_path.exists(),
             "Edit commands must create commands.toml from template when absent"
@@ -5612,7 +5883,7 @@ mod tests {
 
         // Reopen the palette via Cmd+P: `hello` hot-reloads into `palette_commands`.
         h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
-        assert!(h.app.show_command_palette);
+        assert!(h.app.command_palette_open());
         let hello = h
             .app
             .palette_commands
@@ -5645,7 +5916,7 @@ mod tests {
         assert!(!global_commands.exists());
 
         h.app
-            .run_palette_selection(PaletteAction::RunCommand(PaletteCommand::EditCommands));
+            .run_palette_selection(CommandRowId::Command(PaletteCommand::EditCommands));
 
         assert!(
             global_commands.exists(),
@@ -5764,7 +6035,7 @@ steps = [
         // 2. Trigger `play` from the Command Palette and verify it also opens two panes.
         let before_palette = h.pane_count();
         h.app.palette_commands = crate::cli::resolve_user_commands(Some(&ws_root));
-        h.app.run_palette_selection(PaletteAction::RunUserCommand {
+        h.app.run_palette_selection(CommandRowId::UserCommand {
             name: "play".to_string(),
             scope: crate::cli::UserCommandScope::Workspace,
         });
@@ -5859,8 +6130,7 @@ steps = [
 
         // Open Edit commands in a workspace: opens workspace commands.toml with `[workspace]` scope.
         h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
-        h.app
-            .run_palette_selection(PaletteAction::RunCommand(PaletteCommand::EditCommands));
+        click_row(&mut h, CommandRowId::Command(PaletteCommand::EditCommands));
         assert_eq!(h.pane_count(), 2);
 
         let editor_pane_id = h
@@ -5882,9 +6152,8 @@ steps = [
         // Switch scope via `PaletteCommand::SwitchCommandsScope`: switches in-place to global
         // commands.toml without opening a second editor pane.
         h.focus_pane(editor_pane_id);
-        h.app.run_palette_selection(PaletteAction::RunCommand(
-            PaletteCommand::SwitchCommandsScope,
-        ));
+        h.app
+            .run_palette_selection(CommandRowId::Command(PaletteCommand::SwitchCommandsScope));
         assert_eq!(
             h.pane_count(),
             2,
@@ -5922,7 +6191,7 @@ steps = [
             .expect("saved global commands.toml must immediately populate palette_commands");
         assert_eq!(global_cmd.scope, crate::cli::UserCommandScope::Global);
         assert_eq!(global_cmd.run.as_deref(), Some("echo from_global"));
-        h.app.show_command_palette = false;
+        h.app.close_command_palette();
 
         // Switch back to workspace scope in-place.
         assert!(h
@@ -5976,7 +6245,7 @@ split = true
         );
         let count_before = h.pane_count();
         h.terminal_backend(term).enable_input_tap();
-        h.app.run_palette_selection(PaletteAction::RunUserCommand {
+        h.app.run_palette_selection(CommandRowId::UserCommand {
             name: "in_place".to_string(),
             scope: crate::cli::UserCommandScope::Workspace,
         });
@@ -6084,7 +6353,7 @@ split = true
             .palette_commands
             .iter()
             .any(|c| c.name == "beta" && c.run.as_deref() == Some("pane name BetaAdded")));
-        h.app.show_command_palette = false;
+        h.app.close_command_palette();
         h.app.palette_workspace_root = None;
 
         // 2. `[keys]` `run:<name>` (`queue_user_command`) executes updated `alpha` and new `beta`.
@@ -6106,7 +6375,7 @@ split = true
         std::fs::write(&ws_commands, "[commands]\nalpha = \"pane name AlphaV2\"\n").unwrap();
         h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
         assert!(!h.app.palette_commands.iter().any(|c| c.name == "beta"));
-        h.app.show_command_palette = false;
+        h.app.close_command_palette();
         h.app.palette_workspace_root = None;
         h.app.queue_user_command("beta", None);
         h.hidden_frame();

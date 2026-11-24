@@ -123,9 +123,10 @@ impl PlexiApp {
         if let Some(request) = monitor.list_pending().first() {
             self.approval_keyboard
                 .focus(request.pending_request_id.clone(), Instant::now());
-            self.focus_stack
-                .retain(|kind| *kind != FocusKind::ApprovalBanner);
-            self.push_focus_layer(FocusKind::ApprovalBanner);
+            self.focus_stack.open(
+                FocusKind::ApprovalBanner,
+                Some(request.pending_request_id.clone()),
+            );
             log::info!("approval: focused id={}", request.pending_request_id);
             self.ctx.request_repaint_after(ARM_DELAY);
         } else if let Some(item) =
@@ -134,8 +135,7 @@ impl PlexiApp {
             self.approval_keyboard
                 .focus(item.id.clone(), Instant::now());
             self.focus_stack
-                .retain(|kind| *kind != FocusKind::ApprovalBanner);
-            self.push_focus_layer(FocusKind::ApprovalBanner);
+                .open(FocusKind::ApprovalBanner, Some(item.id.clone()));
             log::info!(
                 "approval: focused needs_you id={} kind={}",
                 item.id,
@@ -149,8 +149,7 @@ impl PlexiApp {
             self.approval_keyboard
                 .focus(done_item.id.clone(), Instant::now());
             self.focus_stack
-                .retain(|kind| *kind != FocusKind::ApprovalBanner);
-            self.push_focus_layer(FocusKind::ApprovalBanner);
+                .open(FocusKind::ApprovalBanner, Some(done_item.id.clone()));
             log::info!("approval: focused agent_done id={}", done_item.id);
             self.ctx.request_repaint_after(ARM_DELAY);
         }
@@ -158,8 +157,17 @@ impl PlexiApp {
 
     pub(super) fn leave_approval(&mut self) {
         self.approval_keyboard.leave_focus();
-        self.focus_stack
-            .retain(|kind| *kind != FocusKind::ApprovalBanner);
+        self.focus_stack.dismiss(FocusKind::ApprovalBanner);
+    }
+
+    /// Whether the stack's top is the banner's opening for the request the
+    /// keyboard is focused on.
+    pub(super) fn approval_banner_on_top(&self) -> bool {
+        self.focus_stack.top_opening().is_some_and(|opening| {
+            opening.kind == FocusKind::ApprovalBanner
+                && opening.request.is_some()
+                && opening.request == self.approval_keyboard.id
+        })
     }
 
     /// Called before host bindings and pane dispatch on every input frame.
@@ -554,9 +562,7 @@ mod tests {
         assert_eq!(h.app.approval_keyboard.id.as_ref(), Some(&id));
         let now = Instant::now();
         h.app.approval_keyboard.guard.set_since(now - ARM_DELAY);
-        h.app
-            .focus_stack
-            .retain(|kind| *kind != FocusKind::ApprovalBanner);
+        h.app.focus_stack.dismiss(FocusKind::ApprovalBanner);
         h.run_frames(1);
         h.app.push_focus_layer(FocusKind::ApprovalBanner);
         assert!(h.app.approval_keyboard.id.is_none());

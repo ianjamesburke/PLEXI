@@ -628,9 +628,6 @@ impl PlexiApp {
         if self.zoom.level != ZoomLevel::Columns {
             return false;
         }
-        if self.attention_queue.decision_overlay.is_some() || self.attention_queue.open {
-            return false;
-        }
         if self.overlay_surface().is_some() {
             return false;
         }
@@ -762,11 +759,13 @@ impl PlexiApp {
     pub fn zoom_out_or_close_surface(&mut self) -> bool {
         if self.attention_queue.decision_overlay.is_some() {
             self.attention_queue.decision_overlay = None;
+            self.sync_attention_queue_layer();
             log::info!("zoom: Cmd+Esc closed DecisionOverlay");
             return true;
         }
         if self.attention_queue.open {
             self.attention_queue.open = false;
+            self.sync_attention_queue_layer();
             log::info!("zoom: Cmd+Esc closed AttentionQueue list");
             return true;
         }

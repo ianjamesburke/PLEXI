@@ -79,13 +79,12 @@ fn screenshot_command_palette_metadata_lane() {
             context_id: ctx_id,
             tree_history: Default::default(),
         });
-        app.show_command_palette = true;
-        app.sync_command_palette_focus();
+        app.open_command_palette("");
     });
     h.run_steps(3);
     h.save_screenshot(&evidence_png!()).expect("render failed");
     assert!(
-        h.with_app(|app| app.show_command_palette
+        h.with_app(|app| app.command_palette_open()
             && app.windows[app.active_window]
                 .panes
                 .contains_key(&first_pane_id)),
@@ -107,11 +106,7 @@ fn palette_close_selected_row_by_pointer_closes_the_selection() {
     h.run_steps(1);
     let window = h.with_app(|app| app.windows[app.active_window].window_id);
     h.with_app_mut(|app| {
-        app.show_command_palette = true;
-        app.palette_query = "close selected".into();
-        app.palette_selected = 0;
-        app.palette_selected_key = None;
-        app.sync_command_palette_focus();
+        app.open_command_palette("close selected");
     });
     h.run_steps(3);
     let row = h.harness().get_by_label("Close selected panes").rect();
@@ -161,11 +156,7 @@ fn palette_wrap_row_by_pointer_wraps_the_selection() {
     h.run_steps(1);
     let parent = h.with_app(|app| app.router.active().context_id);
     h.with_app_mut(|app| {
-        app.show_command_palette = true;
-        app.palette_query = "wrap selection".into();
-        app.palette_selected = 0;
-        app.palette_selected_key = None;
-        app.sync_command_palette_focus();
+        app.open_command_palette("wrap selection");
     });
     h.run_steps(3);
     let row = h.harness().get_by_label("Wrap selection or enter pane").rect();
@@ -322,15 +313,11 @@ fn seed_palette_agent_panes(h: &mut PlexiUiHarness) -> (u64, u64, u64) {
 /// read by walking the selection down the list.
 fn palette_result_keys(h: &mut PlexiUiHarness, query: &str) -> Vec<String> {
     h.with_app_mut(|app| {
-        app.show_command_palette = true;
-        app.palette_query = query.to_string();
-        app.palette_selected = 0;
-        app.palette_selected_key = None;
-        app.sync_command_palette_focus();
+        app.open_command_palette(query);
     });
     h.run_steps(2);
     let mut keys: Vec<String> = Vec::new();
-    while let Some(key) = h.with_app(|app| app.palette_selected_key.clone()) {
+    while let Some(key) = h.with_app(|app| app.palette_selected_key()) {
         if keys.last() == Some(&key) {
             break;
         }
@@ -344,7 +331,7 @@ fn palette_result_keys(h: &mut PlexiUiHarness, query: &str) -> Vec<String> {
 
 fn keys_for_pane(keys: &[String], pane_id: u64) -> Vec<&String> {
     keys.iter()
-        .filter(|key| key.rsplit(':').next() == Some(pane_id.to_string().as_str()))
+        .filter(|key| key.rsplit('/').next() == Some(pane_id.to_string().as_str()))
         .collect()
 }
 
@@ -370,7 +357,7 @@ fn palette_finds_agent_pane_by_name_with_default_config() {
     assert_eq!(
         keys_for_pane(&keys, active_id),
         vec![&format!(
-            "context:{}:{}:{active_id}",
+            "commands:focus/{}/{}/{active_id}",
             h.with_app(|app| app.router.active().context_id),
             h.with_app(|app| app.windows[app.active_window].window_id)
         )],
@@ -384,14 +371,21 @@ fn palette_finds_agent_pane_by_name_with_default_config() {
     let hits = keys_for_pane(&keys, inactive_id);
     assert_eq!(hits.len(), 1, "inactive agent pane found by name: {keys:?}");
     assert!(
-        hits[0].starts_with(&format!("context:{inactive_ctx}:")),
+        hits[0].starts_with(&format!("commands:focus/{inactive_ctx}/")),
         "as a pane row in its own context: {hits:?}"
     );
     for query in ["plexi-pm", "night-shift"] {
         palette_result_keys(&mut h, query);
         h.with_app_mut(|app| {
-            app.palette_selected = 0;
-            app.palette_selected_key = None;
+            let rows = app
+                .host
+                .picker(crate::host::picker::PickerId::Palette)
+                .map_or(0, |picker| picker.rows().len());
+            for _ in 0..rows {
+                app.apply_palette_command(crate::host::picker::PickerCommand::Move(
+                    crate::host::picker::Step::Up,
+                ));
+            }
         });
         h.run_steps(3);
         h.save_screenshot(&evidence_png!(format!("_{query}")))
@@ -399,10 +393,11 @@ fn palette_finds_agent_pane_by_name_with_default_config() {
     }
 }
 
-/// Stint 1621: with `agents.palette_agent_results = true`, an agent pane
-/// is listed exactly once, as its Agent row, never also as a pane row.
+/// Stint 1391: agents and files have their own stops. Even with the
+/// retired `agents.palette_agent_results` set, an agent pane is listed
+/// once, as a pane row, and no row comes from another stop's source.
 #[test]
-fn palette_lists_agent_pane_once_when_agent_rows_enabled() {
+fn commands_stop_never_lists_files_or_agents() {
     let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
     h.with_app_mut(|app| {
         app.config
@@ -418,20 +413,24 @@ fn palette_lists_agent_pane_once_when_agent_rows_enabled() {
         ("night-shift", inactive_id),
     ] {
         let keys = palette_result_keys(&mut h, query);
+        assert!(
+            keys.iter().all(|key| key.starts_with("commands:")),
+            "query {query:?}: only Commands-source rows: {keys:?}"
+        );
         let hits = keys_for_pane(&keys, pane_id);
         assert_eq!(hits.len(), 1, "query {query:?}: exactly one row: {keys:?}");
         assert!(
-            hits[0].starts_with("agent:"),
-            "query {query:?}: the agent row: {hits:?}"
+            hits[0].starts_with("commands:focus/"),
+            "query {query:?}: the pane row: {hits:?}"
         );
     }
-    palette_result_keys(&mut h, "plexi-pm");
-    h.with_app_mut(|app| {
-        app.palette_selected = 0;
-        app.palette_selected_key = None;
+    h.with_app(|app| {
+        let picker = app
+            .host
+            .picker(crate::host::picker::PickerId::Palette)
+            .expect("palette picker");
+        assert_eq!(picker.active_stop().id, "commands");
     });
-    h.run_steps(3);
-    h.save_screenshot(&evidence_png!()).expect("render failed");
 }
 
 /// Visual review surface for stint 0565: the palette rendering an agent
@@ -441,12 +440,6 @@ fn palette_lists_agent_pane_once_when_agent_rows_enabled() {
 #[test]
 fn screenshot_command_palette_agent_fleet() {
     let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
-    h.with_app_mut(|app| {
-        app.config
-            .agents
-            .get_or_insert_with(Default::default)
-            .palette_agent_results = Some(true)
-    });
     add_focused_pane(&mut h);
     let browser_root = h.workspace.path().to_path_buf();
 
@@ -601,36 +594,28 @@ fn screenshot_command_palette_agent_fleet() {
         });
         app.next_window_id += 1;
 
-        app.show_command_palette = true;
-        app.palette_selected = 0;
-        app.sync_command_palette_focus();
+        app.open_command_palette("");
     });
 
     h.run_steps(3);
     h.save_screenshot(&evidence_png!()).expect("render failed");
 
     h.with_app_mut(|app| {
-        app.palette_query = "squad-alpha".to_string();
-        app.palette_selected = 0;
-        app.palette_selected_key = None;
+        app.set_palette_query("squad-alpha");
     });
     h.run_steps(3);
     h.save_screenshot(&evidence_png!("_context"))
         .expect("render failed");
 
     h.with_app_mut(|app| {
-        app.palette_query = "build log".to_string();
-        app.palette_selected = 0;
-        app.palette_selected_key = None;
+        app.set_palette_query("build log");
     });
     h.run_steps(3);
     h.save_screenshot(&evidence_png!("_pane"))
         .expect("render failed");
 
     h.with_app_mut(|app| {
-        app.palette_query = " blocked ".to_string();
-        app.palette_selected = 0;
-        app.palette_selected_key = None;
+        app.set_palette_query(" blocked ");
     });
     h.run_steps(3);
     h.save_screenshot(&evidence_png!("_agent"))
@@ -645,7 +630,7 @@ fn screenshot_command_palette_agent_fleet() {
         .expect("render failed");
 
     assert!(
-        h.with_app(|app| app.show_command_palette && app.palette_agent_count_logged == Some(4)),
+        h.with_app(|app| app.command_palette_open()),
         "the palette should be open over all four agent panes"
     );
     println!(
@@ -666,8 +651,7 @@ fn screenshot_catppuccin_latte_command_palette() {
             crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
         );
         crate::ui::theme::setup_style(&app.ctx, &app.colors);
-        app.show_command_palette = true;
-        app.sync_command_palette_focus();
+        app.open_command_palette("");
     });
     h.run_steps(3);
     let img = h.render().expect("render failed");
@@ -721,14 +705,12 @@ fn screenshot_command_palette_user_commands() {
                 split: false,
             },
         ];
-        app.show_command_palette = true;
-        app.palette_selected = 0;
-        app.sync_command_palette_focus();
+        app.open_command_palette("");
     });
     h.run_steps(3);
     h.save_screenshot(&evidence_png!()).expect("render failed");
     assert!(
-        h.with_app(|app| app.show_command_palette && app.palette_commands.len() == 3),
+        h.with_app(|app| app.command_palette_open() && app.palette_commands.len() == 3),
         "palette should be open with the injected user commands"
     );
     println!("Screenshot saved to {}", evidence_png!());
@@ -749,9 +731,7 @@ fn command_palette_keeps_search_focus_after_scrolled_down_nav() {
                 modified: None,
             })
             .collect();
-        app.show_command_palette = true;
-        app.palette_selected = 0;
-        app.sync_command_palette_focus();
+        app.open_command_palette("");
     });
 
     h.run_steps(2);
@@ -763,8 +743,8 @@ fn command_palette_keeps_search_focus_after_scrolled_down_nav() {
 
     let (open, selected, focused) = h.with_app(|app| {
         (
-            app.show_command_palette,
-            app.palette_selected,
+            app.command_palette_open(),
+            app.palette_selected_index().unwrap_or(0),
             app.ctx.memory(|m| m.focused()),
         )
     });
@@ -780,5 +760,584 @@ fn command_palette_keeps_search_focus_after_scrolled_down_nav() {
         focused,
         Some(egui::Id::new("palette_search")),
         "palette search must keep focus after scrolling down past the first page"
+    );
+}
+
+// ── Stint 1391: the picker through the production input path ──
+
+fn palette_picker(h: &PlexiUiHarness) -> (String, &'static str, Option<String>) {
+    h.with_app(|app| {
+        let picker = app
+            .host
+            .picker(crate::host::picker::PickerId::Palette)
+            .expect("palette picker");
+        (
+            picker.query().to_owned(),
+            picker.active_stop().id,
+            app.palette_selected_key(),
+        )
+    })
+}
+
+fn type_palette_text(h: &mut PlexiUiHarness, text: &str) {
+    for ch in text.chars() {
+        let key = egui::Key::from_name(&ch.to_string()).expect("letter key");
+        h.harness().key_press(key);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text(ch.to_string()));
+        h.step();
+    }
+}
+
+/// Stint 1391: Cmd+P then typing a, b, c reads "abc" in the field and in
+/// the picker's one query; no key the picker claims writes into it.
+#[test]
+fn palette_typing_abc_reads_abc() {
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    add_focused_pane(&mut h);
+    h.step();
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+    h.run_steps(2);
+    assert!(h.with_app(|app| app.command_palette_open()));
+    type_palette_text(&mut h, "abc");
+    h.run_steps(2);
+    assert_eq!(palette_picker(&h).0, "abc");
+    assert!(
+        h.harness().query_all_by_value("abc").next().is_some(),
+        "the field shows the picker's query"
+    );
+    for (modifiers, key) in [
+        (egui::Modifiers::NONE, egui::Key::ArrowDown),
+        (egui::Modifiers::NONE, egui::Key::ArrowUp),
+        (egui::Modifiers::NONE, egui::Key::Tab),
+        (egui::Modifiers::SHIFT, egui::Key::Tab),
+        (egui::Modifiers::COMMAND, egui::Key::J),
+        (egui::Modifiers::COMMAND, egui::Key::K),
+    ] {
+        h.harness().key_press_modifiers(modifiers, key);
+        h.step();
+        assert_eq!(palette_picker(&h).0, "abc", "{modifiers:?}+{key:?}");
+        assert_eq!(
+            h.with_app(|app| app.ctx.memory(|m| m.focused())),
+            Some(egui::Id::new("palette_search")),
+            "{modifiers:?}+{key:?} keeps focus in the palette field"
+        );
+        assert!(
+            h.harness().query_by_label("Empty directory").is_some(),
+            "{modifiers:?}+{key:?} never reaches the explorer behind the palette"
+        );
+    }
+    h.save_screenshot(&evidence_png!()).expect("render failed");
+}
+
+const KEYBOARD_ROW: &str = "commands:cmd/Keyboard shortcuts";
+
+fn press(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+fn enter() -> egui::Event {
+    press(egui::Key::Enter, egui::Modifiers::NONE)
+}
+
+fn down() -> egui::Event {
+    press(egui::Key::ArrowDown, egui::Modifiers::NONE)
+}
+
+fn up() -> egui::Event {
+    press(egui::Key::ArrowUp, egui::Modifiers::NONE)
+}
+
+fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+/// One delivery: every event reaches the host in one egui pass, in order.
+fn deliver(h: &mut PlexiUiHarness, events: Vec<egui::Event>) {
+    h.harness().input_mut().events.extend(events);
+    h.step();
+}
+
+fn palette_activations() -> Vec<String> {
+    crate::overlays::command_palette::palette_test_log::take_activations()
+}
+
+fn palette_row_keys(h: &PlexiUiHarness) -> Vec<String> {
+    h.with_app(|app| {
+        app.host
+            .picker(crate::host::picker::PickerId::Palette)
+            .map(|picker| {
+                picker
+                    .rows()
+                    .iter()
+                    .map(|row| row.key.as_str().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+fn palette_row_title(h: &PlexiUiHarness, index: usize) -> String {
+    h.with_app(|app| {
+        app.host
+            .picker(crate::host::picker::PickerId::Palette)
+            .expect("palette picker")
+            .rows()[index]
+            .title
+            .clone()
+    })
+}
+
+/// Close whatever the last activation opened, then open the palette with
+/// Cmd+P and let its first answer land. Returns the presented row keys.
+fn reopen_palette(h: &mut PlexiUiHarness) -> Vec<String> {
+    if h.with_app(|app| app.command_palette_open()) {
+        h.harness().key_press(egui::Key::Escape);
+        h.run_steps(2);
+    }
+    if h.with_app(|app| app.show_shortcuts) {
+        h.harness().key_press(egui::Key::Escape);
+        h.run_steps(2);
+    }
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+    h.run_steps(3);
+    assert!(h.with_app(|app| app.command_palette_open()));
+    palette_activations();
+    let keys = palette_row_keys(h);
+    assert!(
+        keys.len() >= 3,
+        "the palette lists rows to choose: {keys:?}"
+    );
+    assert_ne!(keys[0], KEYBOARD_ROW);
+    assert_ne!(keys[1], KEYBOARD_ROW);
+    keys
+}
+
+fn palette_harness() -> PlexiUiHarness {
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    add_focused_pane(&mut h);
+    h.step();
+    h
+}
+
+/// Stint 1391 review round 1: Enter acts at its position in the input
+/// stream. Text before it is the query it accepts; text after it belongs
+/// to the closed session and never reaches the pane behind the palette.
+#[test]
+fn palette_enter_acts_at_its_position_in_the_input_stream() {
+    let mut h = palette_harness();
+    let ime_commit = |text: &str| {
+        vec![
+            egui::Event::Ime(egui::ImeEvent::Enabled),
+            egui::Event::Ime(egui::ImeEvent::Preedit(text.to_owned())),
+            egui::Event::Ime(egui::ImeEvent::Commit(text.to_owned())),
+            egui::Event::Ime(egui::ImeEvent::Disabled),
+        ]
+    };
+    for (label, edit) in [
+        ("text", vec![egui::Event::Text("keyboard".into())]),
+        ("paste", vec![egui::Event::Paste("keyboard".into())]),
+        ("ime", ime_commit("keyboard")),
+    ] {
+        reopen_palette(&mut h);
+        let mut events = edit.clone();
+        events.push(enter());
+        deliver(&mut h, events);
+        h.run_steps(3);
+        assert_eq!(
+            palette_activations(),
+            vec![KEYBOARD_ROW.to_owned()],
+            "{label} then Enter runs the edited query's best match"
+        );
+
+        let keys = reopen_palette(&mut h);
+        let mut events = vec![enter()];
+        events.extend(edit);
+        deliver(&mut h, events);
+        h.run_steps(3);
+        assert_eq!(
+            palette_activations(),
+            vec![keys[0].clone()],
+            "Enter then {label} runs the row selected before the edit"
+        );
+        assert!(
+            h.harness().query_by_label("Empty directory").is_some(),
+            "{label}: nothing reached the explorer behind the palette"
+        );
+    }
+}
+
+/// Stint 1391 review round 2: keys translate in arrival order, so Enter
+/// before an arrow accepts the row it saw, and clamped arrows count one
+/// by one.
+#[test]
+fn palette_keys_act_in_arrival_order() {
+    let mut h = palette_harness();
+    let cmd = egui::Modifiers::COMMAND;
+    let cases: Vec<(&str, Vec<egui::Event>, usize)> = vec![
+        ("Enter, Down", vec![enter(), down()], 0),
+        ("Down, Enter", vec![down(), enter()], 1),
+        (
+            "Down, Down, Up, Enter",
+            vec![down(), down(), up(), enter()],
+            1,
+        ),
+        ("Up, Down, Enter", vec![up(), down(), enter()], 1),
+        (
+            "Cmd+J, Cmd+J, Cmd+K, Enter",
+            vec![
+                press(egui::Key::J, cmd),
+                press(egui::Key::J, cmd),
+                press(egui::Key::K, cmd),
+                enter(),
+            ],
+            1,
+        ),
+    ];
+    for (label, events, expected) in cases {
+        let keys = reopen_palette(&mut h);
+        deliver(&mut h, events);
+        h.run_steps(3);
+        assert_eq!(
+            palette_activations(),
+            vec![keys[expected].clone()],
+            "{label}"
+        );
+    }
+}
+
+/// Stint 1391 review round 2: a pointer over rows painted for an older
+/// query never chooses what a pending Enter runs, before or after the
+/// Enter. A stale click alone runs nothing; a hover on current rows does.
+#[test]
+fn palette_stale_pointer_never_redirects_enter() {
+    let mut h = palette_harness();
+    let away = egui::pos2(4.0, 4.0);
+    let row_center = |h: &mut PlexiUiHarness| {
+        let title = palette_row_title(h, 1);
+        h.harness().get_by_label(&title).rect().center()
+    };
+
+    reopen_palette(&mut h);
+    let b = row_center(&mut h);
+    deliver(&mut h, vec![egui::Event::PointerMoved(away)]);
+    deliver(
+        &mut h,
+        vec![
+            egui::Event::Paste("keyboard".into()),
+            egui::Event::PointerMoved(b),
+            enter(),
+        ],
+    );
+    h.run_steps(3);
+    assert_eq!(
+        palette_activations(),
+        vec![KEYBOARD_ROW.to_owned()],
+        "move before Enter"
+    );
+
+    reopen_palette(&mut h);
+    let b = row_center(&mut h);
+    deliver(&mut h, vec![egui::Event::PointerMoved(away)]);
+    deliver(
+        &mut h,
+        vec![
+            egui::Event::Paste("keyboard".into()),
+            enter(),
+            egui::Event::PointerMoved(b),
+        ],
+    );
+    h.run_steps(3);
+    assert_eq!(
+        palette_activations(),
+        vec![KEYBOARD_ROW.to_owned()],
+        "move after Enter"
+    );
+
+    reopen_palette(&mut h);
+    let b = row_center(&mut h);
+    deliver(&mut h, vec![egui::Event::PointerMoved(away)]);
+    deliver(
+        &mut h,
+        vec![
+            egui::Event::Paste("keyboard".into()),
+            egui::Event::PointerMoved(b),
+            pointer_button(b, true),
+            pointer_button(b, false),
+        ],
+    );
+    h.run_steps(3);
+    assert!(
+        palette_activations().is_empty(),
+        "a stale click runs nothing"
+    );
+
+    let keys = reopen_palette(&mut h);
+    let b = row_center(&mut h);
+    deliver(&mut h, vec![egui::Event::PointerMoved(away)]);
+    deliver(&mut h, vec![egui::Event::PointerMoved(b)]);
+    deliver(&mut h, vec![enter()]);
+    h.run_steps(3);
+    assert_eq!(
+        palette_activations(),
+        vec![keys[1].clone()],
+        "current hover, then Enter"
+    );
+}
+
+/// Stint 1391: an Enter that waits for the edited query's rows freezes
+/// the arrows before it and ignores the ones after; it runs once.
+#[test]
+fn palette_pending_enter_keeps_its_ordered_moves() {
+    let mut h = palette_harness();
+    reopen_palette(&mut h);
+    deliver(&mut h, vec![egui::Event::Paste("pane".into())]);
+    h.run_steps(2);
+    let expected = palette_row_keys(&h);
+    assert!(expected.len() >= 3, "query 'pane' lists rows: {expected:?}");
+
+    reopen_palette(&mut h);
+    deliver(
+        &mut h,
+        vec![egui::Event::Paste("pane".into()), down(), enter(), down()],
+    );
+    h.run_steps(4);
+    assert_eq!(palette_activations(), vec![expected[1].clone()]);
+}
+
+/// Two file-browser panes side by side, the left one focused.
+fn palette_over_two_panes() -> (PlexiUiHarness, PaneId, PaneId) {
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    let left = add_focused_pane(&mut h);
+    let right = add_focused_pane(&mut h);
+    h.with_app_mut(|app| {
+        let w = app.active_window;
+        let tree = &mut app.windows[w].tree;
+        let tiles = [left, right].map(|p| tree.tiles.find_pane(&p).expect("pane tile"));
+        tree.root = Some(tree.tiles.insert_horizontal_tile(tiles.to_vec()));
+        app.windows[w].focused_pane = Some(tiles[0]);
+    });
+    h.run_steps(3);
+    (h, left, right)
+}
+
+fn focused_pane_id(h: &PlexiUiHarness) -> Option<PaneId> {
+    h.with_app(|app| {
+        let win = &app.windows[app.active_window];
+        match win.tree.tiles.get(win.focused_pane?)? {
+            egui_tiles::Tile::Pane(id) => Some(*id),
+            egui_tiles::Tile::Container(_) => None,
+        }
+    })
+}
+
+fn pane_center(h: &PlexiUiHarness, pane: PaneId) -> egui::Pos2 {
+    h.with_app(|app| {
+        let tiles = &app.windows[app.active_window].tree.tiles;
+        tiles
+            .rect(tiles.find_pane(&pane).expect("pane tile"))
+            .expect("pane laid out")
+            .center()
+    })
+}
+
+fn click_events(pos: egui::Pos2) -> Vec<egui::Event> {
+    vec![
+        egui::Event::PointerMoved(pos),
+        pointer_button(pos, true),
+        pointer_button(pos, false),
+    ]
+}
+
+fn focus_left(h: &mut PlexiUiHarness, left: PaneId) {
+    h.with_app_mut(|app| {
+        let w = app.active_window;
+        let tile = app.windows[w].tree.tiles.find_pane(&left);
+        app.windows[w].focused_pane = tile;
+    });
+    h.run_steps(2);
+    assert_eq!(focused_pane_id(h), Some(left));
+}
+
+/// Stint 1391, dismissal barrier (ledger row 152): a click in the same
+/// delivery as the Escape that closes the palette, or in the delivery
+/// whose logic completes a pending Enter, never reaches the pane the
+/// palette covered. A fresh click afterwards focuses it as usual.
+#[test]
+fn palette_dismissal_never_clicks_through() {
+    let (mut h, left, right) = palette_over_two_panes();
+    let target = pane_center(&h, right);
+    deliver(&mut h, click_events(target));
+    h.run_steps(2);
+    assert_eq!(
+        focused_pane_id(&h),
+        Some(right),
+        "control: the click focuses"
+    );
+
+    focus_left(&mut h, left);
+    reopen_palette(&mut h);
+    h.save_screenshot(&evidence_png!()).expect("render failed");
+    let mut events = vec![press(egui::Key::Escape, egui::Modifiers::NONE)];
+    events.extend(click_events(target));
+    deliver(&mut h, events);
+    h.run_steps(2);
+    assert!(!h.with_app(|app| app.command_palette_open()));
+    assert_eq!(focused_pane_id(&h), Some(left), "Escape, click");
+
+    // Opened and dismissed in one delivery: the palette never drew, so
+    // no palette layer stands between the click and the pane.
+    let mut events = vec![
+        press(egui::Key::P, egui::Modifiers::COMMAND),
+        press(egui::Key::Escape, egui::Modifiers::NONE),
+    ];
+    events.extend(click_events(target));
+    deliver(&mut h, events);
+    h.run_steps(2);
+    assert!(!h.with_app(|app| app.command_palette_open()));
+    assert_eq!(focused_pane_id(&h), Some(left), "Cmd+P, Escape, click");
+
+    reopen_palette(&mut h);
+    deliver(
+        &mut h,
+        vec![egui::Event::Paste("reset text size".into()), enter()],
+    );
+    assert!(h.with_app(|app| app.command_palette_open()), "Enter waits");
+    deliver(&mut h, click_events(target));
+    h.run_steps(2);
+    assert_eq!(palette_activations().len(), 1);
+    assert_eq!(focused_pane_id(&h), Some(left), "logic-time close, click");
+
+    deliver(&mut h, click_events(target));
+    h.run_steps(2);
+    assert_eq!(focused_pane_id(&h), Some(right), "a fresh click focuses");
+}
+
+/// Stint 1391 review round 4: Cmd+P pressed and released in one delivery
+/// closes the palette and leaves no host claim on P's release, so the
+/// next P typed into a pane keeps its key-up.
+#[test]
+fn palette_closing_chord_retires_its_release_claim() {
+    let mut h = palette_harness();
+    reopen_palette(&mut h);
+    let cmd = egui::Modifiers::COMMAND;
+    deliver(
+        &mut h,
+        vec![
+            press(egui::Key::P, cmd),
+            egui::Event::Key {
+                key: egui::Key::P,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: cmd,
+            },
+        ],
+    );
+    assert!(!h.with_app(|app| app.command_palette_open()));
+    assert!(
+        !h.with_app(|app| app.claimed_host_key_releases.contains(&egui::Key::P)),
+        "P's release was delivered with the chord"
+    );
+}
+
+/// Stint 1391 review round 4: Focus Approval lifts an actionable approval
+/// above the open palette. An Enter in the same delivery is not the
+/// palette's: no row runs and the request stays pending.
+#[test]
+fn palette_enter_after_focus_approval_runs_no_row() {
+    let mut h = palette_harness();
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    let id = monitor
+        .file_needs_you(crate::broker::gate::NeedsYouFile {
+            kind: crate::broker::gate::NeedsYouKind::Question,
+            actor: "codex".into(),
+            resource: "pane:1".into(),
+            summary: "Continue?".into(),
+            expires_at: None,
+            run_tag: None,
+        })
+        .unwrap();
+    reopen_palette(&mut h);
+    let mut focus_approval = egui::Modifiers::COMMAND;
+    focus_approval.alt = true;
+    deliver(&mut h, vec![press(egui::Key::P, focus_approval), enter()]);
+    h.run_steps(3);
+    assert_eq!(
+        h.with_app(|app| app.focus_stack.top().as_ref().copied()),
+        Some(FocusKind::ApprovalBanner),
+        "the approval took focus"
+    );
+    assert!(palette_activations().is_empty(), "no palette row ran");
+    assert!(
+        monitor
+            .get_needs_you(&id)
+            .is_some_and(|record| record.resolution.is_none()),
+        "the request is still pending"
+    );
+}
+
+/// Stint 1391: Cmd+P opens on the Commands stop with today's rows and
+/// the first row selected; Tab and Shift+Tab keep the query (one stop
+/// today, so the stop stays put); Enter runs the selected row.
+#[test]
+fn palette_commands_stop() {
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    add_focused_pane(&mut h);
+    h.step();
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+    h.run_steps(3);
+    let (query, stop, selected) = palette_picker(&h);
+    assert_eq!((query.as_str(), stop), ("", "commands"));
+    assert!(
+        selected
+            .as_deref()
+            .is_some_and(|k| k.starts_with("commands:")),
+        "a fresh palette selects its first row: {selected:?}"
+    );
+    h.harness().get_by_label("CONTEXTS");
+    h.harness().get_by_label("COMMANDS");
+    h.save_screenshot(&evidence_png!("_empty"))
+        .expect("render failed");
+
+    type_palette_text(&mut h, "keyboard");
+    h.run_steps(2);
+    let (_, _, selected) = palette_picker(&h);
+    assert_eq!(
+        selected.as_deref(),
+        Some("commands:cmd/Keyboard shortcuts"),
+        "typed query selects its best match"
+    );
+    h.save_screenshot(&evidence_png!("_query"))
+        .expect("render failed");
+    for modifiers in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+        h.harness().key_press_modifiers(modifiers, egui::Key::Tab);
+        h.step();
+        let (query, stop, _) = palette_picker(&h);
+        assert_eq!((query.as_str(), stop), ("keyboard", "commands"));
+    }
+    h.harness().key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(!h.with_app(|app| app.command_palette_open()));
+    assert!(
+        h.with_app(|app| app.show_shortcuts),
+        "Enter ran the selected Keyboard shortcuts row"
     );
 }

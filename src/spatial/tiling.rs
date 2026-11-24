@@ -206,9 +206,11 @@ pub(crate) fn paint_tab_bar(
     };
 
     let drag_id = egui::Id::new(("plexi_tab_drag", group.container_tile));
+    // A press a surface above owns never starts a tab gesture.
+    let admitted = crate::app::input_owner::pointer_admitted(ctx);
     let (pressed, down, released, pos) = ctx.input(|i| {
         (
-            i.pointer.primary_pressed(),
+            i.pointer.primary_pressed() && admitted,
             i.pointer.primary_down(),
             i.pointer.any_released(),
             i.pointer.interact_pos(),
@@ -507,6 +509,12 @@ pub struct PlexiBehavior<'a> {
     pub context_root: PathBuf,
     /// This frame carries injected input; see `ViewRenderContext::synthetic_input`.
     pub synthetic_input_frame: bool,
+    /// No surface on the focus stack owns the pointer press: a pane may take
+    /// focus from it (stint 1391).
+    pub pointer_admitted: bool,
+    /// egui's hit test could see the press's owner, or there is none. When
+    /// false, pane widgets may have been hit and are disabled for this pass.
+    pub widgets_admitted: bool,
     /// Opacity applied to unfocused panes when ghost mode is active.
     /// `None` = no dimming. Values below 1.0 dim all non-focused panes.
     pub unfocused_opacity: Option<f32>,
@@ -600,8 +608,10 @@ impl PlexiBehavior<'_> {
                     .is_none_or(|layer| layer == ui.layer_id())
             })
         };
-        let is_click =
-            ui.input(|i| i.pointer.any_pressed()) && pointer_in_hit_rect && pointer_on_this_layer();
+        let is_click = self.pointer_admitted
+            && ui.input(|i| i.pointer.any_pressed())
+            && pointer_in_hit_rect
+            && pointer_on_this_layer();
         let is_drag_hovering = if sole_drop_target {
             ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
         } else {
@@ -714,6 +724,9 @@ impl PlexiBehavior<'_> {
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             app_ui.set_clip_rect(clip_rect);
+            if !self.widgets_admitted {
+                app_ui.disable();
+            }
 
             let tab_group = self.tab_info.get(&tile_id);
             let has_tabs = tab_group.is_some();
@@ -812,6 +825,9 @@ impl PlexiBehavior<'_> {
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             portal_ui.set_clip_rect(clip_rect);
+            if !self.widgets_admitted {
+                portal_ui.disable();
+            }
             let portal_pane_id = *pane_id;
             let preview = self
                 .portal_info
@@ -840,7 +856,8 @@ impl PlexiBehavior<'_> {
             }
             // Double-click on portal pane to zoom into the sub-context.
             if let Some(target_ctx_id) = self.panes.get(pane_id).and_then(|p| p.portal_target()) {
-                if ui.rect_contains_pointer(pane_rect)
+                if self.pointer_admitted
+                    && ui.rect_contains_pointer(pane_rect)
                     && ui.input(|i| {
                         i.pointer
                             .button_double_clicked(egui::PointerButton::Primary)

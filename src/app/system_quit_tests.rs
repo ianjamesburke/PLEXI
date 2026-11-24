@@ -56,7 +56,7 @@ fn asks_about_unsaved_text(reason: SystemQuitReason) {
     );
     h.run_frames(2);
     assert_eq!(
-        h.app.focus_stack.last().map(|k| k.name()),
+        h.app.focus_stack.top().as_ref().map(|k| k.name()),
         Some("UnsavedChanges"),
         "{reason:?}: the Cmd+Q unsaved-changes prompt is shown"
     );

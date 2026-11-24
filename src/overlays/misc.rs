@@ -839,13 +839,6 @@ impl PlexiApp {
     ) -> crate::app::view_trait::KeyDisposition {
         crate::app::view_trait::KeyDisposition::Consumed
     }
-
-    pub(crate) fn command_palette_handle_key(
-        &mut self,
-        _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::view_trait::KeyDisposition {
-        crate::app::view_trait::KeyDisposition::Consumed
-    }
 }
 
 #[cfg(test)]

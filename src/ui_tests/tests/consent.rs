@@ -413,7 +413,7 @@ fn wasm_path_launch_queues_review_before_spawning() {
     let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());
     assert_eq!(queued, 1, "raw .wasm path launch should queue one review");
     let has_review_focus =
-        h.with_app(|app| matches!(app.focus_stack.last(), Some(FocusKind::RawWasmReview)));
+        h.with_app(|app| matches!(app.focus_stack.top().as_ref(), Some(FocusKind::RawWasmReview)));
     assert!(has_review_focus, "raw WASM review should own focus");
     let has_wasm = h.with_app(|app| {
         app.windows[app.active_window]

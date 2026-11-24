@@ -34,7 +34,7 @@ fn ui_scale_gallery_and_modals_fit_window() {
         h.harness().key_press(egui::Key::Escape);
         h.run_steps(3);
 
-        h.with_app_mut(|app| app.show_command_palette = true);
+        h.with_app_mut(|app| app.open_command_palette(""));
         h.run_steps(3);
         assert_inside(
             "command palette",
@@ -44,7 +44,7 @@ fn ui_scale_gallery_and_modals_fit_window() {
         );
         h.harness().key_press(egui::Key::Escape);
         h.run_steps(3);
-        h.with_app_mut(|app| app.show_command_palette = false);
+        h.with_app_mut(|app| app.close_command_palette());
 
         h.with_app_mut(|app| app.open_quick_note_modal());
         h.run_steps(3);

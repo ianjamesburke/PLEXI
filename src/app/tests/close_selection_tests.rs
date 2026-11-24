@@ -171,7 +171,7 @@ fn editor_batch() -> (
     close_shortcut(&mut h);
     assert!(!open(&h).contains(&x), "x closes before the editor asks");
     assert_eq!(
-        h.app.focus_stack.last(),
+        h.app.focus_stack.top().as_ref(),
         Some(&FocusKind::UnsavedChanges),
         "the batch pauses on the editor's own dialog"
     );

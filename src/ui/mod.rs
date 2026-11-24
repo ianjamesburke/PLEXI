@@ -20,6 +20,7 @@ pub mod markdown;
 mod modal_kit_guard_tests;
 pub mod overlay;
 pub(crate) mod pane_header;
+pub(crate) mod picker;
 pub mod provenance;
 #[cfg(test)]
 mod radius_guard_tests;

@@ -362,12 +362,6 @@ pub struct PlexiApp {
     /// resolves against its OWN root's view, never whichever context was last
     /// active. See `crate::app::registry_views` for the invalidation rules.
     pub(crate) registries: crate::app::registry_views::RegistryViews,
-    pub(crate) show_command_palette: bool,
-    pub(crate) palette_query: String,
-    pub(crate) palette_selected: usize,
-    /// Stable identity of the selected palette result. The numeric index is
-    /// only a rendering/navigation position and may change on live updates.
-    pub(crate) palette_selected_key: Option<String>,
     /// Cached workspace root for the focused pane at the moment the palette
     /// was opened. Resolved once on open, not per-frame, to avoid repeated
     /// filesystem traversal in the egui draw loop.
@@ -380,13 +374,12 @@ pub struct PlexiApp {
     /// time, cleared on close. Re-read on every open so edits hot-reload without
     /// a restart — same pattern as `palette_notes`.
     pub(crate) palette_commands: Vec<crate::cli::ResolvedUserCommand>,
-    /// Set to true on palette open; consumed on the first draw frame to reset
-    /// the scroll area back to the top before egui can apply the stale offset.
-    pub(crate) palette_scroll_reset: bool,
-    /// Last agent-pane count logged by the palette. The palette rebuilds its
-    /// rows every draw frame, so the collection trace fires only when the
-    /// count changes — never once per frame.
-    pub(crate) palette_agent_count_logged: Option<usize>,
+    /// The Commands source's current answer: row pips and owned targets,
+    /// installed with its rows on every logic refresh.
+    pub(crate) palette_answer: Option<crate::overlays::command_palette::PaletteAnswer>,
+    /// The palette's input owner: its ordered field, last presented hit
+    /// geometry and the input its session claimed.
+    pub(crate) palette_input: crate::ui::picker::PickerInput,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     /// Active text-input overlay and its dispatch target.
@@ -497,7 +490,7 @@ pub struct PlexiApp {
     /// Input-focus stack. Top layer receives keyboard input; panes see an
     /// empty event buffer while a non-`Pane` layer is on top. See the
     /// `FocusKind` docs for the invariant.
-    pub(crate) focus_stack: Vec<FocusKind>,
+    pub(crate) focus_stack: crate::host::focus_stack::FocusStack<FocusKind>,
     /// Pane focus history for Cmd+[ time-travel. Each entry is (window_id, tile_id)
     /// captured just before a focus change. Capped at 100; oldest evicted from front.
     pub(crate) focus_history_depth: usize,
@@ -1901,17 +1894,13 @@ impl PlexiApp {
                     description_session: crate::ui::text_field::OpenSession::new(),
                     drag_context: None,
                     parked_section_expanded: false,
-                    show_command_palette: false,
-                    palette_query: String::new(),
-                    palette_selected: 0,
-                    palette_selected_key: None,
                     palette_workspace_root: None,
                     palette_config_workspace_root: None,
                     palette_workspace_config_exists: false,
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
-                    palette_scroll_reset: false,
-                    palette_agent_count_logged: None,
+                    palette_answer: None,
+                    palette_input: Default::default(),
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
                     text_overlay: None,
@@ -1956,7 +1945,7 @@ impl PlexiApp {
                     notifications_sound,
                     last_config_error: None,
                     notification_cue_playback: None,
-                    focus_stack: Vec::new(),
+                    focus_stack: Default::default(),
                     focus_history_depth,
                     pane_focus_history: Vec::new(),
                     pending_user_commands: Vec::new(),
@@ -2203,17 +2192,13 @@ impl PlexiApp {
             description_session: crate::ui::text_field::OpenSession::new(),
             drag_context: None,
             parked_section_expanded: false,
-            show_command_palette: false,
-            palette_query: String::new(),
-            palette_selected: 0,
-            palette_selected_key: None,
             palette_workspace_root: None,
             palette_config_workspace_root: None,
             palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
-            palette_scroll_reset: false,
-            palette_agent_count_logged: None,
+            palette_answer: None,
+            palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
             text_overlay: None,
@@ -2258,7 +2243,7 @@ impl PlexiApp {
             notifications_sound,
             last_config_error: None,
             notification_cue_playback: None,
-            focus_stack: Vec::new(),
+            focus_stack: Default::default(),
             focus_history_depth,
             pane_focus_history: Vec::new(),
             pending_user_commands: Vec::new(),
@@ -3164,17 +3149,13 @@ impl PlexiApp {
             description_session: crate::ui::text_field::OpenSession::new(),
             drag_context: None,
             parked_section_expanded: false,
-            show_command_palette: false,
-            palette_query: String::new(),
-            palette_selected: 0,
-            palette_selected_key: None,
             palette_workspace_root: None,
             palette_config_workspace_root: None,
             palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
-            palette_scroll_reset: false,
-            palette_agent_count_logged: None,
+            palette_answer: None,
+            palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
             text_overlay: None,
@@ -3224,7 +3205,7 @@ impl PlexiApp {
             notifications_sound: None,
             last_config_error: None,
             notification_cue_playback: None,
-            focus_stack: Vec::new(),
+            focus_stack: Default::default(),
             focus_history_depth: 100,
             pane_focus_history: Vec::new(),
             pending_user_commands: Vec::new(),
@@ -3664,6 +3645,9 @@ impl eframe::App for PlexiApp {
             &self.ui_phase,
             crate::platform::logging::UiPhase::Logic,
         );
+        // Before anything in this pass can close the palette (a deferred
+        // Enter completing below), its session owns this pass's input.
+        self.note_palette_input_owner(ctx);
         // Everything that services external clients — pane IPC, spawn queue,
         // PTY events, shutdown, event-bus subscriptions, agent turns — must
         // run here, not in `ui`. eframe skips `ui` entirely while the window
@@ -3967,6 +3951,9 @@ impl eframe::App for PlexiApp {
         let ctx = &ui.ctx().clone();
         // Before any overlay owner takes the frame's input buffer.
         input_owner::note_tab_key(ctx);
+        // The palette reads the ordered delivery before any owner takes it.
+        self.route_palette_input(ctx);
+        self.note_pointer_press_owner(ctx);
         let ui_start = std::time::Instant::now();
         #[cfg(all(test, unix))]
         let ui_cpu_start = crate::platform::ui_profile::enabled()
@@ -4018,7 +4005,7 @@ impl eframe::App for PlexiApp {
         }
         if self.approval_keyboard.id.is_some()
             && (ctx.input(|input| input.pointer.any_pressed() || !input.focused)
-                || self.focus_stack.last() != Some(&FocusKind::ApprovalBanner))
+                || !self.approval_banner_on_top())
         {
             self.leave_approval();
         }
@@ -4029,7 +4016,12 @@ impl eframe::App for PlexiApp {
         // even when an overlay holds focus (see early-return guard in `keys::poll_actions`).
         // A close chord belongs to the top modal, never the pane beneath it.
         // Reuse that modal's Escape/cancel contract, including unsaved-work vetoes.
-        let modal_focus_open = !self.focus_stack.is_empty();
+        // The focus stack's top decides who gets first refusal: a modal
+        // owner here, the Attention Queue after host chords below.
+        let modal_focus_open = self
+            .focus_stack
+            .top()
+            .is_some_and(|kind| kind.owner().is_some());
         if modal_focus_open {
             let binding = self.key_bindings.close_pane;
             let mut claimed = false;
@@ -4061,7 +4053,17 @@ impl eframe::App for PlexiApp {
             // events out of `ctx` once, hand them to the top `FocusKind`
             // below, then give back whatever it didn't claim before rendering
             // — see `src/app/input_router.rs`.
-            let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+            // The palette routes its whole delivery itself, in arrival
+            // order (stint 1391); every other owner gets the taken keys.
+            let mut router_input =
+                if self.focus_stack.top() == Some(FocusKind::CommandPalette) {
+                    crate::app::input_router::PlexiInput::synthetic(
+                        Vec::new(),
+                        ctx.input(|i| i.modifiers),
+                    )
+                } else {
+                    crate::app::input_router::PlexiInput::take_from(ctx)
+                };
             // Step 0: QuickNote preemption (#1626).
             // Cmd+0 is a high-priority action that must fire even when a non-critical
             // modal is open. Consume the key here — before the overlay draw phase can
@@ -4081,8 +4083,8 @@ impl eframe::App for PlexiApp {
                 // Step 1: run the top overlay's handle_key through the
                 // `FocusOwner` trait (consumes its owned key events from this
                 // frame's ownership-transfer buffer, before any render).
-                let disposition = match self.focus_stack.last().copied() {
-                    Some(kind) => kind.owner().handle_key(self, ctx, &mut router_input),
+                let disposition = match self.focus_stack.top().and_then(FocusKind::owner) {
+                    Some(owner) => owner.handle_key(self, ctx, &mut router_input),
                     None => crate::app::view_trait::KeyDisposition::Passthrough,
                 };
                 // Give back whatever this overlay didn't claim so the render
@@ -4095,8 +4097,13 @@ impl eframe::App for PlexiApp {
                 // the top layer (NotesPicker/QuickNote/ContextDescription
                 // self-close), so re-read the current top rather than reusing
                 // the kind dispatched above.
-                if let Some(kind) = self.focus_stack.last().copied() {
-                    early_modal_cmds = kind.owner().draw(self, ctx);
+                if let Some(kind) = self.focus_stack.top() {
+                    if let Some(owner) = kind.owner() {
+                        early_modal_cmds = owner.draw(self, ctx);
+                        if !ctx.will_discard() {
+                            self.focus_stack.note_drawn(kind, ctx.cumulative_pass_nr());
+                        }
+                    }
                 }
                 // The overlay may have self-closed (confirm-close confirmed/cancelled,
                 // palette picked an entry, rename committed). Re-sync so the layer is
@@ -4210,14 +4217,20 @@ impl eframe::App for PlexiApp {
         // (`Cmd+Esc`, `Cmd+Enter`, `Cmd+I`, `Cmd+Alt+B`) have been claimed by
         // `poll_actions` above, swallowing all remaining bare keys and `Cmd+V`
         // so nothing leaks to any underlying pane (R40).
-        if !modal_focus_open {
-            if self.attention_queue.decision_overlay.is_some() {
+        // The surface that owns input now, not the one that owned it when
+        // the pass began: a modal dismissed above hands the rest of the pass
+        // to whatever its dismissal uncovered.
+        match self.overlay_surface() {
+            Some(input_owner::OverlaySurface::DecisionOverlay) => {
                 overlay_key_disposition = self.handle_decision_overlay_input(&mut router_input);
-            } else if self.attention_queue.open {
+            }
+            Some(input_owner::OverlaySurface::AttentionQueue) => {
                 overlay_key_disposition = self.handle_attention_queue_list_input(&mut router_input);
-            } else if self.zoom.level != zoom::ZoomLevel::Columns {
+            }
+            Some(input_owner::OverlaySurface::TreeAtlas) => {
                 overlay_key_disposition = self.handle_zoom_surface_input(&mut router_input);
             }
+            Some(input_owner::OverlaySurface::Layer(_)) | None => {}
         }
         router_input.give_back(ctx);
 
@@ -4391,12 +4404,21 @@ impl eframe::App for PlexiApp {
         // `reconcile_egui_focus` at the end of `ui`. Publish the owner now so
         // an editor that just lost the pane cannot insert this frame's text.
         crate::app::input_owner::publish_frame_input_owner(ctx, self.host_input_owner());
+        crate::app::input_owner::publish_pointer_admission(
+            ctx,
+            self.focus_stack.press_owner().is_none(),
+        );
         // Every surface that paints an approval-capable button (sidebar
         // Needs-you row, approval banner) registers its bounds this frame.
         self.approval_buttons.clear();
         self.render_panels(ui, focused_terminal_input);
         self.draw_attention_queue_and_decision_overlay(ctx);
         self.draw_keychain_recovery_dialog(ctx);
+        // The old owner has finished this delivery's input before the chord.
+        self.finish_palette_opening(ctx);
+        if !ctx.input(|i| i.pointer.any_down()) {
+            self.focus_stack.release_presses();
+        }
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.
@@ -4699,12 +4721,12 @@ impl PlexiApp {
                 }
             }
             Action::ToggleCommandPalette => {
-                self.show_command_palette = !self.show_command_palette;
-                if self.show_command_palette {
-                    self.palette_query.clear();
-                    self.palette_selected = 0;
-                    self.palette_selected_key = None;
-                    self.palette_scroll_reset = true;
+                if self.command_palette_open() {
+                    self.close_command_palette();
+                    self.palette_workspace_root = None;
+                    self.palette_notes.clear();
+                    self.palette_commands.clear();
+                } else {
                     // Resolve focused pane workspace once at open-time — not per draw-frame —
                     // to avoid filesystem traversal in the egui hot path.
                     self.palette_workspace_root = None;
@@ -4733,10 +4755,7 @@ impl PlexiApp {
                         "palette: loaded {} user command(s)",
                         self.palette_commands.len()
                     );
-                } else {
-                    self.palette_workspace_root = None;
-                    self.palette_notes.clear();
-                    self.palette_commands.clear();
+                    self.open_command_palette("");
                 }
             }
             Action::RenamePane => {
@@ -4849,13 +4868,9 @@ impl PlexiApp {
                     .palette_config_workspace_root
                     .as_deref()
                     .is_some_and(|root| crate::config::workspace_config_path(root).exists());
-                self.palette_query = "open config:".to_owned();
-                self.palette_selected = 0;
-                self.palette_selected_key = None;
-                self.palette_scroll_reset = true;
                 self.palette_notes.clear();
                 self.palette_commands.clear();
-                self.show_command_palette = true;
+                self.open_command_palette("open config:");
                 log::info!(
                     "palette: opened config chooser workspace={:?}",
                     self.palette_workspace_root

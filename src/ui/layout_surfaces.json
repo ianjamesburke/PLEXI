@@ -393,6 +393,15 @@
       ]
     },
     {
+      "id": "src/ui/picker.rs",
+      "fixture": {
+        "file": "src/ui_tests/tests/palette.rs",
+        "test": "palette_commands_stop"
+      },
+      "states": "Commands stop on an empty query (group headers, first row selected) and on a typed query; Dusk",
+      "minimum": "Field over a scroll body of ListRows; rows elide through ListRow; the list keeps a minimum scroll height"
+    },
+    {
       "id": "src/ui/provenance.rs",
       "gap": "Unresolved: provenance has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
