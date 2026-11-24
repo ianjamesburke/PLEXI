@@ -12,8 +12,8 @@
 //! read a single `ok`/`error` reply. A first-time publish under a plugin-id
 //! namespace the caller does not own prompts for host consent (broker `Ask`).
 //!
-//! Identity is host-stamped from `PLEXI_PANE_ID`; there is deliberately no flag
-//! to set the subscriber/emitter identity, so a CLI agent cannot spoof another.
+//! The host identifies the caller from the socket; there is deliberately no
+//! flag or field for the subscriber/emitter identity.
 
 use crate::platform::ipc::{self, IpcStream};
 use std::io::{BufRead, BufReader, Write};
@@ -41,10 +41,6 @@ fn connect_socket() -> Result<IpcStream, i32> {
             Err(1)
         }
     }
-}
-
-fn from_pane_id() -> Option<u64> {
-    std::env::var("PLEXI_PANE_ID").ok()?.parse().ok()
 }
 
 /// Connect to the host socket and write one control line + flush, logging the
@@ -119,7 +115,6 @@ pub fn events_subscribe_cli(
         "payload_mode": payload_mode,
         "trigger_mode": trigger_mode,
         "resource_id": resource,
-        "from_pane_id": from_pane_id(),
     });
     stream_control_line(req)
 }
@@ -274,7 +269,6 @@ pub fn events_declare_cli(
         "type": "events_declare",
         "plugin_id": plugin_id,
         "streams": [decl],
-        "from_pane_id": from_pane_id(),
     });
     let conn = match connect_and_send(&req) {
         Ok(conn) => conn,
@@ -335,7 +329,6 @@ pub fn events_emit_cli(args: EmitArgs) -> i32 {
         "revision_before": args.revision_before,
         "rollback_token": args.rollback_token,
         "changed_resources": args.changed_resources,
-        "from_pane_id": from_pane_id(),
     });
     let conn = match connect_and_send(&req) {
         Ok(conn) => conn,
@@ -508,15 +501,14 @@ pub fn pane_lifecycle_wait_cli(pane: u64, predicate: &str, timeout: f64) -> i32 
     };
     lifecycle_request(
         serde_json::json!({"type":"pane_lifecycle_wait", "pane_id":pane,
-        "until":predicate, "timeout":timeout, "from_pane_id":from_pane_id()}),
+        "until":predicate, "timeout":timeout}),
         Some(client_timeout),
     )
 }
 
 pub fn pane_lifecycle_follow_cli(pane: Option<u64>) -> i32 {
     lifecycle_request(
-        serde_json::json!({"type":"pane_lifecycle_follow", "pane_id":pane,
-        "from_pane_id":from_pane_id()}),
+        serde_json::json!({"type":"pane_lifecycle_follow", "pane_id":pane}),
         None,
     )
 }

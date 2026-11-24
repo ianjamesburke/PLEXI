@@ -1931,7 +1931,7 @@ default = "ask"
             );
             harness
                 .app
-                .handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
+                .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::SendToPane {
                     generated_operation_id: false,
                     pane_id: terminal,
                     text: SENTINEL.to_string(),
@@ -1939,7 +1939,6 @@ default = "ask"
                     paste: false,
                     response_file: None,
                     operation_id: None,
-                    peer_ancestry: None,
                 });
             assert_eq!(
                 harness.terminal_backend(terminal).take_input_tap(),

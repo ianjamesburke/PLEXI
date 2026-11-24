@@ -336,7 +336,7 @@ fn screenshot_logs_info_chip_focused_and_unfocused() {
         .expect("open a second pane");
     // Select the INFO level tab: it becomes the accent (Primary) chip.
     h.with_app_mut(|app| {
-        app.handle_pane_ipc_request(crate::protocol::HostRequest::SendPaneAction {
+        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::SendPaneAction {
             pane_id: logs,
             action: "logs-level:3".into(),
             args: Vec::new(),

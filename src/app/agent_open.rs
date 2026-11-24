@@ -99,18 +99,18 @@ impl AgentOpenOutcome {
 
 impl PlexiApp {
     /// Open the named agent `name` for a request made from `cwd` by `caller`.
-    /// `source` is the host-stamped submitter: the caller is whoever
+    /// `origin` is where the request entered the host: the caller is whoever
     /// [`PlexiApp::resolve_launch_source`] resolves it to, for both launch
-    /// branches (same rule as `agent start`); an unverified source is refused.
+    /// branches (same rule as `agent start`); an unidentified socket caller is refused.
     pub(crate) fn open_named_agent(
         &mut self,
         name: &str,
         cwd: &Path,
         caller: Option<u64>,
-        source: &crate::protocol::SpawnSource,
+        origin: &crate::broker::caller::RequestOrigin,
     ) -> Result<AgentOpenOutcome, String> {
         let admitted = admit_agent_mesh_route("AgentOpen")?;
-        self.open_admitted_named_agent(name, cwd, caller, source, admitted)
+        self.open_admitted_named_agent(name, cwd, caller, origin, admitted)
             .inspect_err(|error| log::warn!("agent_open: name={name} failed: {error}"))
     }
 
@@ -119,10 +119,10 @@ impl PlexiApp {
         name: &str,
         cwd: &Path,
         caller: Option<u64>,
-        source: &crate::protocol::SpawnSource,
+        origin: &crate::broker::caller::RequestOrigin,
         admitted: AdmittedAgentMeshRoute,
     ) -> Result<AgentOpenOutcome, String> {
-        let launch_caller = self.resolve_launch_source(source, caller)?;
+        let launch_caller = self.resolve_launch_source(origin, caller)?;
         let verified_caller = launch_caller.caller_pane;
         if let Some(pane_id) = self.running_named_agent_pane(name) {
             // A standby pane is focused and left in Standby: it resumes only
@@ -137,7 +137,7 @@ impl PlexiApp {
             return Ok(outcome);
         }
 
-        let (payload, harness) = named_agent_start_payload(name, cwd, verified_caller)?;
+        let (payload, harness) = named_agent_start_payload(name, cwd)?;
 
         let open_chat = self.exited_named_agent_chat(name, &harness, cwd);
         if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, &harness, cwd))
@@ -160,7 +160,7 @@ impl PlexiApp {
             });
         }
 
-        let pane_id = self.start_named_agent_chat(name, payload, source, admitted)?;
+        let pane_id = self.start_named_agent_chat(name, payload, origin, caller, admitted)?;
         log::info!("agent_open: name={name} outcome=started pane={pane_id}");
         Ok(AgentOpenOutcome::Started { pane_id })
     }
@@ -179,10 +179,10 @@ impl PlexiApp {
         name: &str,
         cwd: &Path,
         caller: Option<u64>,
-        source: &crate::protocol::SpawnSource,
+        origin: &crate::broker::caller::RequestOrigin,
     ) -> Result<AgentOpenOutcome, String> {
         let admitted = admit_agent_mesh_route("AgentNewChat")?;
-        self.new_admitted_named_agent_chat(name, cwd, caller, source, admitted)
+        self.new_admitted_named_agent_chat(name, cwd, caller, origin, admitted)
             .inspect_err(|error| log::warn!("agent_new_chat: name={name} failed: {error}"))
     }
 
@@ -191,14 +191,21 @@ impl PlexiApp {
         name: &str,
         cwd: &Path,
         caller: Option<u64>,
-        source: &crate::protocol::SpawnSource,
+        origin: &crate::broker::caller::RequestOrigin,
         admitted: AdmittedAgentMeshRoute,
     ) -> Result<AgentOpenOutcome, String> {
-        let launch_caller = self.resolve_launch_source(source, caller)?;
-        // Resolved first: an unknown agent fails before anything is archived.
-        let (payload, harness) = named_agent_start_payload(name, cwd, launch_caller.caller_pane)?;
-        let archived_run_id = self.archive_current_named_agent_chat(name, &harness, cwd)?;
-        let pane_id = self.start_named_agent_chat(name, payload, source, admitted)?;
+        // Everything the replacement launch needs is decided before anything
+        // is closed (Codex 3290 r4): the agent, the chat to archive, and the
+        // caller as it will be once that chat's pane is gone (a new chat
+        // asked for from inside the chat it replaces). A launch that could
+        // not proceed is refused here, with the current chat untouched.
+        let (payload, harness) = named_agent_start_payload(name, cwd)?;
+        let chat_pane = self.chat_pane_to_archive(name, &harness, cwd);
+        let (launch_origin, launch_caller) = self.origin_without_pane(origin, caller, chat_pane);
+        self.resolve_launch_source(&launch_origin, launch_caller)?;
+        let archived_run_id = self.archive_named_agent_chat(name, &harness, cwd, chat_pane)?;
+        let pane_id =
+            self.start_named_agent_chat(name, payload, &launch_origin, launch_caller, admitted)?;
         log::info!(
             "agent_new_chat: name={name} archived_run_id={archived_run_id:?} new_pane={pane_id}"
         );
@@ -208,18 +215,49 @@ impl PlexiApp {
         })
     }
 
-    /// Archive `name`'s current chat in this workspace and return its run id,
+    /// `origin` as it will be once pane `closing` is gone: unchanged unless
+    /// the caller is that pane, then classified again from its kernel
+    /// witness without it (no parent pane is named for it).
+    fn origin_without_pane(
+        &self,
+        origin: &crate::broker::caller::RequestOrigin,
+        caller: Option<u64>,
+        closing: Option<PaneId>,
+    ) -> (crate::broker::caller::RequestOrigin, Option<u64>) {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
+        match (origin, closing) {
+            (RequestOrigin::Socket(SocketCaller::Pane(pane)), Some(closing))
+                if pane.visible_pane == closing || pane.terminal_pane == closing =>
+            {
+                let after = self.classify_socket_peer_excluding(Some(&pane.peer), Some(closing));
+                log::info!(
+                    "agent_new_chat: caller pane {closing} is the chat it replaces; launching as {}",
+                    after.class()
+                );
+                (RequestOrigin::Socket(after), None)
+            }
+            _ => (origin.clone(), caller),
+        }
+    }
+
+    /// The pane holding `name`'s current chat, the one a new chat archives.
+    fn chat_pane_to_archive(&self, name: &str, harness: &str, cwd: &Path) -> Option<PaneId> {
+        self.running_named_agent_pane(name).or_else(|| {
+            self.exited_named_agent_chat(name, harness, cwd)
+                .map(|record| record.pane_id)
+        })
+    }
+
+    /// Archive `name`'s current chat (in `open_pane`, else its last closed
+    /// chat) in this workspace and return its run id,
     /// or `None` when it has no chat to archive.
-    fn archive_current_named_agent_chat(
+    fn archive_named_agent_chat(
         &mut self,
         name: &str,
         harness: &str,
         cwd: &Path,
+        open_pane: Option<PaneId>,
     ) -> Result<Option<String>, String> {
-        let open_pane = self.running_named_agent_pane(name).or_else(|| {
-            self.exited_named_agent_chat(name, harness, cwd)
-                .map(|record| record.pane_id)
-        });
         let run_id = if let Some(pane_id) = open_pane {
             self.close_pane_by_id(pane_id);
             self.fleet_history
@@ -260,25 +298,20 @@ impl PlexiApp {
         Ok(Some(run_id))
     }
 
-    /// Start a new chat from a resolved `agent start` payload, stamped with
-    /// the request's `source`.
+    /// Start a new chat from a resolved `agent start` payload, admitted for
+    /// the request's own origin (stint 1285).
     fn start_named_agent_chat(
         &mut self,
         name: &str,
         mut payload: serde_json::Value,
-        source: &crate::protocol::SpawnSource,
+        origin: &crate::broker::caller::RequestOrigin,
+        caller: Option<u64>,
         admitted: AdmittedAgentMeshRoute,
     ) -> Result<PaneId, String> {
         payload["response_file"] = serde_json::Value::String(String::new());
-        let mut request: crate::protocol::HostRequest = serde_json::from_value(payload)
+        let request: crate::protocol::HostRequest = serde_json::from_value(payload)
             .map_err(|e| format!("agent open: start payload for '{name}' is invalid: {e}"))?;
-        if let crate::protocol::HostRequest::AgentSpawn {
-            source: stamped, ..
-        } = &mut request
-        {
-            *stamped = source.clone();
-        }
-        let reply = self.agent_spawn_reply_admitted(&request, admitted);
+        let reply = self.agent_spawn_reply_admitted(origin, caller, &request, admitted);
         spawned_pane_id(&reply)
     }
 
@@ -489,13 +522,11 @@ impl PlexiApp {
 
 /// The `agent start` payload for `name` from `cwd` and its harness. The
 /// definition decides the harness; unknown agents fail here, before anything
-/// is launched. The payload names the verified caller only: the spawn it
-/// becomes resolves its own source, and a pane id in it is trusted only for
-/// in-process requests (stint 1632).
+/// is launched. No pane id in the payload names a caller: the spawn it
+/// becomes resolves its caller from the request's origin (stint 1285).
 fn named_agent_start_payload(
     name: &str,
     cwd: &Path,
-    verified_caller: Option<u64>,
 ) -> Result<(serde_json::Value, String), String> {
     let stops = crate::app::registry::workspace_walk_stops()?;
     let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
@@ -503,7 +534,6 @@ fn named_agent_start_payload(
         &crate::config::config_dir(),
         cwd,
         None,
-        verified_caller,
         &stops,
     )?;
     let harness = payload

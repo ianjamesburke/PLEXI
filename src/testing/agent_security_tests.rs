@@ -40,7 +40,6 @@ fn secret_get(h: &mut HostHarness, name: &str, root: &Path, ancestry: &[u32]) ->
         name: name.to_string(),
         global: false,
         workspace_root: Some(root.to_path_buf()),
-        peer_ancestry: Vec::new(),
         response_file: reply.to_string_lossy().into_owned(),
     };
     let line = serde_json::to_string(&request).unwrap();
@@ -268,7 +267,6 @@ fn agent_done_and_ask_from_one_pane_cannot_act_as_another_pane() {
         pane_id: victim,
         result: Some("{\"forged\":true}".into()),
         summary: Some("forged".into()),
-        peer_ancestry: None,
         response_file: root.join("forged-done.json").to_string_lossy().into_owned(),
     };
     let reply = socket_request(
@@ -290,7 +288,6 @@ fn agent_done_and_ask_from_one_pane_cannot_act_as_another_pane() {
     let ask = HostRequest::AgentAsk {
         pane_id: victim,
         question: "forged question".into(),
-        peer_ancestry: None,
         response_file: root.join("forged-ask.json").to_string_lossy().into_owned(),
     };
     let reply = socket_request(&mut h, &ask, &[attacker_pid], &root.join("forged-ask.json"));
@@ -305,7 +302,6 @@ fn agent_done_and_ask_from_one_pane_cannot_act_as_another_pane() {
         pane_id: attacker,
         result: Some("{\"ok\":1}".into()),
         summary: Some("mine".into()),
-        peer_ancestry: None,
         response_file: root.join("own-done.json").to_string_lossy().into_owned(),
     };
     let reply = socket_request(&mut h, &own, &[attacker_pid], &root.join("own-done.json"));
@@ -316,16 +312,15 @@ fn agent_done_and_ask_from_one_pane_cannot_act_as_another_pane() {
         .get(&attacker)
         .is_some_and(|r| r.committed.is_some()));
 
-    // A caller outside every pane (the human at a plain terminal) keeps working.
+    // A process outside every pane reports for no pane (stint 1285).
     let outside = HostRequest::AgentDone {
         pane_id: victim,
         result: Some("{\"by\":\"human\"}".into()),
         summary: None,
-        peer_ancestry: None,
         response_file: root.join("human-done.json").to_string_lossy().into_owned(),
     };
     let reply = socket_request(&mut h, &outside, &[999_999], &root.join("human-done.json"));
-    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["error_code"], "permission_denied", "{reply}");
 }
 
 #[test]
@@ -342,7 +337,6 @@ fn set_agent_state_from_one_pane_cannot_change_another_pane() {
         session_id: None,
         event: None,
         blocked_reason: None,
-        peer_ancestry: None,
     };
     for req in [report(victim), report(attacker)] {
         let line = serde_json::to_string(&req).unwrap();
@@ -365,13 +359,23 @@ fn set_agent_state_from_one_pane_cannot_change_another_pane() {
 fn permissions_caller_is_derived_from_the_peer_not_the_wire() {
     let mut h = HostHarness::new();
     let pane = h.add_focused_terminal();
-    let pid = h.terminal_backend(pane).child_pid();
-    // A pane process is that pane's agent whatever its environment says.
-    assert_eq!(h.app.permissions_caller_pane(Some(&[pid])), Some(pane));
-    // A caller outside every pane resolves to no pane. That is not a human
-    // (`socket_caller_with_no_pane_is_not_human`).
-    assert_eq!(h.app.permissions_caller_pane(Some(&[999_999])), None);
-    assert_eq!(h.app.permissions_caller_pane(None), None);
+    // A pane process is that pane's principal whatever its environment says.
+    let principal = h
+        .app
+        .classify_socket_peer(Some(&crate::broker::caller::PeerWitness::for_live_pids(&[
+            h.shell_pid(pane),
+        ])))
+        .principal()
+        .map(|p| p.actor_id().to_string());
+    assert_eq!(principal, Some(format!("pane:{pane}")));
+    // A caller outside every pane is the shared outside principal, never the
+    // human; no peer at all is nobody.
+    let outside = crate::broker::caller::RequestOrigin::outside_for_test();
+    assert_eq!(
+        outside.socket_caller().and_then(|c| c.principal()),
+        Some(crate::broker::principal::Principal::External)
+    );
+    assert_eq!(h.app.classify_socket_peer(None).principal(), None);
 }
 
 #[test]
@@ -383,7 +387,6 @@ fn caller_context_is_answered_from_the_verified_peer() {
     let ask = |h: &mut HostHarness, ancestry: &[u32], name: &str| {
         let token = root.join(name);
         let req = HostRequest::CallerContext {
-            peer_ancestry: None,
             response_file: token.to_string_lossy().into_owned(),
         };
         socket_request(h, &req, ancestry, &token)
@@ -450,7 +453,6 @@ fn agent_done_works_from_a_spawned_pane_without_a_manual_socket_export() {
         pane_id: pane,
         result: Some("{\"answer\":42}".into()),
         summary: Some("done".into()),
-        peer_ancestry: None,
         response_file: reply_path.to_string_lossy().into_owned(),
     };
     let reply = socket_request(&mut h, &done, &[pid], &reply_path);
@@ -518,8 +520,11 @@ fn socket_caller_with_no_pane_is_not_human() {
     assert_eq!(asked["status"], "permission_required", "{asked}");
     let pending = asked["pending_request_id"].as_str().unwrap().to_string();
 
-    // Outside every pane, and with no peer capture at all.
-    let detached: [Option<&[u32]>; 2] = [Some(&[999_999]), None];
+    // With no peer capture at all, nothing is filed for nobody.
+    let unidentified = permissions_socket(&mut h, "allow", Some(&pending), None);
+    assert_eq!(unidentified["error_code"], "permission_denied", "{unidentified}");
+    // Outside every pane: a request, never an approval.
+    let detached: [Option<&[u32]>; 1] = [Some(&[999_999])];
     for ancestry in detached {
         let reply = permissions_socket(&mut h, "allow", Some(&pending), ancestry);
         assert_eq!(reply["status"], "needs_you", "{ancestry:?}: {reply}");

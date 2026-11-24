@@ -555,8 +555,6 @@ pub(crate) fn forward_host_launch(
         Some(root) => crate::protocol::HostRequest::FocusContext {
             root: root.to_path_buf(),
             response_file: Some(response_file.clone()),
-            // Stamped by the host from the socket peer, never sent.
-            source: Default::default(),
         },
         None => crate::protocol::HostRequest::ShowHost {
             response_file: response_file.clone(),
@@ -1495,6 +1493,15 @@ pub(crate) fn host_stop_in(profile: &Path, channel: Option<String>) -> StopOutco
             wait_for_shutdown(pid, &socket_path, Duration::from_secs(5));
             return stop_outcome_from_reply(&reply);
         }
+        // The host's admission entry refused this caller (stint 1285): the
+        // host is healthy and said no, so nothing here may kill it.
+        Ok(crate::rpc::StreamReply::Json(reply)) if is_policy_refusal(&reply) => {
+            log::info!("host_stop: host refused this caller: {reply}");
+            return StopOutcome::Failed(format!(
+                "the host refused to stop for this caller: {}",
+                reply["error"].as_str().unwrap_or("permission denied")
+            ));
+        }
         Ok(crate::rpc::StreamReply::Json(reply)) => {
             log::warn!("host_stop: host refused the shutdown request: {reply}");
             Duration::ZERO
@@ -1556,6 +1563,15 @@ fn wait_for_shutdown(pid: Option<u32>, socket_path: &Path, limit: Duration) -> b
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// A refusal from the host's socket admission entry (`socket_policy`), as
+/// opposed to a host that could not read the request.
+fn is_policy_refusal(reply: &serde_json::Value) -> bool {
+    matches!(
+        reply["error_code"].as_str(),
+        Some("permission_denied" | "approval_required" | "not_on_socket")
+    )
 }
 
 /// An answer to the shutdown request that reports the host's exit. Anything
@@ -2008,7 +2024,10 @@ pub fn host_log_cli(source: &str, message: &str) -> i32 {
     crate::rpc::register_client_stream(response_file.clone(), stream);
 
     match crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)) {
-        Ok(_) => 0,
+        Ok(reply) => match super::reply::HostReply::decode(&reply).payload_or_report() {
+            Ok(_) => 0,
+            Err(code) => code,
+        },
         Err(crate::rpc::PollError::TimedOut) => {
             eprintln!("error: timed out waiting for host log acknowledgement");
             1
@@ -2801,14 +2820,9 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
                 if line.trim() == "stop" {
                     break;
                 }
-                let mut request: crate::protocol::HostRequest =
+                let request: crate::protocol::HostRequest =
                     serde_json::from_str(&line).unwrap();
-                // Stamped as the real socket handler stamps a captured peer:
-                // this test process, which is no pane.
-                if let crate::protocol::HostRequest::SpawnPane { source, .. } = &mut request {
-                    *source = crate::protocol::SpawnSource::SocketPeer(vec![std::process::id()]);
-                }
-                host.inject_ipc(request);
+                host.inject_in_process(request);
                 host.hidden_frame();
             }
         });

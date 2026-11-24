@@ -1060,7 +1060,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
 
     let send_req = |h: &mut PlexiUiHarness, req: crate::protocol::HostRequest| {
         h.with_app_mut(|app| {
-            app.handle_pane_ipc_request(req);
+            app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, req);
         });
         h.run_steps(2);
     };
@@ -1070,13 +1070,13 @@ fn screenshot_visual_escalation_panes_and_portals() {
         send_req(
             h,
             crate::protocol::HostRequest::AgentSpawn {
+                anchor_pane: None,
                 role: name.into(),
                 harness: "codex".into(),
                 command: "sleep 30".into(),
                 task: Some(format!("Task {name}")),
                 subcontext: Some(subctx.into()),
                 ephemeral: true,
-                parent_pane_id: Some(master_pane),
                 name: Some(name.into()),
                 cwd: None,
                 worktree: None,
@@ -1084,7 +1084,6 @@ fn screenshot_visual_escalation_panes_and_portals() {
                 initial_slots: vec![],
                 focus: false,
                 response_file: reply.to_string_lossy().into_owned(),
-                source: crate::protocol::SpawnSource::InProcess,
             },
         );
         let raw = std::fs::read_to_string(&reply).expect("read spawn response");
@@ -1159,13 +1158,13 @@ fn screenshot_visual_escalation_panes_and_portals() {
         send_req(
             h,
             crate::protocol::HostRequest::AgentSpawn {
+                anchor_pane: None,
                 role: name.into(),
                 harness: "codex".into(),
                 command: "sleep 30".into(),
                 task: Some(format!("Task {name}")),
                 subcontext: None,
                 ephemeral: true,
-                parent_pane_id: Some(master_pane),
                 name: Some(name.into()),
                 cwd: None,
                 worktree: None,
@@ -1173,7 +1172,6 @@ fn screenshot_visual_escalation_panes_and_portals() {
                 initial_slots: vec![],
                 focus: false,
                 response_file: reply.to_string_lossy().into_owned(),
-                source: crate::protocol::SpawnSource::InProcess,
             },
         );
         let raw = std::fs::read_to_string(&reply).expect("read split response");
@@ -1948,7 +1946,7 @@ fn screenshot_sealed_pane_notice_and_new_pane() {
             .find(|id| *id != sealed)
     });
     let opened = opened.expect("a new pane opened beside the sealed one");
-    assert!(h.with_app(|app| app.is_human_owned_pane(opened)));
+    assert!(h.with_app(|app| app.terminal_incarnation(opened).is_some_and(|t| t.is_desktop_granted())));
     assert!(h.with_app(|app| app.terminal_incarnation(sealed).is_some()));
 }
 

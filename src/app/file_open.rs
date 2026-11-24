@@ -138,8 +138,6 @@ pub(crate) enum FileOpenError {
     CallerUnidentified { reason: String },
     #[error("handler {handler:?} is unavailable: {reason}")]
     HandlerUnavailable { handler: String, reason: String },
-    #[error("caller claims pane {claimed}, but the request did not come from that live pane")]
-    StaleCaller { claimed: u64 },
     #[error("no anchor pane: a caller outside every Plexi pane must pass --from <pane>")]
     NoAnchor,
     #[error("anchor pane {pane} does not exist")]
@@ -169,7 +167,6 @@ impl FileOpenError {
             Self::ExternalOpenFailed { .. } => "external_open_failed",
             Self::CallerUnidentified { .. } => "caller_unidentified",
             Self::HandlerUnavailable { .. } => "handler_unavailable",
-            Self::StaleCaller { .. } => "stale_caller",
             Self::NoAnchor => "no_anchor",
             Self::AnchorNotFound { .. } => "anchor_not_found",
             Self::AnchorOutsideContext { .. } => "anchor_outside_context",
@@ -400,38 +397,9 @@ fn sample_is_text(target: &Path) -> Result<bool, FileOpenError> {
 pub(super) struct FileOpenRequest<'a> {
     pub(super) path: &'a str,
     pub(super) cwd: Option<&'a Path>,
-    pub(super) caller_pane_id: Option<u64>,
     pub(super) from_pane_id: Option<u64>,
     pub(super) placement: Option<OpenPlacement>,
     pub(super) no_focus: bool,
-}
-
-/// Who sent a `FileOpen`, established from host-stamped peer ancestry only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SocketCaller {
-    /// A process whose nearest matched ancestor is a pane's terminal shell,
-    /// including a terminal covered by view overlays.
-    Pane(PaneCaller),
-    /// A kernel-identified process whose complete lineage reaches the OS
-    /// root without passing through any pane's terminal. It holds no pane
-    /// authority and no human privilege.
-    External,
-}
-
-/// The pane a socket caller runs in. Policy reads the matched terminal;
-/// placement and navigation use the visible pane; routing reads the named
-/// context and window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PaneCaller {
-    /// The visible pane occupying the matched terminal's tile.
-    pub(crate) visible_pane: PaneId,
-    /// The matched terminal's shell pid.
-    pub(crate) terminal_pid: u32,
-    /// The matched terminal is the person's own, not an agent's or a team
-    /// member's.
-    pub(crate) human_owned: bool,
-    pub(crate) context_id: u64,
-    pub(crate) window_id: u64,
 }
 
 /// What `serve_file_open` delivered.
@@ -469,19 +437,18 @@ impl PlexiApp {
     pub(super) fn serve_file_open(
         &mut self,
         request: &FileOpenRequest<'_>,
-        peer: Option<&crate::protocol::PeerAncestry>,
+        origin: &crate::broker::caller::RequestOrigin,
         response_file: &str,
     ) {
-        let reply = match self.file_open(request, peer) {
+        let reply = match self.file_open(request, origin) {
             Ok(receipt) => receipt,
             Err(error) => {
                 log::info!(
-                    "{OPERATION_ID}: refused path={:?} cwd={:?} peer_pids={} claimed={:?} \
-                     from={:?} error_code={} error={error}",
+                    "{OPERATION_ID}: refused path={:?} cwd={:?} caller={} from={:?} \
+                     error_code={} error={error}",
                     request.path,
                     request.cwd,
-                    peer.map_or(0, |walk| walk.pids.len()),
-                    request.caller_pane_id,
+                    origin.class(),
                     request.from_pane_id,
                     error.code()
                 );
@@ -491,102 +458,59 @@ impl PlexiApp {
         crate::rpc::write_json_response(response_file, reply);
     }
 
-    /// The caller, from kernel peer ancestry. A missing capture identifies
-    /// nobody; a claimed pane must be the pane the peer runs in.
-    /// Establish the socket caller from the stamped walk. The nearest
-    /// ancestor that is exactly one pane's terminal names a pane caller, even
-    /// if the walk stopped later. With no match, only a walk that reached the
-    /// OS root names an external caller. A claimed pane must agree.
-    pub(crate) fn socket_caller(
-        &self,
-        claimed: Option<u64>,
-        peer: Option<&crate::protocol::PeerAncestry>,
-    ) -> Result<SocketCaller, FileOpenError> {
-        let unidentified = |reason: &str| FileOpenError::CallerUnidentified {
-            reason: reason.to_string(),
-        };
-        let peer = peer.ok_or_else(|| unidentified("no kernel peer credential"))?;
-        if peer.pids.is_empty() {
-            return Err(unidentified("the peer's process could not be read"));
-        }
-        for &pid in &peer.pids {
-            let mut matches = self.windows.iter().flat_map(|window| {
-                window.panes.iter().filter_map(move |(pane_id, pane)| {
-                    pane.terminal_incarnation()
-                        .filter(|terminal| terminal.backend.child_pid() == pid)
-                        .map(|terminal| (window, *pane_id, terminal))
-                })
-            });
-            let Some((window, visible_pane, terminal)) = matches.next() else {
-                continue;
-            };
-            if matches.next().is_some() {
-                return Err(unidentified(
-                    "the peer's process matches more than one pane",
-                ));
-            }
-            if claimed.is_some_and(|claimed| claimed != visible_pane) {
-                return Err(FileOpenError::StaleCaller {
-                    claimed: claimed.unwrap_or_default(),
-                });
-            }
-            return Ok(SocketCaller::Pane(PaneCaller {
-                visible_pane,
-                terminal_pid: pid,
-                human_owned: terminal.is_human_owned()
-                    && self.team_member_for_pane(visible_pane).is_none(),
-                context_id: window.context_id,
-                window_id: window.window_id,
-            }));
-        }
-        if let Some(claimed) = claimed {
-            return Err(FileOpenError::StaleCaller { claimed });
-        }
-        if peer.end != crate::protocol::AncestryEnd::ReachedRoot {
-            return Err(unidentified(&format!(
-                "the peer's lineage is incomplete ({:?})",
-                peer.end
-            )));
-        }
-        Ok(SocketCaller::External)
-    }
-
     fn file_open(
         &mut self,
         request: &FileOpenRequest<'_>,
-        peer: Option<&crate::protocol::PeerAncestry>,
+        origin: &crate::broker::caller::RequestOrigin,
     ) -> Result<serde_json::Value, FileOpenError> {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
         let FileOpenRequest {
             path,
             cwd,
-            caller_pane_id,
             from_pane_id,
             placement,
             no_focus,
         } = *request;
-        let caller = self.socket_caller(caller_pane_id, peer)?;
         let window_of = |app: &Self, pane| {
             app.find_pane_in_any_window(pane)
                 .map(|(window, _)| window)
                 .ok_or(FileOpenError::AnchorNotFound { pane })
         };
-        // The anchor only places. Authority comes from the caller: the
-        // matched terminal's ownership in its live context, or, for an
-        // external process, the selected context with no human privilege.
-        let (anchor, context_id, human) = match (caller, from_pane_id) {
-            (SocketCaller::Pane(pane), None) => {
-                (pane.visible_pane, pane.context_id, pane.human_owned)
+        // The anchor only places. Authority comes from the caller's live
+        // context, the same narrowing for every pane (stint 1285): a pane
+        // the person opened gets no wider reach than an agent's. An outside
+        // process acts in the anchor's context with no pane authority.
+        let pane_caller = match origin {
+            RequestOrigin::Socket(SocketCaller::Pane(pane)) => Some(pane),
+            RequestOrigin::Socket(SocketCaller::External(_))
+            | RequestOrigin::HostUi
+            | RequestOrigin::HostSystem => None,
+            RequestOrigin::Socket(SocketCaller::Unidentified(reason)) => {
+                return Err(FileOpenError::CallerUnidentified {
+                    reason: reason.to_string(),
+                })
             }
-            (SocketCaller::Pane(pane), Some(from)) => {
+            RequestOrigin::SpawnQueue | RequestOrigin::PluginGuest(_) => {
+                return Err(FileOpenError::CallerUnidentified {
+                    reason: format!("file.open is not served to {}", origin.class()),
+                })
+            }
+        };
+        if let Some(sealed) = pane_caller.and_then(|pane| pane.authority.grant().sealed_reason()) {
+            return Err(FileOpenError::CallerUnidentified {
+                reason: sealed.explanation().to_string(),
+            });
+        }
+        let (anchor, context_id) = match (pane_caller, from_pane_id) {
+            (Some(pane), None) => (pane.visible_pane, pane.context_id),
+            (Some(pane), Some(from)) => {
                 if self.windows[window_of(self, from)?].context_id != pane.context_id {
                     return Err(FileOpenError::AnchorOutsideContext { pane: from });
                 }
-                (from, pane.context_id, pane.human_owned)
+                (from, pane.context_id)
             }
-            (SocketCaller::External, Some(from)) => {
-                (from, self.windows[window_of(self, from)?].context_id, false)
-            }
-            (SocketCaller::External, None) => return Err(FileOpenError::NoAnchor),
+            (None, Some(from)) => (from, self.windows[window_of(self, from)?].context_id),
+            (None, None) => return Err(FileOpenError::NoAnchor),
         };
         window_of(self, anchor)?;
         let root = self
@@ -596,7 +520,7 @@ impl PlexiApp {
         let target = resolve_open_target(path, cwd)?;
         // The receipt names the target, so it must have an exact string form.
         handler_arg(&target, "the receipt")?;
-        if !self.scope_may_access(&root, &target, human) {
+        if !self.scope_may_access(&root, &target) {
             return Err(FileOpenError::OutsideAuthority { root, path: target });
         }
         let associations = self.open_associations(context_id, &target);
@@ -616,12 +540,13 @@ impl PlexiApp {
         };
         log::info!(
             "{OPERATION_ID}: status={} path={path:?} target={} handler={} matched_by={} \
-             context_id={context_id} anchor={anchor} caller={caller:?} placement={placement_name} \
+             context_id={context_id} anchor={anchor} caller={} placement={placement_name} \
              pane_id={:?} focused={focused}",
             delivered.status,
             target.display(),
             handler.id(),
             matched_by.as_str(),
+            origin.class(),
             delivered.pane_id,
         );
         Ok(serde_json::json!({

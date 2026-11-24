@@ -920,7 +920,7 @@ Example: plexi agent spawn researcher --task "Audit auth module" --subcontext au
 | `--task` | string | yes | Task brief passed to the spawned agent harness |
 | `--subcontext` | string | no | Sub-context name to spawn into |
 | `--ephemeral` | flag | no | Auto-close the pane on clean exit (`0`) so the sub-context collapses when all workers finish |
-| `--from` | string | no | Parent/caller pane id or name (defaults to `$PLEXI_PANE_ID`) |
+| `--from` | string | no | Place the worker beside this pane id or name. It does not change who spawned it |
 | `--cwd` | string | no | Working directory for workspace lookup and the spawned worker pane |
 
 ### `plexi agent done`
@@ -2167,7 +2167,6 @@ Answer an open creative question (`Question` or `BlockedRun`). Never mints a per
 |---|---|---|---|
 | `<id>` | string | yes | Needs-you question id |
 | `--answer` | string | yes | Selected choice or free-text answer |
-| `--ui-token` | string | no | Interactive UI prompt token returned when the question was filed |
 
 ### `plexi needs-you reconcile`
 
@@ -2240,6 +2239,7 @@ Ask to allow a denial or pending ask (does not grant): files a Needs you item to
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes | Decision id from `plexi permissions list` |
+| `--duration` | string | no | How long to ask for. Defaults to once for a pending ask and always for a stored denial |
 
 ## `plexi notify`
 

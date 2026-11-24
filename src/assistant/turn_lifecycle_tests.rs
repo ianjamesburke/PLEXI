@@ -491,11 +491,11 @@ fn turn_lifecycle_cancel_after_committed_allow_returns_cancelled() {
             _: &str,
             _: &str,
             _: &str,
-        ) -> Result<crate::broker::gate::ApprovalChoice, String> {
+        ) -> Result<tool_dispatch::PresentedChoice, String> {
             let choice = crate::broker::gate::ApprovalChoice::Once;
             self.monitor.approve_pending(pending, choice)?;
             self.cancel.cancel();
-            Ok(choice)
+            Ok(tool_dispatch::PresentedChoice::observed(choice))
         }
     }
     let ws = tempfile::tempdir().unwrap();

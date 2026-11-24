@@ -14,6 +14,11 @@ use super::ActorType;
 /// Stored actor id of the one local user. There is no multi-user behavior.
 pub const LOCAL_USER_ID: &str = "user:local";
 
+/// Stored actor id of every process outside Plexi that the kernel identified
+/// (stint 1285). It lives under its own actor type, so no agent name can
+/// produce the same key.
+pub const EXTERNAL_ID: &str = "outside-process";
+
 /// A plugin and, when the host has placed it, the live instance asking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginInstance {
@@ -49,6 +54,10 @@ pub enum Principal {
     Agent { agent_id: String },
     /// A plugin instance.
     Plugin(PluginInstance),
+    /// Any kernel-identified process outside every pane. One shared
+    /// principal: what one outside process is granted, every outside
+    /// process holds.
+    External,
 }
 
 impl Principal {
@@ -83,7 +92,11 @@ impl Principal {
                 actor_id,
                 instance_id.filter(|pane| *pane != 0),
             )),
-            ActorType::User | ActorType::System | ActorType::ManagedPolicy => None,
+            ActorType::External if actor_id == EXTERNAL_ID => Some(Self::External),
+            ActorType::User
+            | ActorType::External
+            | ActorType::System
+            | ActorType::ManagedPolicy => None,
         }
     }
 
@@ -93,6 +106,7 @@ impl Principal {
             Self::LocalUser => ActorType::User,
             Self::Agent { .. } => ActorType::Agent,
             Self::Plugin(_) => ActorType::Plugin,
+            Self::External => ActorType::External,
         }
     }
 
@@ -102,6 +116,7 @@ impl Principal {
             Self::LocalUser => LOCAL_USER_ID,
             Self::Agent { agent_id } => agent_id,
             Self::Plugin(plugin) => &plugin.plugin_id,
+            Self::External => EXTERNAL_ID,
         }
     }
 }
@@ -119,6 +134,7 @@ impl fmt::Display for Principal {
                 plugin_id,
                 instance_id: None,
             }) => write!(f, "plugin/{plugin_id}"),
+            Self::External => write!(f, "external/{EXTERNAL_ID}"),
         }
     }
 }

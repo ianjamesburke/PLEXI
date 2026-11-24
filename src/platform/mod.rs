@@ -13,6 +13,7 @@ pub mod logging;
 #[cfg(target_os = "macos")]
 pub mod macos_menu;
 pub mod path;
+pub mod process;
 pub mod rolling;
 pub mod system_quit;
 pub mod text;

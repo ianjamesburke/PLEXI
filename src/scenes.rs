@@ -568,6 +568,7 @@ pub enum Step {
 /// One phase of the chess approval scene. `pending` queues a scripted
 /// `chess.play` and waits for the sheet. `human` plays `move` from the
 /// board's keyboard path. `host_pending` seeds the host's permission panel.
+/// `arm` puts the sheet past its arm delay so a real key decides it.
 /// `wait` pumps until the attributed or stale result
 /// is on screen.
 #[derive(Deserialize, Debug)]
@@ -2926,11 +2927,13 @@ fn preapprove_process_scene_grants(plugin_dir: &Path, grants: &[String]) -> Resu
                     .map_err(|error| format!("grant {capability_id:?}: {error}"))?;
             }
             None => monitor.grant_capability_id(
+                crate::broker::consent::DecisionEvidence::for_test("scene", "grant")
+                .admit("scene", "grant")
+                .expect("the fixture evidence covers itself"),
                 &manifest.plugin.id,
                 plugin_dir,
                 capability_id,
                 crate::broker::Decision::Allow,
-                crate::broker::GrantSource::User,
             ),
         }
     }
@@ -2980,11 +2983,13 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
             crate::app::permissions::PermissionState::Green,
         );
         monitor.grant_capability_id(
+            crate::broker::consent::DecisionEvidence::for_test("scene", "grant")
+                .admit("scene", "grant")
+                .expect("the fixture evidence covers itself"),
             plugin_id,
             &workspace_root,
             &capability_id,
             crate::broker::Decision::Allow,
-            crate::broker::GrantSource::User,
         );
     }
     store.save();
@@ -3189,7 +3194,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drop-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::protocol::HostRequest::DropFile {
+                    app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::DropFile {
                         pane_id,
                         path_or_url: drop_file.value.clone(),
                         response_file: response.to_string_lossy().into_owned(),
@@ -3224,7 +3229,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drag-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::protocol::HostRequest::DragPane {
+                    app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::DragPane {
                         pane_id,
                         from: drag.from,
                         from_node: drag.from_node.clone(),
@@ -3732,8 +3737,7 @@ impl HeadlessBackend {
                         .to_string_lossy()
                         .into_owned();
                     self.h.with_app_mut(|app| {
-                        app.handle_pane_ipc_request(crate::protocol::HostRequest::AgentDone {
-                            peer_ancestry: None,
+                        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::AgentDone {
                             pane_id: id,
                             result: Some("{}".into()),
                             summary: Some("Verified".into()),
@@ -3905,6 +3909,30 @@ impl HeadlessBackend {
                     message: format!("pending {mv}"),
                 }))
             }
+            "arm" => {
+                // A real key counts only after the sheet was on screen past
+                // the arm delay; the scene does not wait a wall-clock second.
+                self.h.with_app_mut(|app| {
+                    let pane = app
+                        .windows
+                        .iter_mut()
+                        .find_map(|window| window.panes.get_mut(&assistant))
+                        .expect("assistant pane");
+                    let view_pane = pane.as_view_mut().expect("assistant is a plugin");
+                    let ViewRuntime::Builtin(builtin) = &mut view_pane.runtime else {
+                        panic!("assistant is not a builtin");
+                    };
+                    builtin
+                        .as_any_mut()
+                        .downcast_mut::<crate::assistant::AssistantView>()
+                        .expect("assistant plugin")
+                        .arm_permission_sheet_for_test();
+                });
+                log::info!("scene: permission sheet armed");
+                Ok(Some(StepDetail::Message {
+                    message: "armed".to_string(),
+                }))
+            }
             "human" => {
                 let keys: &[&str] = if spec.move_uci.as_deref() == Some("e7e5") {
                     &[
@@ -3919,7 +3947,7 @@ impl HeadlessBackend {
                         .workspace_root()
                         .join(format!("chess-key-{key}-{}.json", uuid::Uuid::new_v4()));
                     self.h.with_app_mut(|app| {
-                        app.handle_pane_ipc_request(crate::protocol::HostRequest::KeyPane {
+                        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::KeyPane {
                             pane_id: chess,
                             key: (*key).to_string(),
                             response_file: Some(response.to_string_lossy().into_owned()),

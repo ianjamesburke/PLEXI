@@ -137,29 +137,77 @@ pub fn removed_host_request(kind: &str) -> Option<&'static str> {
     }
 }
 
-/// The host-established submitter of a `spawn_pane` (stint 1632). Only the
-/// host constructs it; no wire field selects or omits it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum SpawnSource {
-    /// A host code path. A `from_pane_id` it sets names a pane the host
-    /// already verified.
-    InProcess,
-    /// A command-socket peer and the ancestor pids the kernel reported.
-    SocketPeer(Vec<u32>),
-    /// A command-socket request whose peer identity was not captured.
-    #[default]
-    Unverified,
-    /// A file in the profile's spawn queue: an outside caller with no
-    /// verifiable identity.
-    SpawnQueue,
-    /// A plugin view instance acting in-process (the Assistant's host tools).
-    PluginInstance(u64),
+/// Identity claims older clients put on a request. The kernel names the
+/// caller now (stint 1285), so each is refused by name.
+pub const REMOVED_IDENTITY_FIELDS: &[&str] = &[
+    "peer_ancestry",
+    "peer_pid",
+    "peer",
+    "source",
+    "source_pane_id",
+    "source_context_id",
+    "caller_pane_id",
+    "caller_context_id",
+    "parent_pane_id",
+];
+
+/// The same claims nested in a multiplexed request's JSON payload.
+const REMOVED_PAYLOAD_IDENTITY_FIELDS: &[&str] = &[
+    "peer_ancestry",
+    "caller_pane",
+    "caller_pane_id",
+    "caller_agent",
+    "caller_context_id",
+    "caller_context_root",
+    "caller_context_denied",
+];
+
+/// The removed identity field a frame the request schema rejected carries.
+pub fn removed_identity_field(frame: &serde_json::Value) -> Option<&'static str> {
+    let fields = frame.as_object()?;
+    // `source` is still a real field of a log marker.
+    let marker = frame["type"] == "log_marker";
+    REMOVED_IDENTITY_FIELDS
+        .iter()
+        .find(|field| fields.contains_key(**field) && !(marker && **field == "source"))
+        .copied()
+}
+
+/// The removed identity claim inside a multiplexed request's payload.
+pub fn removed_payload_identity_field(request: &HostRequest) -> Option<&'static str> {
+    let payload = match request {
+        HostRequest::AgentsApi { payload, .. }
+        | HostRequest::AgentsDashboard { payload, .. }
+        | HostRequest::NeedsYouApi { payload, .. } => payload.as_object()?,
+        _ => return None,
+    };
+    REMOVED_PAYLOAD_IDENTITY_FIELDS
+        .iter()
+        .find(|field| payload.contains_key(**field))
+        .copied()
+}
+
+/// The reply naming a removed identity field.
+pub fn removed_field_reply(field: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "type": "error",
+        "error_code": "removed_field",
+        "field": field,
+        "error": format!(
+            "`{field}` was removed: the host identifies the caller from the OS. \
+             Use the plexi-<channel> CLI that matches this host."
+        ),
+    })
 }
 
 /// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostRequest {
+    /// Hold this connection open for the reply to a queued spawn. The queue
+    /// entry names the same token; the host answers here, never in a file.
+    SpawnReceipt { response_file: String },
     /// Reveal and focus the running host window for a second app launch.
     ShowHost { response_file: String },
     /// Rename a context through the same commit handler as the desktop editor.
@@ -197,14 +245,13 @@ pub enum HostRequest {
         response_file: String,
     },
 
-    /// Process-lifetime resource admission. Identity is stamped by the socket listener.
+    /// Process-lifetime resource admission. The holder must be in the
+    /// kernel-witnessed lineage of the caller.
     ResourceLease {
         op: String,
         name: Option<String>,
         max: Option<u32>,
         holder_pid: u32,
-        #[serde(skip)]
-        peer_ancestry: Vec<u32>,
         response_file: String,
     },
     /// Submit one text turn to the Assistant. With `pane_id` omitted the host
@@ -351,48 +398,12 @@ pub enum HostRequest {
         /// Omit to take `NotifyScope::default()`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<NotifyScope>,
-        /// CLI-only: the sender's own context id (`PLEXI_CONTEXT_ID`), stamped
-        /// by the CLI so the host never guesses provenance from whichever
-        /// context happens to be active at dispatch time. Absent when the
-        /// caller runs outside any Plexi pane. A scope the sender cannot
-        /// support resolves to the nearest wider one rather than attaching to
-        /// a context that never produced it: window scope with a resolvable
-        /// context but no live window narrows to context; no resolvable
-        /// sender at all escalates to global.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_context_id: Option<u64>,
-        /// CLI-only: the sender's own pane id (`PLEXI_PANE_ID`). When the pane
-        /// is still alive its live location is the ground truth for the
-        /// notification's window and context — a pane can move between
-        /// contexts after its env was stamped.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_pane_id: Option<u64>,
-        /// Host-established only: the socket peer credential check's ancestor
-        /// pid chain for this connection (`capture_peer_ancestry`, walked
-        /// eagerly at accept time — before the client's process can exit).
-        /// Never present on the wire — `serde(skip)` makes it impossible for
-        /// a client to set this field by sending JSON; it is stamped by
-        /// `handle_socket_line` after the host resolves the socket peer, and
-        /// is the trustworthy input the sender-identity resolution in
-        /// `handle_pane_ipc_request` uses instead of
-        /// `source_context_id`/`source_pane_id`, which are client-supplied and
-        /// must never be trusted for ownership decisions.
-        #[serde(skip)]
-        peer_pid: Option<Vec<u32>>,
     },
     /// Remove a notification posted by the caller. The host verifies the
     /// caller identity against the notification's stamped provenance.
     DismissNotification {
         notify_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_context_id: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_pane_id: Option<u64>,
         response_file: String,
-        /// Host-established only: see `Notify::peer_pid`. `serde(skip)` — a
-        /// client can never set this over the wire.
-        #[serde(skip)]
-        peer_pid: Option<Vec<u32>>,
     },
     /// Report agent state for a pane. Called by hook scripts via `plexi agent report`.
     SetAgentState {
@@ -408,10 +419,6 @@ pub enum HostRequest {
         event: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blocked_reason: Option<AgentBlockedReason>,
-        /// Kernel-verified socket peer ancestry, stamped by the listener. Never
-        /// read from the wire: the host derives the caller pane from it.
-        #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
     },
     /// Report a plugin's own pip status (red/yellow/green) for its activity dot.
     /// Fire-and-forget; set by the plugin process via `App.set_pip_status`. Takes
@@ -582,11 +589,6 @@ pub enum HostRequest {
         /// (`plexi pane new --result-schema <json-or-path>`, stint 0666).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result_schema: Option<serde_json::Value>,
-        /// Who submitted this launch, stamped by the host and never read from
-        /// the wire. A deserialized request is `Unverified` until the socket
-        /// handler stamps the peer it captured (stint 1632).
-        #[serde(skip)]
-        source: SpawnSource,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -702,9 +704,8 @@ pub enum HostRequest {
 
     /// Append a structured message to a pane's host-managed FIFO inbox.
     ///
-    /// `peer_ancestry` is stamped by the host from the socket connection's OS
-    /// credential (`handle_socket_line`) so the sender pane id is always
-    /// host-derived, never self-reported. When `submit` is true and the target
+    /// The sender is the caller's pane as the host classified it, never
+    /// self-reported. When `submit` is true and the target
     /// pane's agent reports idle (with no submit already in flight), the host
     /// injects a short wake notice through the confirmed-submit state machine;
     /// when the target agent is busy, the message queues without interrupting.
@@ -713,8 +714,6 @@ pub enum HostRequest {
         payload: String,
         #[serde(default)]
         submit: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        peer_ancestry: Option<Vec<u32>>,
         response_file: String,
     },
 
@@ -771,11 +770,7 @@ pub enum HostRequest {
         role: String,
         task: String,
         #[serde(default)]
-        parent_pane_id: Option<u64>,
-        #[serde(default)]
         call_credential: Option<String>,
-        #[serde(default)]
-        peer_ancestry: Vec<u32>,
         #[serde(default)]
         cwd: Option<String>,
         #[serde(default)]
@@ -791,11 +786,7 @@ pub enum HostRequest {
         pane_id: u64,
         text: String,
         #[serde(default)]
-        parent_pane_id: Option<u64>,
-        #[serde(default)]
         call_credential: Option<String>,
-        #[serde(default)]
-        peer_ancestry: Vec<u32>,
         #[serde(default)]
         wait: bool,
         response_file: String,
@@ -821,16 +812,13 @@ pub enum HostRequest {
         /// Whether the worker pane is ephemeral (`PLEXI_EPHEMERAL=1`, self-closes on exit 0).
         #[serde(default)]
         ephemeral: bool,
-        /// Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.
-        #[serde(
-            default,
-            alias = "from_pane_id",
-            skip_serializing_if = "Option::is_none"
-        )]
-        parent_pane_id: Option<u64>,
         /// Optional display name for the spawned pane.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Place the worker beside this pane. Placement only: the host names
+        /// the caller, and this never changes whose grants the worker runs under.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor_pane: Option<u64>,
         /// Optional working directory override.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -848,11 +836,6 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         focus: bool,
         response_file: String,
-        /// Who submitted this launch, stamped by the host and never read from
-        /// the wire: the claimed `parent_pane_id` names the parent only for an
-        /// in-process request (stint 1632).
-        #[serde(skip)]
-        source: SpawnSource,
     },
 
     /// Blocking pull wait for one or more child agent panes to finish via `plexi agent done`
@@ -862,8 +845,6 @@ pub enum HostRequest {
         #[serde(default = "default_agent_wait_timeout")]
         timeout_secs: f64,
         response_file: String,
-        #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
     },
 
     /// Complete a worker agent's task, validating `--result` against `result_schema`
@@ -876,10 +857,6 @@ pub enum HostRequest {
         result: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
-        /// Kernel-verified socket peer ancestry, stamped by the listener. Never
-        /// read from the wire: the host derives the caller pane from it.
-        #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
         response_file: String,
     },
 
@@ -904,10 +881,6 @@ pub enum HostRequest {
     AgentAsk {
         pane_id: u64,
         question: String,
-        /// Kernel-verified socket peer ancestry, stamped by the listener. Never
-        /// read from the wire: the host derives the caller pane from it.
-        #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
         response_file: String,
     },
 
@@ -920,15 +893,7 @@ pub enum HostRequest {
         name: String,
         /// Working directory for workspace lookup.
         cwd: String,
-        /// Calling pane (`PLEXI_PANE_ID`), parent of a resumed or started pane.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        caller_pane_id: Option<u64>,
         response_file: String,
-        /// Who submitted this open, stamped by the host and never read from
-        /// the wire: `caller_pane_id` names the caller only for an in-process
-        /// request (stint 1632).
-        #[serde(skip)]
-        source: SpawnSource,
     },
 
     /// New chat for a named agent (`plexi agent new-chat <name>`, stint
@@ -939,14 +904,7 @@ pub enum HostRequest {
         name: String,
         /// Working directory for workspace lookup.
         cwd: String,
-        /// Calling pane (`PLEXI_PANE_ID`), parent of the started pane.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        caller_pane_id: Option<u64>,
         response_file: String,
-        /// Who submitted this request, stamped by the host and never read
-        /// from the wire (stint 1632).
-        #[serde(skip)]
-        source: SpawnSource,
     },
 
     AgentReopen {
@@ -956,11 +914,6 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subcontext: Option<String>,
         response_file: String,
-        /// Who submitted this request, stamped by the host and never read
-        /// from the wire (stint 1632): the panes it creates are admitted from
-        /// it.
-        #[serde(skip)]
-        source: SpawnSource,
     },
 
     /// Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
@@ -1001,9 +954,6 @@ pub enum HostRequest {
         paste: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
-        /// Host-stamped ancestry of the process that requested the write.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        peer_ancestry: Option<Vec<u32>>,
     },
 
     /// Configure or disable a host-owned recurring terminal prompt.
@@ -1213,19 +1163,16 @@ pub enum HostRequest {
         op: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
-        /// Kernel-verified socket peer ancestry, stamped by the listener. Never
-        /// read from the wire. It names the caller pane for the audit trail
-        /// only: no socket caller is human, so it never decides authority.
-        #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
+        /// For `allow`: how long the request asks for (`once`, `session`,
+        /// `always`). The person sees it and approves exactly it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration: Option<String>,
         response_file: String,
     },
     /// Ask the host which pane (if any) the socket peer lives in and that pane's
     /// live context authority root. The CLI uses this instead of the stale
     /// `PLEXI_CONTEXT_ROOT` / `PLEXI_PANE_ID` environment.
     CallerContext {
-        #[serde(skip)]
-        peer_ancestry: Option<Vec<u32>>,
         response_file: String,
     },
     /// Open one file or directory in the Plexi surface that handles it
@@ -1239,10 +1186,6 @@ pub enum HostRequest {
         /// could not read it; a relative `path` is then an error.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
-        /// The pane the caller claims to run in (`PLEXI_PANE_ID`). Checked
-        /// against the socket peer; a mismatch is a stale caller.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        caller_pane_id: Option<u64>,
         /// Placement anchor. It never changes what `path` means.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_pane_id: Option<u64>,
@@ -1251,10 +1194,6 @@ pub enum HostRequest {
         placement: Option<OpenPlacement>,
         #[serde(default, skip_serializing_if = "is_false")]
         no_focus: bool,
-        /// Kernel-verified socket peer ancestry and how its walk ended,
-        /// stamped by the listener. Never read from the wire.
-        #[serde(skip)]
-        peer: Option<PeerAncestry>,
         response_file: String,
     },
     /// List items waiting on the human. The host expires due items first.
@@ -1269,24 +1208,20 @@ pub enum HostRequest {
         response_file: String,
     },
     /// Rich Needs-you + continuation API: `op` is `ask`, `show`, `answer`,
-    /// `reconcile`, or `complete`. `peer_ancestry` is stamped by the socket
-    /// listener so the host knows whether the caller lives inside a terminal pane.
+    /// `reconcile`, or `complete`. The caller is the host-classified socket
+    /// caller; a socket caller never answers.
     NeedsYouApi {
         op: String,
         payload: serde_json::Value,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        peer_ancestry: Vec<u32>,
         response_file: String,
     },
     /// Names-only explicit-context inventory, admitted for the host-stamped peer.
     PaneSecretList {
         context: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        peer_ancestry: Vec<u32>,
         response_file: String,
     },
     /// `plexi secret get` from a terminal pane. The host admits `secret.get`
-    /// for the pane named by `peer_ancestry` and answers `status` `value`,
+    /// for the caller's pane and answers `status` `value`,
     /// `permission_required` (with `pending_request_id`), `denied`, or
     /// `not_found`. Without a grant no value is read; the desktop Allow once
     /// click is what grants. A caller that resolves to no pane is denied.
@@ -1297,10 +1232,6 @@ pub enum HostRequest {
         /// Workspace `plexi secret get` resolved from the caller's cwd.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_root: Option<std::path::PathBuf>,
-        /// Host-captured peer ancestry. Socket clients cannot set this; the
-        /// listener overwrites it before the read is admitted.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        peer_ancestry: Vec<u32>,
         response_file: String,
     },
     /// Agents API: agent registry, runs, delegation, and gated tool calls.
@@ -1328,15 +1259,9 @@ pub enum HostRequest {
         wait_approved: bool,
         /// Tool input, a JSON object serialized as a string.
         input_json: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        caller_pane_id: Option<u64>,
         /// Host-issued session credential. A client-supplied pane id is only a claim.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         call_credential: Option<String>,
-        /// Host-captured peer ancestry. Socket clients cannot set this; the
-        /// listener overwrites it before the call is admitted.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        peer_ancestry: Vec<u32>,
         /// Pane that owns the tool when more than one instance of the plugin is live.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_pane_id: Option<u64>,
@@ -1355,14 +1280,6 @@ pub enum HostRequest {
         plugin_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        caller_pane_id: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        caller_context_id: Option<u64>,
-        /// Host-captured peer ancestry. Socket clients cannot set this; the
-        /// listener overwrites it before resolving the caller pane.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        peer_ancestry: Vec<u32>,
         response_file: String,
     },
 
@@ -1396,11 +1313,6 @@ pub enum HostRequest {
         /// If set, the host writes a JSON response (context_id, windows) to this path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
-        /// Who submitted this request, stamped by the host and never read
-        /// from the wire (stint 1632): the panes it creates are admitted from
-        /// it.
-        #[serde(skip)]
-        source: SpawnSource,
     },
 
     /// Create a sub-context under the caller's context, pre-populated with a
@@ -1442,22 +1354,12 @@ pub enum HostRequest {
         /// to this path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
-        /// Who submitted this request, stamped by the host and never read
-        /// from the wire (stint 1632): the panes it creates are admitted from
-        /// it.
-        #[serde(skip)]
-        source: SpawnSource,
     },
     /// Focus existing context by root, or create one. Sent by `plexi context open`.
     FocusContext {
         root: std::path::PathBuf,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
-        /// Who submitted this request, stamped by the host and never read
-        /// from the wire (stint 1632): a context it creates seeds a pane
-        /// admitted from it.
-        #[serde(skip)]
-        source: SpawnSource,
     },
     /// Set/update the root of a context. Sent by `plexi context set-root`.
     /// `context_id` targets the caller's context (PLEXI_CONTEXT_ID); when
@@ -1965,46 +1867,6 @@ pub enum HostRequest {
     },
 }
 
-impl HostRequest {
-    /// Requests the host attributes to the sender's socket peer identity.
-    /// For these the host writes `PEER_IDENTITY_ACK` once it has read the
-    /// peer, and a fire-and-forget CLI waits for it before disconnecting:
-    /// after disconnect the peer pid is unreadable (`src/app/mod.rs`).
-    pub fn consumes_peer_identity(&self) -> bool {
-        matches!(
-            self,
-            Self::Notify { .. }
-                | Self::DismissNotification { .. }
-                | Self::AgentCall { .. }
-                | Self::AgentMessage { .. }
-                | Self::CallPluginTool { .. }
-                | Self::ListPluginTools { .. }
-                | Self::PaneSecretGet { .. }
-                | Self::PaneSecretList { .. }
-                | Self::NeedsYouApi { .. }
-                | Self::ResourceLease { .. }
-                | Self::SpawnPane { .. }
-                | Self::SetAgentState { .. }
-                | Self::AgentDone { .. }
-                | Self::AgentAsk { .. }
-                | Self::Permissions { .. }
-                | Self::CallerContext { .. }
-                | Self::FileOpen { .. }
-                | Self::AgentSpawn { .. }
-                | Self::AgentOpen { .. }
-                | Self::AgentNewChat { .. }
-                | Self::AgentReopen { .. }
-                | Self::CreateContext { .. }
-                | Self::CreateSubContext { .. }
-                | Self::FocusContext { .. }
-                | Self::AgentWait { .. }
-                | Self::PaneMessageSend { .. }
-                | Self::SendToPane { .. }
-                | Self::AgentsApi { .. }
-        )
-    }
-}
-
 /// Who caused a plugin state change (`HostRequest::EmitEvent`).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -2067,27 +1929,6 @@ pub enum PathTokenMode {
     Replace,
     /// Write the path verbatim at the cursor position.
     Append,
-}
-
-/// How the host's walk up a socket peer's process ancestry ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AncestryEnd {
-    /// The walk reached the OS root process: the lineage is complete.
-    ReachedRoot,
-    /// A parent lookup failed before the root.
-    LookupFailed,
-    /// A process repeated.
-    Cycle,
-    /// The walk stopped at its hop limit.
-    HopLimit,
-}
-
-/// A socket peer's ancestor pids, nearest first, and how the walk ended.
-/// Captured by the listener at accept time; never part of the wire.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerAncestry {
-    pub pids: Vec<u32>,
-    pub end: AncestryEnd,
 }
 
 /// Where `HostRequest::FileOpen` places the handler pane, relative to its

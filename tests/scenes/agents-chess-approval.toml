@@ -30,6 +30,10 @@ assert_label = { target = "assistant", label = "move e2e4" }
 [[steps]]
 shot = "agents-chess-approval-pending.png"
 
+# The sheet takes a decision only once it has been on screen past the arm delay.
+[[steps]]
+chess_approval = { phase = "arm", chess = "chess", assistant = "assistant" }
+
 [[steps]]
 key = { target = "assistant", value = "left" }
 
@@ -56,6 +60,10 @@ chess_approval = { phase = "pending", chess = "chess", assistant = "assistant", 
 
 [[steps]]
 chess_approval = { phase = "human", chess = "chess", assistant = "assistant", move = "e7e5" }
+
+# The sheet takes a decision only once it has been on screen past the arm delay.
+[[steps]]
+chess_approval = { phase = "arm", chess = "chess", assistant = "assistant" }
 
 [[steps]]
 key = { target = "assistant", value = "left" }

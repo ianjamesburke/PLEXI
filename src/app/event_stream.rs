@@ -76,8 +76,11 @@ impl Consumer {
 struct Connection {
     socket: IpcStream,
     cancelled: Arc<AtomicBool>,
+    /// The exact key the subscription was registered under; cleanup clears
+    /// that key and no other.
+    subscriber_type: ActorType,
     subscriber: String,
-    wake: UiMailbox<HostRequest>,
+    wake: UiMailbox<crate::app::socket_caller::PaneIpcMessage>,
 }
 
 impl Drop for Connection {
@@ -90,12 +93,16 @@ impl Drop for Connection {
         }
         match plugin_timeline::global().lock() {
             Ok(mut timeline) => {
-                timeline.clear_subscriber(ActorType::Agent, &self.subscriber);
+                timeline.clear_subscriber(self.subscriber_type, &self.subscriber);
                 timeline.event_ready().notify_all();
             }
             Err(error) => log::error!("events: subscription cleanup failed: {error}"),
         }
-        if self.wake.send(HostRequest::Wake).is_err() {
+        if self
+            .wake
+            .send(crate::app::socket_caller::PaneIpcMessage::host(HostRequest::Wake))
+            .is_err()
+        {
             log::debug!("events: host stopped before cancellation wake");
         }
         log::info!("events: connection {} released", self.subscriber);
@@ -141,8 +148,8 @@ pub(super) fn handle_events_subscribe(
     remaining: Lines<BufReader<IpcStream>>,
     val: Value,
     subscribe: &UiMailbox<HostSubscribeRequest>,
-    wake: &UiMailbox<HostRequest>,
-    peer_ancestry: Option<&[u32]>,
+    wake: &UiMailbox<crate::app::socket_caller::PaneIpcMessage>,
+    caller: crate::broker::caller::SocketCaller,
 ) {
     let consumer = match Consumer::parse(&val) {
         Ok(consumer) => consumer,
@@ -162,9 +169,17 @@ pub(super) fn handle_events_subscribe(
         error(&mut socket, format!("setting event write deadline: {err}"));
         return;
     }
+    // The delivery key is final before the registration is enqueued, so a
+    // connection that drops before reading the reply clears exactly what
+    // was registered (Codex 3290 r2).
+    let subscriber_type = match &caller {
+        crate::broker::caller::SocketCaller::External(_) => ActorType::External,
+        _ => ActorType::Agent,
+    };
     let connection = Connection {
         socket: clone,
         cancelled: Arc::new(AtomicBool::new(false)),
+        subscriber_type,
         subscriber: format!("cli-connection:{}", uuid::Uuid::new_v4()),
         wake: wake.clone(),
     };
@@ -182,7 +197,10 @@ pub(super) fn handle_events_subscribe(
             Ok(timeline) => timeline.event_ready().notify_all(),
             Err(error) => log::error!("events: disconnect notification failed: {error}"),
         }
-        if disconnect_wake.send(HostRequest::Wake).is_err() {
+        if disconnect_wake
+            .send(crate::app::socket_caller::PaneIpcMessage::host(HostRequest::Wake))
+            .is_err()
+        {
             log::debug!("events: host stopped before disconnect wake");
         }
     });
@@ -222,16 +240,17 @@ pub(super) fn handle_events_subscribe(
         } else {
             val["resource_id"].as_str().map(String::from)
         },
-        from_pane_id: val["from_pane_id"].as_u64(),
+        // Never from the wire: the admitted caller names the pane.
+        from_pane_id: None,
         subscriber_override: Some(connection.subscriber.clone()),
-        subscriber_type_override: None,
+        subscriber_type_override: Some(connection.subscriber_type),
         // The host resolves the stable broker actor from the verified caller.
         broker_actor_override: None,
         workspace_root_override: None,
         // Resolved on the host thread from the verified peer.
         subscriber_authority: crate::host::event_subscriptions::SubscriberAuthority::External,
         context_id_override: None,
-        peer_ancestry: peer_ancestry.map(<[u32]>::to_vec),
+        socket_caller: Some(caller),
         cancelled: Some(Arc::clone(&connection.cancelled)),
         reply,
     };
@@ -270,6 +289,15 @@ pub(super) fn handle_events_subscribe(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     };
+    if (subscriber_type, subscriber_id.as_str())
+        != (connection.subscriber_type, connection.subscriber.as_str())
+    {
+        log::error!(
+            "events: {subscription_id} registered as {subscriber_type:?} '{subscriber_id}', not the connection's key"
+        );
+        error(&mut socket, "subscription registered under an unexpected key");
+        return;
+    }
     log::info!("events: registered {subscription_id} plugin={plugin_id} lifecycle={lifecycle}");
     let timeline = plugin_timeline::global();
     let snapshot = {
@@ -409,6 +437,132 @@ pub(super) fn handle_events_subscribe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codex 3290 r2/r3: an outside process's subscription is registered
+    /// under the key its connection bound before the request was enqueued.
+    /// The client goes away after registration, with a delivery already
+    /// queued, and the connection ends before it consumes the reply: it
+    /// clears exactly that key, so no subscription and no delivery remain.
+    /// The interleaving is fixed: the disconnect reader's wake is the
+    /// barrier, the worker is joined before the reply is offered, and the
+    /// reply finding no receiver proves it was never consumed.
+    #[test]
+    fn an_outside_subscription_cancelled_before_its_reply_leaves_nothing() {
+        use std::io::BufRead as _;
+        const CONTEXT: u64 = 1_285_000;
+        let ctx = egui::Context::default();
+        let wake = Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
+        let (subscribe, subscribe_rx) =
+            UiMailbox::<HostSubscribeRequest>::channel(wake.clone(), "event_subscribe");
+        let (host, host_rx) =
+            UiMailbox::<crate::app::socket_caller::PaneIpcMessage>::channel(wake, "pane_ipc");
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let lines = BufReader::new(server.try_clone().unwrap()).lines();
+        let caller = crate::broker::caller::SocketCaller::External(
+            crate::broker::caller::PeerWitness::capture(std::process::id()),
+        );
+        let frame = json!({"type": "events_subscribe", "plugin_id": "probe-1285",
+            "event_names": ["tick"]});
+        let worker = std::thread::spawn(move || {
+            handle_events_subscribe(server, lines, frame, &subscribe, &host, caller)
+        });
+        let request = subscribe_rx.recv().unwrap();
+        assert_eq!(
+            request.subscriber_type_override,
+            Some(ActorType::External),
+            "the key is bound before enqueue"
+        );
+        let key = request.subscriber_override.clone().unwrap();
+        // Registered as the host registers an outside caller, and one event
+        // delivered to it before the client is gone.
+        {
+            let global = plugin_timeline::global();
+            let mut timeline = global.lock().unwrap();
+            timeline
+                .declare_streams(
+                    CONTEXT,
+                    "probe-1285",
+                    vec![crate::protocol::EventStreamDecl {
+                        name: "tick".into(),
+                        schema: json!({"type": "object"}),
+                        description: None,
+                    }],
+                )
+                .unwrap();
+            timeline.add_subscription(plugin_timeline::SubscriptionRecord {
+                subscription_id: format!("sub-{key}"),
+                subscriber_type: ActorType::External,
+                subscriber_id: key.clone(),
+                plugin_id: "probe-1285".into(),
+                event_names: vec!["tick".into()],
+                payload_mode: PayloadMode::Full,
+                trigger_mode: TriggerMode::Conversation,
+                resource_id: None,
+                duration: crate::broker::GrantDuration::Session,
+                subscriber_context_id: CONTEXT,
+                created_at: "test".into(),
+                admitted: None,
+            });
+            timeline
+                .record_event(
+                    CONTEXT,
+                    "probe-1285",
+                    1,
+                    plugin_timeline::EmittedEvent {
+                        event: "tick".into(),
+                        actor: crate::protocol::PluginEventActor::System,
+                        actor_id: None,
+                        caused_by: None,
+                        summary: "tick".into(),
+                        resource_id: "r".into(),
+                        resource_scope: None,
+                        revision_after: "1".into(),
+                        payload: Some(json!({})),
+                        state_ref: None,
+                        revision_before: None,
+                        rollback_token: None,
+                        changed_resources: vec![],
+                        suggested_trigger: None,
+                    },
+                )
+                .unwrap();
+            assert!(
+                timeline.has_deliveries_for(ActorType::External, &key),
+                "fixture: a delivery is queued for the subscriber"
+            );
+        }
+        drop(client);
+        // Barrier: the disconnect reader saw the client go and woke the host.
+        match host_rx.recv().unwrap() {
+            crate::app::socket_caller::PaneIpcMessage::Request { request, .. } => {
+                assert!(matches!(*request, HostRequest::Wake))
+            }
+            other => panic!("expected the disconnect wake, got {other:?}"),
+        }
+        worker.join().unwrap();
+        assert!(
+            request
+                .reply
+                .send(HostSubscribeReply::Ok {
+                    subscription_id: format!("sub-{key}"),
+                    subscriber_type: ActorType::External,
+                    subscriber_id: key.clone(),
+                })
+                .is_err(),
+            "the connection consumed its reply"
+        );
+        let global = plugin_timeline::global();
+        let timeline = global.lock().unwrap();
+        assert!(
+            !timeline.subscriptions().iter().any(|sub| sub.subscriber_id == key),
+            "a subscription outlived its connection"
+        );
+        assert!(
+            !timeline.has_deliveries_for(ActorType::External, &key),
+            "a delivery outlived its connection"
+        );
+    }
+
     #[test]
     fn pane_consumer_queued_match_survives_close_before_snapshot() {
         use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance, Source};

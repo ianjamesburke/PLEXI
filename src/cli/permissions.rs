@@ -10,15 +10,16 @@
 const EXIT_WAITING_FOR_APPROVAL: i32 = 2;
 
 /// `plexi permissions list [--json]`, and `reset` / `revoke` / `allow <id>`.
-pub fn permissions_cli(op: &str, id: Option<&str>, json: bool) -> i32 {
+pub fn permissions_cli(op: &str, id: Option<&str>, duration: Option<&str>, json: bool) -> i32 {
     let response_file = crate::rpc::response_file("permissions", "json");
     let payload = serde_json::json!({
         "type": "permissions",
         "op": op,
         "id": id,
+        "duration": duration,
         "response_file": response_file,
     });
-    log::info!("permissions:cli: op={op} id={id:?}");
+    log::info!("permissions:cli: op={op} id={id:?} duration={duration:?}");
     let content = match super::request_with(
         payload,
         "permissions",

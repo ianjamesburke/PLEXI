@@ -631,7 +631,6 @@ mod tests {
 
         // 1. Working: Pi starts a turn
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Working,
             agent: "pi".into(),
@@ -655,7 +654,6 @@ mod tests {
 
         // 2. Waiting (Blocked on question): Pi asks user for input
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Blocked,
             agent: "pi".into(),
@@ -686,7 +684,6 @@ mod tests {
 
         // 3. Settling to Idle: Pi turn finishes
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Idle,
             agent: "pi".into(),
@@ -708,7 +705,6 @@ mod tests {
 
         // 4. Failed: Pi reports failure
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Failed,
             agent: "pi".into(),
@@ -739,7 +735,6 @@ mod tests {
         assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
         // 5. Done (Completed): Pi completes
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: pi_pane,
             state: crate::protocol::AgentState::Completed,
             agent: "pi".into(),
@@ -980,7 +975,7 @@ mod attention_tests {
         h.focus_pane(other);
         let dir = tempfile::tempdir().unwrap();
         let response = dir.path().join("next.json");
-        h.app.handle_pane_ipc_request(HostRequest::AgentNext {
+        h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::AgentNext {
             response_file: response.to_string_lossy().into_owned(),
         });
         let value: serde_json::Value =
@@ -997,7 +992,6 @@ mod attention_tests {
         let other = h.add_test_pane();
         h.focus_pane(other);
         let report = HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "pi".into(),
@@ -1043,7 +1037,6 @@ mod attention_tests {
 
         // 1. Agent reports needs_you -> files NeedsYouKind::Question, appears in open_items and agent next.
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "test".into(),
@@ -1062,7 +1055,6 @@ mod attention_tests {
         // 2. Agent reports idle -> withdraws its attention item without recording an approval,
         // clears the attention notification, and removes the agent from `agent next`.
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Idle,
             agent: "test".into(),
@@ -1096,7 +1088,7 @@ mod attention_tests {
 
         let dir = tempfile::tempdir().unwrap();
         let response = dir.path().join("next.json");
-        h.app.handle_pane_ipc_request(HostRequest::AgentNext {
+        h.app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, HostRequest::AgentNext {
             response_file: response.to_string_lossy().into_owned(),
         });
         let value: serde_json::Value =
@@ -1114,7 +1106,6 @@ mod attention_tests {
         // 3. Also verify working and completed withdraw blocked/needs_you items,
         // while a broker-filed PermissionRequest is NOT withdrawn by an agent state report.
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Blocked,
             agent: "test".into(),
@@ -1139,13 +1130,11 @@ mod attention_tests {
                     ..Default::default()
                 }),
             )
-            .unwrap()
-            .0;
+            .unwrap();
         h.hidden_frame();
         assert_eq!(crate::app::attention_queue::open_needs_you_items().len(), 2);
 
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Working,
             agent: "test".into(),
@@ -1177,7 +1166,6 @@ mod attention_tests {
             )
             .unwrap();
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::NeedsYou,
             agent: "test".into(),
@@ -1190,7 +1178,6 @@ mod attention_tests {
         assert_eq!(crate::app::attention_queue::open_needs_you_items().len(), 1);
 
         h.inject_ipc(HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id: agent,
             state: AgentState::Completed,
             agent: "test".into(),
@@ -1301,13 +1288,12 @@ impl PlexiApp {
             .find_map(|w| w.panes.get(&pane_id))
             .and_then(|p| p.as_terminal())
         {
-            if let Some(ref sb) = t.spawned_by {
-                if sb.starts_with("agent:") || sb.starts_with("team:") {
-                    return true;
-                }
-                if sb == "human" {
-                    return false;
-                }
+            let spawner = crate::broker::pane_authority::Spawner::parse(t.spawned_by.as_deref());
+            if spawner.is_agent() {
+                return true;
+            }
+            if spawner.ends_parent_walk() {
+                return false;
             }
         }
         let parent_id = self
@@ -1402,11 +1388,9 @@ impl PlexiApp {
         }
         match crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()) {
             Ok(monitor) => {
-                let _ = monitor.resolve_needs_you_from(
-                    &record.id,
-                    true,
-                    crate::broker::gate::ResolveSurface::Desktop,
-                );
+                if let Err(error) = monitor.close_agent_done_item(&record.id) {
+                    log::info!("attention: result item {} left open: {error}", record.id);
+                }
             }
             Err(error) => log::error!("attention: result item left open: {error}"),
         }

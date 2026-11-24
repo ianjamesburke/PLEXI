@@ -56,6 +56,14 @@ App-to-host requests — go to `route_command`.
 
 Messages the app sends to request host services.
 
+### `spawn_receipt`
+
+Hold this connection open for the reply to a queued spawn. The queue entry names the same token; the host answers her...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
 ### `show_host`
 
 Reveal and focus the running host window for a second app launch.
@@ -139,7 +147,7 @@ Step through the host's pane focus history.
 
 ### `resource_lease`
 
-Process-lifetime resource admission. Identity is stamped by the socket listener.
+Process-lifetime resource admission. The holder must be in the kernel-witnessed lineage of the caller.
 
 | Field | Type | Required |
 |-------|------|----------|
@@ -268,8 +276,6 @@ Post a PGAP notification. PGAP is the rich producer contract: it supports Messag
 | `required` | `boolean` | no |
 | `response_file` | `string?` | no |
 | `scope` | `variant` | no |
-| `source_context_id` | `integer?` | no |
-| `source_pane_id` | `integer?` | no |
 | `timeout_secs` | `integer?` | no |
 | `title` | `string` | yes |
 
@@ -281,8 +287,6 @@ Remove a notification posted by the caller. The host verifies the caller identit
 |-------|------|----------|
 | `notify_id` | `string` | yes |
 | `response_file` | `string` | yes |
-| `source_context_id` | `integer?` | no |
-| `source_pane_id` | `integer?` | no |
 
 ### `set_agent_state`
 
@@ -532,7 +536,6 @@ Append a structured message to a pane's host-managed FIFO inbox.
 |-------|------|----------|
 | `pane_id` | `integer` | yes |
 | `payload` | `string` | yes |
-| `peer_ancestry` | `array?` | no |
 | `response_file` | `string` | yes |
 | `submit` | `boolean` | no |
 
@@ -588,8 +591,6 @@ Invoke an agent role as a tool, waiting for its completion or question.
 | `call_credential` | `string?` | no |
 | `cwd` | `string?` | no |
 | `handoff` | `boolean` | no |
-| `parent_pane_id` | `integer?` | no |
-| `peer_ancestry` | `integer[]` | no |
 | `response_file` | `string` | yes |
 | `role` | `string` | yes |
 | `task` | `string` | yes |
@@ -603,8 +604,6 @@ Deliver a structured reply to a child agent, optionally waiting for its next out
 |-------|------|----------|
 | `call_credential` | `string?` | no |
 | `pane_id` | `integer` | yes |
-| `parent_pane_id` | `integer?` | no |
-| `peer_ancestry` | `integer[]` | no |
 | `response_file` | `string` | yes |
 | `text` | `string` | yes |
 | `wait` | `boolean` | no |
@@ -615,6 +614,7 @@ Spawn a configured agent worker pane, optionally into a created or reused child 
 
 | Field | Type | Required |
 |-------|------|----------|
+| `anchor_pane` | `integer?` | no |
 | `command` | `string` | yes |
 | `cwd` | `string?` | no |
 | `ephemeral` | `boolean` | no |
@@ -622,7 +622,6 @@ Spawn a configured agent worker pane, optionally into a created or reused child 
 | `harness` | `string` | yes |
 | `initial_slots` | `any[][]` | no |
 | `name` | `string?` | no |
-| `parent_pane_id` | `integer?` | no |
 | `response_file` | `string` | yes |
 | `result_schema` | `any` | no |
 | `role` | `string` | no |
@@ -688,7 +687,6 @@ Reopen a closed agent session or run from `~/.plexi-<channel>/agent_history.json
 
 | Field | Type | Required |
 |-------|------|----------|
-| `caller_pane_id` | `integer?` | no |
 | `cwd` | `string` | yes |
 | `name` | `string` | yes |
 | `response_file` | `string` | yes |
@@ -699,7 +697,6 @@ New chat for a named agent (`plexi agent new-chat <name>`, stint 1397): archive 
 
 | Field | Type | Required |
 |-------|------|----------|
-| `caller_pane_id` | `integer?` | no |
 | `cwd` | `string` | yes |
 | `name` | `string` | yes |
 | `response_file` | `string` | yes |
@@ -739,7 +736,6 @@ Write text to a terminal PTY or a plugin's input path (`plexi pane send`). `\n` 
 | `operation_id` | `string?` | no |
 | `pane_id` | `integer` | yes |
 | `paste` | `boolean` | no |
-| `peer_ancestry` | `array?` | no |
 | `response_file` | `string?` | no |
 | `submit` | `boolean` | no |
 | `text` | `string` | yes |
@@ -908,6 +904,7 @@ Read or change the permission monitor. `op` is `list`, `reset`, `revoke`, or `al
 
 | Field | Type | Required |
 |-------|------|----------|
+| `duration` | `string?` | no |
 | `id` | `string?` | no |
 | `op` | `string` | yes |
 | `response_file` | `string` | yes |
@@ -926,7 +923,6 @@ Open one file or directory in the Plexi surface that handles it (`plexi file ope
 
 | Field | Type | Required |
 |-------|------|----------|
-| `caller_pane_id` | `integer?` | no |
 | `cwd` | `string?` | no |
 | `from_pane_id` | `integer?` | no |
 | `no_focus` | `boolean` | no |
@@ -954,13 +950,12 @@ Resolve one needs-you item. Approving a click approval is refused: the row stays
 
 ### `needs_you_api`
 
-Rich Needs-you + continuation API: `op` is `ask`, `show`, `answer`, `reconcile`, or `complete`. `peer_ancestry` is st...
+Rich Needs-you + continuation API: `op` is `ask`, `show`, `answer`, `reconcile`, or `complete`. The caller is the hos...
 
 | Field | Type | Required |
 |-------|------|----------|
 | `op` | `string` | yes |
 | `payload` | `any` | yes |
-| `peer_ancestry` | `integer[]` | no |
 | `response_file` | `string` | yes |
 
 ### `pane_secret_list`
@@ -970,18 +965,16 @@ Names-only explicit-context inventory, admitted for the host-stamped peer.
 | Field | Type | Required |
 |-------|------|----------|
 | `context` | `string` | yes |
-| `peer_ancestry` | `integer[]` | no |
 | `response_file` | `string` | yes |
 
 ### `pane_secret_get`
 
-`plexi secret get` from a terminal pane. The host admits `secret.get` for the pane named by `peer_ancestry` and answe...
+`plexi secret get` from a terminal pane. The host admits `secret.get` for the caller's pane and answers `status` `val...
 
 | Field | Type | Required |
 |-------|------|----------|
 | `global` | `boolean` | no |
 | `name` | `string` | yes |
-| `peer_ancestry` | `integer[]` | no |
 | `response_file` | `string` | yes |
 | `workspace_root` | `string?` | no |
 
@@ -1002,9 +995,7 @@ Call a plugin-exposed tool through the host tool dispatcher. Sent by `plexi plug
 | Field | Type | Required |
 |-------|------|----------|
 | `call_credential` | `string?` | no |
-| `caller_pane_id` | `integer?` | no |
 | `input_json` | `string` | yes |
-| `peer_ancestry` | `integer[]` | no |
 | `plugin_id` | `string` | yes |
 | `response_file` | `string?` | no |
 | `target_pane_id` | `integer?` | no |
@@ -1017,10 +1008,7 @@ Snapshot the live tool registry exposed by running view panes in the resolved co
 
 | Field | Type | Required |
 |-------|------|----------|
-| `caller_context_id` | `integer?` | no |
-| `caller_pane_id` | `integer?` | no |
 | `context_id` | `integer?` | no |
-| `peer_ancestry` | `integer[]` | no |
 | `plugin_id` | `string?` | no |
 | `response_file` | `string` | yes |
 

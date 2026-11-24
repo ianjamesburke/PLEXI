@@ -417,7 +417,10 @@ pub fn take_folder_secret_sheet() -> Option<FolderSecretSheet> {
 /// waiter that calls `approve_pending`. Returns after that grant is recorded,
 /// so the next read sees it. Returns false when no sheet is armed or the
 /// waiter does not finish.
-pub fn deliver_folder_secret_choice(choice: &str) -> bool {
+pub fn deliver_folder_secret_choice(
+    choice: &str,
+    evidence: Option<crate::broker::consent::DecisionEvidence>,
+) -> bool {
     let armed = {
         let mut sheets = human_sheets().lock().unwrap_or_else(|err| err.into_inner());
         sheets.armed.take()
@@ -425,7 +428,7 @@ pub fn deliver_folder_secret_choice(choice: &str) -> bool {
     let Some(armed) = armed else {
         return false;
     };
-    let sent = armed.reply.send(choice.to_string()).is_ok();
+    let sent = armed.reply.send((choice.to_string(), evidence)).is_ok();
     let granted = sent
         && armed
             .granted
@@ -460,13 +463,13 @@ struct SheetTicket {
     actor_id: String,
     resource_id: String,
     summary: String,
-    reply: std::sync::mpsc::Sender<String>,
+    reply: std::sync::mpsc::Sender<(String, Option<crate::broker::consent::DecisionEvidence>)>,
     /// Signaled after `approve_pending` returns. The click waits on this.
     granted: std::sync::mpsc::Receiver<()>,
 }
 
 struct ArmedClick {
-    reply: std::sync::mpsc::Sender<String>,
+    reply: std::sync::mpsc::Sender<(String, Option<crate::broker::consent::DecisionEvidence>)>,
     granted: std::sync::mpsc::Receiver<()>,
 }
 
@@ -535,12 +538,12 @@ fn post_human_sheet(pending_id: &str, actor_id: &str, resource: &str, summary: &
 fn wait_for_human_choice(
     monitor: std::sync::Arc<PermissionMonitor>,
     pending_id: String,
-    inbox: std::sync::mpsc::Receiver<String>,
+    inbox: std::sync::mpsc::Receiver<(String, Option<crate::broker::consent::DecisionEvidence>)>,
     granted: std::sync::mpsc::Sender<()>,
 ) {
-    let choice = inbox
+    let (choice, evidence) = inbox
         .recv_timeout(std::time::Duration::from_secs(180))
-        .unwrap_or_else(|_| "deny".to_string());
+        .unwrap_or_else(|_| ("deny".to_string(), None));
     let approval = match choice.as_str() {
         "once" => gate::ApprovalChoice::Once,
         "session" => gate::ApprovalChoice::Session,
@@ -548,7 +551,11 @@ fn wait_for_human_choice(
         "deny_always" => gate::ApprovalChoice::DenyAlways,
         _ => gate::ApprovalChoice::Deny,
     };
-    match monitor.approve_pending(&pending_id, approval) {
+    let decided = match evidence {
+        Some(evidence) => monitor.decide_pending(&evidence, &pending_id, approval),
+        None => monitor.cancel_pending(&pending_id),
+    };
+    match decided {
         Ok(()) => log::info!("folder_secrets: human choice={choice} pending={pending_id}"),
         Err(err) => {
             log::info!("folder_secrets: human choice failed pending={pending_id} err={err}")
@@ -822,6 +829,7 @@ fn proxy_read(
         ActorType::System => "system",
         ActorType::ManagedPolicy => "policy",
         ActorType::User => "user",
+        ActorType::External => "external",
     };
     let request = serde_json::json!({
         "kind": kind,

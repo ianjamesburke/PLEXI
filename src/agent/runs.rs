@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use crate::broker::gate::{
     Admission, AdmitRequest, NeedsYouDetails, NeedsYouFile, NeedsYouKind, PermissionMonitor,
 };
+use crate::broker::principal::Principal;
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantKind, GrantRecord, GrantSource, TargetType,
 };
@@ -30,7 +31,8 @@ const PACKAGE: &str = "agents";
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ToolGrant {
     pub tool: String,
-    pub decision: String,
+    /// The one decision type: an unknown value fails the load (stint 1285).
+    pub decision: Decision,
     #[serde(default)]
     pub kind: GrantKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,10 +108,66 @@ pub fn authenticate_run_token(token: &str) -> Option<RunAuth> {
     })
 }
 
-fn remember_token(workspace: &Path, run_id: &str, actor_id: &str) -> String {
+/// The principal that started each agent run, while this host lives
+/// (stint 1285). Kept in memory only: durable, permit-backed ownership is
+/// stint 1716. A run with no live record (a restarted host, or a run that
+/// predates this build) follows alpha's rules, which had no owner.
+/// The owner recorded for a run host code started. No principal's actor id
+/// takes this form.
+const HOST_RUN_OWNER: &str = "host";
+
+fn run_owners() -> &'static Mutex<HashMap<String, String>> {
+    static OWNERS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    OWNERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Whether `caller` may act on `run_id` by ownership: host code always; a
+/// socket principal when it is the live owner, or when the run has no live
+/// owner record (alpha's rule, logged; stint 1716 replaces it).
+fn owner_admits(run_id: &str, caller: Option<&str>) -> bool {
+    let Some(caller) = caller else {
+        return true;
+    };
+    match run_owners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(run_id)
+    {
+        Some(owner) => owner == caller,
+        None => {
+            log::info!(
+                "agents_api: run={run_id} has no live owner record; caller={caller} admitted by alpha's rule (stint 1716)"
+            );
+            true
+        }
+    }
+}
+
+/// The run's token for `owner` (`None` is host code). A fresh run records
+/// its owner in memory; a retry is answered for that owner, or under
+/// alpha's rule when the run has no live owner record.
+fn remember_token(
+    workspace: &Path,
+    run_id: &str,
+    actor_id: &str,
+    owner: Option<&str>,
+    fresh: bool,
+) -> Result<String, Value> {
+    if fresh {
+        // Host code owns the runs it starts (teams, the dashboard): no
+        // socket principal acts on them while this host lives.
+        let recorded = owner.unwrap_or(HOST_RUN_OWNER);
+        run_owners()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(run_id.to_string(), recorded.to_string());
+        log::info!("agents_api: run={run_id} owner={recorded}");
+    } else if !owner_admits(run_id, owner) {
+        return Err(not_run_owner(run_id, owner));
+    }
     let mut by_run = token_by_run().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = by_run.get(run_id) {
-        return existing.clone();
+        return Ok(existing.clone());
     }
     let token = format!("run_{}", uuid::Uuid::new_v4());
     by_run.insert(run_id.to_string(), token.clone());
@@ -122,7 +180,50 @@ fn remember_token(workspace: &Path, run_id: &str, actor_id: &str) -> String {
             workspace: workspace.to_path_buf(),
         },
     );
-    token
+    Ok(token)
+}
+
+fn not_run_owner(run_id: &str, caller: Option<&str>) -> Value {
+    log::info!(
+        "agents_api: refused run={run_id} caller={} outcome=not_run_owner",
+        caller.unwrap_or("host")
+    );
+    json!({
+        "ok": false,
+        "error_code": "permission_denied",
+        "error": format!("run {run_id} was not started by this caller"),
+    })
+}
+
+/// Only the run's live owner, host code, or (with no live owner record)
+/// anyone alpha admitted acts on `run_id`.
+fn require_run_owner(run_id: &str, caller: &AgentsCaller) -> Result<(), Value> {
+    let caller = match caller {
+        AgentsCaller::Principal { principal, .. } => Some(principal.actor_id()),
+        AgentsCaller::Host { .. } => None,
+    };
+    if owner_admits(run_id, caller) {
+        Ok(())
+    } else {
+        Err(not_run_owner(run_id, caller))
+    }
+}
+
+/// Test only: this one run's in-memory owner and token are gone, as after
+/// a host restart. Other runs keep theirs.
+#[cfg(test)]
+fn forget_run_for_test(run_id: &str) {
+    run_owners()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(run_id);
+    if let Some(token) = token_by_run()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(run_id)
+    {
+        tokens().lock().unwrap_or_else(|e| e.into_inner()).remove(&token);
+    }
 }
 
 fn actor_of(agent_id: &str) -> String {
@@ -155,20 +256,26 @@ fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// A grant names exactly one tool: no wildcard, path or spaces. Applies to
+/// specs and to every card loaded from disk.
+fn parse_grant_tool(tool: &str) -> Result<&str, String> {
+    if tool.is_empty() || tool == "*" || tool.contains('/') || tool.contains(' ') {
+        return Err(format!("grant tool '{tool}' is not a tool name"));
+    }
+    Ok(tool)
+}
+
 fn parse_grant_spec(spec: &str) -> Result<ToolGrant, String> {
     let (tool, raw_decision) = spec
         .split_once('=')
         .ok_or_else(|| format!("grant '{spec}' must be tool=allow[:hard|:soft]|ask|deny"))?;
-    let tool = tool.trim();
+    let tool = parse_grant_tool(tool.trim())?;
     let raw_decision = raw_decision.trim();
-    if tool.is_empty() || tool == "*" || tool.contains('/') || tool.contains(' ') {
-        return Err(format!("grant tool '{tool}' is not a tool name"));
-    }
     let (decision, kind) = match raw_decision {
-        "allow" | "allow:hard" => ("allow", GrantKind::Hard),
-        "allow:soft" => ("allow", GrantKind::Soft),
-        "ask" => ("ask", GrantKind::Hard),
-        "deny" => ("deny", GrantKind::Hard),
+        "allow" | "allow:hard" => (Decision::Allow, GrantKind::Hard),
+        "allow:soft" => (Decision::Allow, GrantKind::Soft),
+        "ask" => (Decision::Ask, GrantKind::Hard),
+        "deny" => (Decision::Deny, GrantKind::Hard),
         _ => {
             return Err(format!(
                 "grant decision '{raw_decision}' must be allow, allow:hard, allow:soft, ask, or deny"
@@ -177,26 +284,43 @@ fn parse_grant_spec(spec: &str) -> Result<ToolGrant, String> {
     };
     Ok(ToolGrant {
         tool: tool.to_string(),
-        decision: decision.to_string(),
+        decision,
         kind,
         expires_at: None,
     })
 }
 
-fn decision_rank(decision: &str) -> u8 {
-    match decision {
-        "deny" => 0,
-        "ask" => 1,
-        "allow" => 2,
-        _ => 3,
-    }
+/// The parent ceiling row that covers `requested`, if any: the same tool
+/// and at least as permissive. There is no wildcard tool.
+fn covering<'a>(parent: &'a [CeilingRow], requested: &ToolGrant) -> Option<&'a CeilingRow> {
+    parent.iter().find(|row| {
+        row.tool == requested.tool
+            && requested.decision.permissiveness() <= row.decision.permissiveness()
+    })
 }
 
-fn covers(parent: &[ToolGrant], requested: &ToolGrant) -> bool {
-    parent.iter().any(|grant| {
-        (grant.tool == "*" || grant.tool == requested.tool)
-            && decision_rank(&requested.decision) <= decision_rank(&grant.decision)
-    })
+/// One sealed grant-store row a caller holds, as a delegation ceiling
+/// (stint 1285): a caller can delegate what it holds, for no longer than it
+/// holds it, and never a one-use grant (a copy would be a second use).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CeilingRow {
+    pub(crate) tool: String,
+    pub(crate) decision: Decision,
+    pub(crate) duration: GrantDuration,
+    /// When the delegator's row stops working; a delegated row stops then
+    /// too (Codex 3290 r1).
+    pub(crate) expires_at: Option<i64>,
+    /// The run the delegator's row is bound to; a delegated row is bound to
+    /// it too, so finishing that run revokes both.
+    pub(crate) bound_run: Option<String>,
+}
+
+/// The earlier of two expiries, `None` meaning never.
+fn earlier(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 fn same_grant_specs(a: &[ToolGrant], b: &[ToolGrant]) -> bool {
@@ -231,12 +355,16 @@ macro_rules! host_gate {
     };
 }
 
+/// Record a delegated allow. The row's source is `Delegated`, never the
+/// person's, and its duration is the delegator's (stint 1285).
 fn record_scope_allow(
     workspace: &Path,
     actor_id: &str,
     tool: &str,
     kind: GrantKind,
     expires_at: Option<i64>,
+    duration: GrantDuration,
+    bound_run: Option<&str>,
 ) {
     let binding = crate::broker::ExactBinding {
         actor_type: ActorType::Agent,
@@ -264,14 +392,18 @@ fn record_scope_allow(
     let mut record = GrantRecord::from_binding(
         &binding,
         Decision::Allow,
-        GrantDuration::Always,
-        GrantSource::User,
+        duration,
+        GrantSource::Delegated,
         &grant_id,
     );
     record.created_at = now;
     record.args_unbound = true;
+    if duration == GrantDuration::Session {
+        record.session_id = Some(gate.session_id().to_string());
+    }
     record.kind = kind;
     record.expires_at = expires_at;
+    record.bound_operation_id = bound_run.map(str::to_string);
     {
         let mut store = gate.store();
         store.records_mut().retain(|existing| {
@@ -285,7 +417,7 @@ fn record_scope_allow(
         store.save();
     }
     log::info!(
-        "agents_api: scope allow actor={actor_id} tool={tool} kind={} expires_at={expires_at:?}",
+        "agents_api: scope allow actor={actor_id} tool={tool} kind={} duration={duration:?} source=delegated expires_at={expires_at:?}",
         kind.as_str()
     );
 }
@@ -327,43 +459,13 @@ pub fn expire_soft_grant_in_workspace(
 fn expire_soft_allow(grants: &mut [ToolGrant], tool: &str) -> bool {
     let mut changed = false;
     for grant in grants {
-        if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow" {
-            grant.decision = "ask".to_string();
+        if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == Decision::Allow {
+            grant.decision = Decision::Ask;
             grant.expires_at = None;
             changed = true;
         }
     }
     changed
-}
-
-/// Grant `tool=allow` on `run_id` only (in `runs.jsonl`), without modifying `agent.json`.
-pub fn grant_tool_for_run(workspace: &Path, run_id: &str, tool: &str) -> Result<String, String> {
-    let workspace = canonical_workspace(workspace)?;
-    let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let mut runs = load_runs(&workspace)?;
-    let Some(run) = runs.iter_mut().find(|r| r.id == run_id) else {
-        return Err(format!("no run '{run_id}'"));
-    };
-    if let Some(existing) = run.grants.iter_mut().find(|g| g.tool == tool) {
-        existing.decision = "allow".to_string();
-        existing.kind = GrantKind::Hard;
-        existing.expires_at = None;
-    } else {
-        run.grants.push(ToolGrant {
-            tool: tool.to_string(),
-            decision: "allow".to_string(),
-            kind: GrantKind::Hard,
-            expires_at: None,
-        });
-    }
-    let updated = run.clone();
-    append_run_record(&workspace, &updated)?;
-    log::info!(
-        "agents_api: granted tool={tool} on run={} actor={} (run-only, agent.json unchanged)",
-        updated.id,
-        updated.actor_id
-    );
-    Ok(updated.actor_id)
 }
 
 /// Create a new agent definition: `AGENT.md`, `settings.toml` and `agent.json`.
@@ -432,7 +534,16 @@ fn read_agent(dir: &Path) -> Result<AgentAuthorityRecord, String> {
         .ok_or_else(|| format!("no agent.json in {}", dir.display()))?;
     let raw = fs::read_to_string(&path)
         .map_err(|error| format!("read {}: {error}", path.display()))?;
-    serde_json::from_str(&raw).map_err(|error| format!("agent.json in {}: {error}", dir.display()))
+    let record: AgentAuthorityRecord = serde_json::from_str(&raw)
+        .map_err(|error| format!("agent.json in {}: {error}", dir.display()))?;
+    if let Some(grant) = record.grants.iter().find(|grant| parse_grant_tool(&grant.tool).is_err()) {
+        return Err(format!(
+            "agent.json in {}: grant tool '{}' is not a tool name",
+            dir.display(),
+            grant.tool
+        ));
+    }
+    Ok(record)
 }
 
 fn list_agent_authorities(workspace: &Path, include_temporary: bool) -> Result<Vec<AgentAuthorityRecord>, String> {
@@ -547,8 +658,7 @@ fn deny_with_request(ctx: RefusalContext<'_>) -> Value {
                 ..Default::default()
             }),
         )
-        .ok()
-        .map(|(id, _)| id);
+        .ok();
     log::info!(
         "agents_api: denied actor={} tool={} reason={} needs_you={needs_you_id:?}",
         ctx.actor,
@@ -569,20 +679,22 @@ fn deny_with_request(ctx: RefusalContext<'_>) -> Value {
 fn subset_denied(
     workspace: &Path,
     actor: &str,
-    parent: &[ToolGrant],
+    parent: &[CeilingRow],
     requested: &[ToolGrant],
     parent_run: Option<&str>,
     caller_pane: Option<u64>,
 ) -> Option<Value> {
     for grant in requested {
-        if !covers(parent, grant) {
+        // Only an allow carries authority: `ask` still reaches the person on
+        // every call and `deny` narrows, so neither needs a parent row.
+        if grant.decision == Decision::Allow && covering(parent, grant).is_none() {
             return Some(deny_with_request(RefusalContext {
                 workspace,
                 actor,
                 tool: &grant.tool,
                 reason: &format!(
                     "delegation refused: '{grant_decision}' on '{tool}' is not a subset of the parent grants",
-                    grant_decision = grant.decision,
+                    grant_decision = grant.decision.as_str(),
                     tool = grant.tool,
                 ),
                 parent_run,
@@ -602,7 +714,8 @@ struct CreateAgent<'a> {
     grants: &'a [ToolGrant],
     temporary: bool,
     reports_to: Option<&'a str>,
-    parent_grants: Option<&'a [ToolGrant]>,
+    /// The caller's delegation ceiling. Every create has one.
+    parent_grants: &'a [CeilingRow],
     denial_actor: &'a str,
     parent_run: Option<&'a str>,
     caller_pane: Option<u64>,
@@ -614,17 +727,15 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
     }
     let gate = host_gate!();
     gate.expire_soft_grants();
-    if let Some(parent) = req.parent_grants {
-        if let Some(refused) = subset_denied(
-            req.workspace,
-            req.denial_actor,
-            parent,
-            req.grants,
-            req.parent_run,
-            req.caller_pane,
-        ) {
-            return refused;
-        }
+    if let Some(refused) = subset_denied(
+        req.workspace,
+        req.denial_actor,
+        req.parent_grants,
+        req.grants,
+        req.parent_run,
+        req.caller_pane,
+    ) {
+        return refused;
     }
     let dir = agents_root(req.workspace).join(req.name);
     if crate::agent::authority_file_migrating_legacy(&dir).is_some() {
@@ -646,14 +757,14 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
         .grants
         .iter()
         .map(|g| {
-            let expires_at = if g.decision == "allow" && g.kind == GrantKind::Soft {
+            let expires_at = if g.decision == Decision::Allow && g.kind == GrantKind::Soft {
                 Some(now.saturating_add(soft_days.saturating_mul(86_400)))
             } else {
                 None
             };
             ToolGrant {
                 tool: g.tool.clone(),
-                decision: g.decision.clone(),
+                decision: g.decision,
                 kind: g.kind,
                 expires_at,
             }
@@ -682,15 +793,22 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
     }
     let actor = actor_of(req.name);
     for grant in &card.grants {
-        if grant.decision == "allow" {
-            record_scope_allow(
-                req.workspace,
-                &actor,
-                &grant.tool,
-                grant.kind,
-                grant.expires_at,
-            );
+        if grant.decision != Decision::Allow {
+            continue;
         }
+        // No longer than the caller holds it (stint 1285): its duration,
+        // its expiry and its run binding carry to the delegated row.
+        let parent = covering(req.parent_grants, grant);
+        let duration = parent.map_or(GrantDuration::Session, |row| row.duration);
+        record_scope_allow(
+            req.workspace,
+            &actor,
+            &grant.tool,
+            grant.kind,
+            earlier(grant.expires_at, parent.and_then(|row| row.expires_at)),
+            duration,
+            parent.and_then(|row| row.bound_run.as_deref()),
+        );
     }
     log::info!(
         "agents_api: created agent {} actor={actor} adopted_definition={adopt} temporary={} grants={} workspace={}",
@@ -704,6 +822,8 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
 
 struct IssueRun<'a> {
     workspace: &'a Path,
+    /// The socket principal starting the run; `None` for host code.
+    owner: Option<&'a str>,
     agent: &'a AgentAuthorityRecord,
     parent_run: Option<&'a str>,
     admission_id: &'a str,
@@ -722,6 +842,7 @@ fn clear_run_step(run_id: &str) -> String {
 fn issue_run(req: IssueRun<'_>) -> Value {
     let IssueRun {
         workspace,
+        owner,
         agent,
         parent_run,
         admission_id,
@@ -771,7 +892,10 @@ fn issue_run(req: IssueRun<'_>) -> Value {
                 return json!({"ok": false, "error_code": "ledger_error", "error": error});
             }
         }
-        let token = remember_token(workspace, &existing.id, &existing.actor_id);
+        let token = match remember_token(workspace, &existing.id, &existing.actor_id, owner, false) {
+            Ok(token) => token,
+            Err(refused) => return refused,
+        };
         log::info!(
             "agents_api: admission {} returned existing run {} for agent {}",
             admission_id,
@@ -854,7 +978,10 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         );
         return json!({"ok": false, "error_code": "io_error", "error": error});
     }
-    let token = remember_token(workspace, &record.id, &record.actor_id);
+    let token = match remember_token(workspace, &record.id, &record.actor_id, owner, true) {
+        Ok(token) => token,
+        Err(refused) => return refused,
+    };
     log::info!(
         "agents_api: spawned run {} agent={} client_ref={} kind={} tokens={}/{} version={}",
         record.id,
@@ -938,23 +1065,40 @@ fn grants_from_value(value: &Value) -> Result<Vec<ToolGrant>, String> {
     specs.iter().map(|spec| parse_grant_spec(spec)).collect()
 }
 
-fn pane_session_grants(workspace: &Path, pane_id: u64) -> Vec<ToolGrant> {
+/// The sealed grant-store rows `principal` holds in `workspace`, as a
+/// delegation ceiling (stint 1285): live (not consumed, not expired, this
+/// session's session rows), never one-use, never read from a card file.
+/// A pane principal also holds rows bound to its pane instance. A row bound
+/// to a run counts only for `run`, and for a pane only if that pane asked.
+fn sealed_ceiling(
+    workspace: &Path,
+    principal: &Principal,
+    run: Option<&str>,
+) -> Vec<CeilingRow> {
     let gate = host_gate!(Vec::new());
     let session_id = gate.session_id().to_string();
     let now = gate.now_secs();
-    let pane_actor = format!("pane:{pane_id}");
+    let actor_type = principal.actor_type();
+    let actor_id = principal.actor_id();
+    let pane_instance = actor_id
+        .strip_prefix("pane:")
+        .and_then(|pane| pane.parse::<u64>().ok())
+        .filter(|pane| *pane != 0);
     let store = gate.store();
     store
         .records()
         .iter()
         .filter(|rec| {
-            if rec.consumed {
+            if rec.consumed
+                || rec.duration == GrantDuration::Once
+                || rec.target_id.is_empty()
+                || !rec.duration_admissible()
+            {
                 return false;
             }
-            if rec.expires_at.is_some_and(|exp| now >= exp) {
-                return false;
-            }
-            if rec.workspace_root.as_deref() != Some(workspace) {
+            if rec.expires_at.is_some_and(|exp| now >= exp)
+                || rec.workspace_root.as_deref() != Some(workspace)
+            {
                 return false;
             }
             if rec.duration == GrantDuration::Session
@@ -962,39 +1106,116 @@ fn pane_session_grants(workspace: &Path, pane_id: u64) -> Vec<ToolGrant> {
             {
                 return false;
             }
-            let matches_pane = rec.actor_id == pane_actor
-                || rec.bound_operation_id.as_deref() == Some(pane_actor.as_str())
-                || (rec.resource_scope == crate::broker::ResourceScope::Pane
-                    && rec.resource_id.as_deref() == Some(pane_actor.as_str()))
-                || (pane_id != 0
-                    && rec.instance_id == Some(pane_id)
-                    && !rec.actor_id.starts_with("agent:"));
-            matches_pane && !rec.target_id.is_empty()
+            if let Some(bound) = rec.bound_run() {
+                if Some(bound) != run {
+                    return false;
+                }
+                if pane_instance.is_some() {
+                    return rec.run_requester_pane == pane_instance;
+                }
+            }
+            let own = rec.actor_type == actor_type && rec.actor_id == actor_id;
+            let pane_bound = pane_instance.is_some_and(|pane| {
+                rec.bound_operation_id.as_deref() == Some(actor_id)
+                    || (rec.resource_scope == crate::broker::ResourceScope::Pane
+                        && rec.resource_id.as_deref() == Some(actor_id))
+                    || (rec.instance_id == Some(pane) && rec.actor_type != ActorType::Agent)
+            });
+            own || pane_bound
         })
-        .map(|rec| ToolGrant {
+        .map(|rec| CeilingRow {
             tool: rec.target_id.clone(),
-            decision: rec.decision.as_str().to_string(),
-            kind: rec.kind,
+            decision: rec.decision,
+            duration: rec.duration,
             expires_at: rec.expires_at,
+            bound_run: rec.bound_run().map(str::to_string),
         })
         .collect()
 }
 
-fn user_context_authority_grants(workspace: &Path, context_root: &Path) -> Vec<ToolGrant> {
-    // The host has already authenticated this as a human-owned caller and
-    // checked its live execution directory. Persistent state is intentionally
-    // a separate channel directory, so comparing it to that directory would
-    // turn a storage choice into an authorization denial.
-    let _ = (workspace, context_root);
-    vec![ToolGrant {
-        tool: "*".to_string(),
-        decision: "allow".to_string(),
-        kind: GrantKind::Hard,
-        expires_at: None,
-    }]
+/// The rows both ceilings allow: same tool, the less permissive decision,
+/// the shorter duration.
+fn meet_ceilings(a: &[CeilingRow], b: &[CeilingRow]) -> Vec<CeilingRow> {
+    a.iter()
+        .filter_map(|left| {
+            let right = b.iter().find(|right| right.tool == left.tool)?;
+            Some(CeilingRow {
+                tool: left.tool.clone(),
+                decision: if left.decision.permissiveness() <= right.decision.permissiveness() {
+                    left.decision
+                } else {
+                    right.decision
+                },
+                duration: if left.duration == GrantDuration::Session
+                    || right.duration == GrantDuration::Session
+                {
+                    GrantDuration::Session
+                } else {
+                    left.duration
+                },
+                expires_at: earlier(left.expires_at, right.expires_at),
+                bound_run: left.bound_run.clone().or_else(|| right.bound_run.clone()),
+            })
+        })
+        .collect()
 }
 
-pub fn handle_request(op: &str, payload: &Value) -> Value {
+/// Who calls the agents API, as the host established it (stint 1285). No
+/// identity is ever read from the payload.
+#[derive(Debug, Clone)]
+pub(crate) enum AgentsCaller {
+    /// A socket caller with a principal: a pane, or an outside process.
+    Principal {
+        principal: Principal,
+        pane: Option<u64>,
+        /// The team member the caller's pane is bound to.
+        agent: Option<String>,
+        /// The live context root the caller is scoped to; `None` for an
+        /// outside process.
+        context_root: Option<PathBuf>,
+        /// The host found the request outside the caller's context.
+        context_denied: bool,
+    },
+    /// Host code acting under its own run principal (team setup, the
+    /// dashboard). It brings the ceiling it was admitted with.
+    Host { ceiling: Vec<CeilingRow> },
+}
+
+impl AgentsCaller {
+    /// The host found the request outside the caller's context.
+    pub(crate) fn context_denied(&self) -> bool {
+        matches!(self, Self::Principal { context_denied: true, .. })
+    }
+
+    fn actor(&self) -> String {
+        match self {
+            Self::Principal { principal, .. } => principal.actor_id().to_string(),
+            Self::Host { .. } => "host".to_string(),
+        }
+    }
+
+    pub(crate) fn pane(&self) -> Option<u64> {
+        match self {
+            Self::Principal { pane, .. } => *pane,
+            Self::Host { .. } => None,
+        }
+    }
+
+    /// What this caller can delegate in `workspace`: its own sealed rows,
+    /// or, for a bound team member, its agent's sealed rows. `run` admits
+    /// the rows a desktop approval bound to that run.
+    pub(crate) fn ceiling(&self, workspace: &Path, run: Option<&str>) -> Vec<CeilingRow> {
+        match self {
+            Self::Principal {
+                agent: Some(agent), ..
+            } => sealed_ceiling(workspace, &Principal::agent(actor_of(agent)), run),
+            Self::Principal { principal, .. } => sealed_ceiling(workspace, principal, run),
+            Self::Host { ceiling } => ceiling.clone(),
+        }
+    }
+}
+
+pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -> Value {
     let Some(workspace_raw) = payload.get("workspace").and_then(|v| v.as_str()) else {
         return json!({"ok": false, "error_code": "invalid_argument", "error": "workspace is required"});
     };
@@ -1003,42 +1224,36 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
         Err(error) => return json!({"ok": false, "error_code": "invalid_argument", "error": error}),
     };
     host_gate!().expire_soft_grants();
-    let caller_pane = payload.get("caller_pane").and_then(|v| v.as_u64());
-    let caller_human_pane = payload
-        .get("caller_human_pane")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let caller_context_root = payload
-        .get("caller_context_root")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .and_then(|raw| canonical_workspace(Path::new(raw)).ok());
-    let caller_context_denied = payload
-        .get("caller_context_denied")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-        || (!caller_human_pane
-            && caller_context_root
-                .as_ref()
-                .is_some_and(|ctx_root| ctx_root != &workspace));
-    if caller_context_denied {
-        let actor = caller_pane
-            .map(|p| format!("pane:{p}"))
-            .unwrap_or_else(|| "pane:unknown".to_string());
+    let caller_pane = caller.pane();
+    // Every pane is scoped to its context root, a pane the person opened
+    // included; an outside process to no context (stint 1285).
+    let (context_root, context_denied) = match caller {
+        AgentsCaller::Principal {
+            context_root,
+            context_denied,
+            ..
+        } => (
+            context_root.clone(),
+            *context_denied || context_root.as_ref().is_some_and(|root| root != &workspace),
+        ),
+        AgentsCaller::Host { .. } => (None, false),
+    };
+    if context_denied {
+        let actor = caller.actor();
         let call_id = format!("agents-api-{op}-{}", uuid::Uuid::new_v4());
         let resource = workspace.display().to_string();
         host_gate!().note_denial(&actor, &call_id, &resource, op, "context_scope_violation");
         log::info!(
-            "agents_api: op={op} denied caller_pane={caller_pane:?} workspace={} outside caller context root {caller_context_root:?}",
+            "agents_api: op={op} denied caller={actor} workspace={} outside caller context root {context_root:?}",
             workspace.display()
         );
         return json!({
             "ok": false,
             "error_code": "permission_denied",
             "error": format!(
-                "admission refused for {actor}: requested '{}' is outside allowed scope '{}'. Run from a human-owned pane in the target folder, or cd back to the allowed folder.",
+                "admission refused for {actor}: requested '{}' is outside allowed scope '{}'. Run from a pane in the target folder.",
                 workspace.display(),
-                caller_context_root.as_ref().map_or_else(|| "unknown".to_string(), |root| root.display().to_string())
+                context_root.as_ref().map_or_else(|| "unknown".to_string(), |root| root.display().to_string())
             ),
         });
     }
@@ -1053,55 +1268,14 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     return json!({"ok": false, "error_code": "invalid_argument", "error": error})
                 }
             };
-            let caller_agent = payload
-                .get("caller_agent")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let caller_human_pane = payload
-                .get("caller_human_pane")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let (parent_owned, denial_owned) = if let Some(pane_id) = caller_pane {
-                if caller_agent.is_empty() {
-                    if caller_human_pane {
-                        let ctx_root = caller_context_root.as_deref().unwrap_or(&workspace);
-                        let user_grants = user_context_authority_grants(&workspace, ctx_root);
-                        log::info!(
-                            "agents_api: create_agent pane={caller_pane:?} human_owned=true context_root={} authority_grants={}",
-                            ctx_root.display(),
-                            user_grants.len()
-                        );
-                        (Some(user_grants), "user".to_string())
-                    } else {
-                        let pane_grants = pane_session_grants(&workspace, pane_id);
-                        if pane_grants.is_empty() {
-                            log::info!(
-                                "agents_api: create_agent pane={caller_pane:?} holds no grants"
-                            );
-                        } else {
-                            log::info!(
-                                "agents_api: create_agent pane={caller_pane:?} session_grants={}",
-                                pane_grants.len()
-                            );
-                        }
-                        (Some(pane_grants), "pane".to_string())
-                    }
-                } else {
-                    match find_agent(&workspace, caller_agent) {
-                        Ok(card) => {
-                            log::info!(
-                                "agents_api: create_agent pane={caller_pane:?} parent_agent={}",
-                                card.id
-                            );
-                            let actor = actor_of(&card.id);
-                            (Some(card.grants), actor)
-                        }
-                        Err(error) => return error,
-                    }
-                }
-            } else {
-                (None, "operator".to_string())
-            };
+            // The ceiling is what the caller holds in the grant store, never
+            // a card file and never "everything" for any caller (stint 1285).
+            let ceiling = caller.ceiling(&workspace, None);
+            let denial_actor = caller.actor();
+            log::info!(
+                "agents_api: create_agent caller={denial_actor} pane={caller_pane:?} ceiling_rows={}",
+                ceiling.len()
+            );
             let created = create_agent(CreateAgent {
                 workspace: &workspace,
                 name,
@@ -1119,8 +1293,8 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 reports_to: payload.get("reports_to").and_then(|v| v.as_str()),
-                parent_grants: parent_owned.as_deref(),
-                denial_actor: &denial_owned,
+                parent_grants: &ceiling,
+                denial_actor: &denial_actor,
                 parent_run: None,
                 caller_pane,
             });
@@ -1157,8 +1331,51 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("adm_{}", uuid::Uuid::new_v4()));
+            // A retry of a charged admission is answered as alpha answered
+            // it: by the existing run (its owner rule applies in issue_run),
+            // before any fresh-start check (Codex 3290 r4).
+            let retry = match load_runs(&workspace) {
+                Ok(runs) => runs
+                    .iter()
+                    .any(|run| run.agent_id == agent.id && run.admission_id == admission),
+                Err(error) => return json!({"ok": false, "error_code": "io_error", "error": error}),
+            };
+            // A fresh run acts with the agent's sealed rows: a socket caller
+            // starts one only when it holds every allow the agent holds, else
+            // it files a request (stint 1285).
+            if !retry && matches!(caller, AgentsCaller::Principal { .. }) {
+                let agent_rows: Vec<ToolGrant> = sealed_ceiling(
+                    &workspace,
+                    &Principal::agent(actor_of(&agent.id)),
+                    None,
+                )
+                .into_iter()
+                .filter(|row| row.decision == Decision::Allow)
+                .map(|row| ToolGrant {
+                    tool: row.tool,
+                    decision: Decision::Allow,
+                    kind: GrantKind::Hard,
+                    expires_at: None,
+                })
+                .collect();
+                if let Some(refused) = subset_denied(
+                    &workspace,
+                    &caller.actor(),
+                    &caller.ceiling(&workspace, None),
+                    &agent_rows,
+                    None,
+                    caller_pane,
+                ) {
+                    return refused;
+                }
+            }
+            let owner = match caller {
+                AgentsCaller::Principal { principal, .. } => Some(principal.actor_id().to_string()),
+                AgentsCaller::Host { .. } => None,
+            };
             issue_run(IssueRun {
                 workspace: &workspace,
+                owner: owner.as_deref(),
                 agent: &agent,
                 parent_run: None,
                 admission_id: &admission,
@@ -1194,10 +1411,13 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 Err(error) => error,
             }
         }
-        "finish_run" => finish_run(
-            &workspace,
-            payload.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-        ),
+        "finish_run" => {
+            let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Err(refused) = require_run_owner(id, caller) {
+                return refused;
+            }
+            finish_run(&workspace, id)
+        }
         "delegate" => delegate(
             &workspace,
             payload
@@ -1212,18 +1432,24 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                     return json!({"ok": false, "error_code": "invalid_argument", "error": error})
                 }
             },
-            caller_pane,
+            caller,
         ),
-        "call" => invoke(
+        "call" => {
+            let run_id = payload.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Err(refused) = require_run_owner(run_id, caller) {
+                return refused;
+            }
+            invoke(
             &workspace,
-            payload.get("run_id").and_then(|v| v.as_str()).unwrap_or(""),
+            run_id,
             payload.get("tool").and_then(|v| v.as_str()).unwrap_or(""),
             payload
                 .get("input_json")
                 .and_then(|v| v.as_str())
                 .unwrap_or("{}"),
             caller_pane,
-        ),
+        )
+        }
         other => {
             json!({"ok": false, "error_code": "invalid_argument", "error": format!("unknown agents op {other}")})
         }
@@ -1299,8 +1525,9 @@ fn delegate(
     parent_run: &str,
     name: &str,
     grants: Vec<ToolGrant>,
-    caller_pane: Option<u64>,
+    caller: &AgentsCaller,
 ) -> Value {
+    let caller_pane = caller.pane();
     let parent = match find_run(workspace, parent_run) {
         Ok(run) => run,
         Err(error) => return error,
@@ -1308,10 +1535,20 @@ fn delegate(
     if !parent.active {
         return json!({"ok": false, "error_code": "permission_denied", "error": "parent run is not active"});
     }
+    // A child gets at most what both the parent run's agent and the caller
+    // hold in the grant store; never the run file's list (stint 1285).
+    let ceiling = meet_ceilings(
+        &sealed_ceiling(
+            workspace,
+            &Principal::agent(parent.actor_id.clone()),
+            Some(parent_run),
+        ),
+        &caller.ceiling(workspace, Some(parent_run)),
+    );
     if let Some(refused) = subset_denied(
         workspace,
         &parent.actor_id,
-        &parent.grants,
+        &ceiling,
         &grants,
         Some(parent_run),
         caller_pane,
@@ -1330,7 +1567,7 @@ fn delegate(
         grants: &grants,
         temporary: true,
         reports_to: Some(&parent_agent.id),
-        parent_grants: Some(&parent.grants),
+        parent_grants: &ceiling,
         denial_actor: &parent.actor_id,
         parent_run: Some(parent_run),
         caller_pane,
@@ -1363,8 +1600,14 @@ fn delegate(
         Err(error) => return error,
     };
     let admission = format!("delegate:{parent_run}:{name}");
+    // The child run belongs to whoever delegated it.
+    let owner = match caller {
+        AgentsCaller::Principal { principal, .. } => Some(principal.actor_id().to_string()),
+        AgentsCaller::Host { .. } => None,
+    };
     let spawned = issue_run(IssueRun {
         workspace,
+        owner: owner.as_deref(),
         agent: &child,
         parent_run: Some(parent_run),
         admission_id: &admission,
@@ -1404,7 +1647,10 @@ fn invoke(
             caller_pane,
         });
     }
-    let Some(grant) = run.grants.iter().find(|grant| grant.tool == tool) else {
+    // The run file only narrows. A tool it does not list runs when a desktop
+    // approval sealed a row for this run; the gate below still decides.
+    let listed = run.grants.iter().find(|grant| grant.tool == tool);
+    if listed.is_none() && !host_gate!().run_holds_approval(workspace, &run.actor_id, &run.id, tool) {
         return deny_with_request(RefusalContext {
             workspace,
             actor: &run.actor_id,
@@ -1414,8 +1660,8 @@ fn invoke(
             run_id: Some(&run.id),
             caller_pane,
         });
-    };
-    if grant.decision == "deny" {
+    }
+    if listed.is_some_and(|grant| grant.decision == Decision::Deny) {
         return deny_with_request(RefusalContext {
             workspace,
             actor: &run.actor_id,
@@ -1467,8 +1713,7 @@ fn invoke(
                         ..Default::default()
                     }),
                 )
-                .ok()
-                .map(|(id, _)| id);
+                .ok();
             json!({
                 "ok": false,
                 "error_code": code,
@@ -1564,7 +1809,11 @@ fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str)
                 grants: &grants,
                 temporary: false,
                 reports_to: None,
-                parent_grants: Some(&run.grants),
+                parent_grants: &sealed_ceiling(
+                    workspace,
+                    &Principal::agent(run.actor_id.clone()),
+                    Some(&run.id),
+                ),
                 denial_actor: &run.actor_id,
                 parent_run: Some(&run.id),
                 caller_pane: None,
@@ -1584,12 +1833,15 @@ fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str)
 
 pub fn projection(workspace: &Path) -> Value {
     let workspace = crate::platform::path::canonical_or_self(workspace);
+    let host = AgentsCaller::Host { ceiling: Vec::new() };
     let agents = handle_request(
         "list_agents",
         &json!({"workspace": workspace, "all": true}),
+        &host,
     );
-    let runs = handle_request("list_runs", &json!({"workspace": &workspace}));
-    let pending = serde_json::to_value(host_gate!().list_pending()).unwrap_or(json!([]));
+    let runs = handle_request("list_runs", &json!({"workspace": &workspace}), &host);
+    let pending = serde_json::to_value(host_gate!().list_pending_in_workspace(&workspace))
+        .unwrap_or(json!([]));
     json!({
         "ok": true,
         "agents": agents.get("agents").cloned().unwrap_or(json!([])),
@@ -1676,12 +1928,20 @@ pub fn mcp_call(auth: &McpAuth, tool: &str, input_json: &str) -> Result<String, 
                                 .to_string(),
                         ),
                     };
+                // The run delegates as its own agent principal.
+                let caller = AgentsCaller::Principal {
+                    principal: Principal::agent(auth.actor_id.clone().unwrap_or_default()),
+                    pane: caller_pane,
+                    agent: None,
+                    context_root: None,
+                    context_denied: false,
+                };
                 delegate(
                     &auth.workspace,
                     run_id,
                     input.get("name").and_then(|v| v.as_str()).unwrap_or(""),
                     grants,
-                    caller_pane,
+                    &caller,
                 )
             }
         } else {
@@ -1815,6 +2075,34 @@ mod tests {
         assert_eq!(denied["error_code"], "permission_denied", "{denied}");
     }
 
+    /// Host code holding every tool these fixtures use. A real caller's
+    /// ceiling is its sealed rows; the refusal cases below build that.
+    fn test_host() -> AgentsCaller {
+        AgentsCaller::Host {
+            ceiling: ["agents.ping", "agents.review", "agents.admin", "assistant.turn"]
+                .iter()
+                .map(|tool| CeilingRow {
+                    tool: tool.to_string(),
+                    decision: Decision::Allow,
+                    duration: GrantDuration::Always,
+                    expires_at: None,
+                    bound_run: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// A pane caller, as the host classifies one.
+    fn pane_caller(pane: u64, agent: Option<&str>) -> AgentsCaller {
+        AgentsCaller::Principal {
+            principal: Principal::agent(format!("pane:{pane}")),
+            pane: Some(pane),
+            agent: agent.map(str::to_string),
+            context_root: None,
+            context_denied: false,
+        }
+    }
+
     fn grants(specs: &[&str]) -> Vec<ToolGrant> {
         specs
             .iter()
@@ -1831,8 +2119,18 @@ mod tests {
             grants: &grants(specs),
             temporary: false,
             reports_to: None,
-            parent_grants: None,
-            denial_actor: "operator",
+            // A test fixture's own ceiling: exactly what it asks for.
+            parent_grants: &grants(specs)
+                .iter()
+                .map(|grant| CeilingRow {
+                    tool: grant.tool.clone(),
+                    decision: grant.decision,
+                    duration: GrantDuration::Always,
+                    expires_at: None,
+                    bound_run: None,
+                })
+                .collect::<Vec<_>>(),
+            denial_actor: "fixture",
             parent_run: None,
             caller_pane: None,
         })
@@ -1847,7 +2145,7 @@ mod tests {
         assert!(dir.join("AGENT.md").is_file());
         assert!(dir.join("settings.toml").is_file());
         assert!(!fix.ws().join(".plexi-alpha").join("agents").exists());
-        let listed = handle_request("list_agents", &json!({"workspace": fix.ws()}));
+        let listed = handle_request("list_agents", &json!({"workspace": fix.ws()}), &test_host());
         assert_eq!(listed["agents"][0]["id"], "worker");
         assert_eq!(listed["agents"][0]["grants"][0]["tool"], "agents.ping");
     }
@@ -1873,9 +2171,9 @@ mod tests {
         let fix = Fixture::new();
         create(&fix, "worker", &["agents.ping=allow"]);
         fs::remove_file(agents_root(fix.ws()).join("worker/agent.json")).unwrap();
-        let spawned = handle_request("spawn_run", &json!({"workspace": fix.ws(), "agent": "worker"}));
+        let spawned = handle_request("spawn_run", &json!({"workspace": fix.ws(), "agent": "worker"}), &test_host());
         assert_eq!(spawned["ok"], true, "{spawned}");
-        let call = handle_request("call", &json!({"workspace": fix.ws(), "run_id": spawned["run"]["id"], "tool": "agents.ping", "input_json": "{}"}));
+        let call = handle_request("call", &json!({"workspace": fix.ws(), "run_id": spawned["run"]["id"], "tool": "agents.ping", "input_json": "{}"}), &test_host());
         assert_eq!(call["error_code"], "permission_denied", "{call}");
     }
 
@@ -1892,13 +2190,13 @@ mod tests {
             "input_tokens": 11,
             "output_tokens": 4,
         });
-        let spawned = handle_request("spawn_run", &payload);
+        let spawned = handle_request("spawn_run", &payload, &test_host());
         assert_eq!(spawned["ok"], true, "{spawned}");
         assert_eq!(spawned["ledger"]["client_ref"], "acme");
         assert_eq!(spawned["ledger"]["kind"], "output");
         assert_eq!(spawned["ledger"]["input_tokens"], 11);
         assert_eq!(spawned["ledger"]["output_tokens"], 4);
-        let again = handle_request("spawn_run", &payload);
+        let again = handle_request("spawn_run", &payload, &test_host());
         assert_eq!(again["idempotent"], true);
         assert_eq!(again["run"]["id"], spawned["run"]["id"]);
         let conflict = handle_request(
@@ -1907,8 +2205,7 @@ mod tests {
                 "workspace": fix.ws(),
                 "agent": "worker",
                 "admission": "adm-2",
-            }),
-        );
+            }), &test_host());
         assert_eq!(conflict["error_code"], "assignment_conflict");
         let ledger =
             fs::read_to_string(crate::config::config_dir().join("ai-ledger.jsonl")).unwrap();
@@ -1930,8 +2227,7 @@ mod tests {
 
         let first = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}),
-        );
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}), &test_host());
         assert_eq!(first["error_code"], "ledger_error", "{first}");
         assert!(
             load_runs(fix.ws()).unwrap().iter().all(|run| !run.active),
@@ -1941,8 +2237,7 @@ mod tests {
         fs::remove_file(&retired).unwrap();
         let next = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-2"}),
-        );
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-2"}), &test_host());
         assert_eq!(next["ok"], true, "the next spawn is not blocked: {next}");
     }
 
@@ -1956,9 +2251,9 @@ mod tests {
         fs::write(&retired, b"").unwrap();
         let payload = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"});
 
-        let first = handle_request("spawn_run", &payload);
+        let first = handle_request("spawn_run", &payload, &test_host());
         assert_eq!(first["error_code"], "ledger_error", "{first}");
-        let retry = handle_request("spawn_run", &payload);
+        let retry = handle_request("spawn_run", &payload, &test_host());
         assert_ne!(
             retry["ok"], true,
             "retry must not succeed without a ledger row: {retry}"
@@ -1995,8 +2290,7 @@ mod tests {
 
         let retry = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}),
-        );
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}), &test_host());
         assert_ne!(retry["ok"], true, "{retry}");
         assert_eq!(retry["error_code"], "ledger_missing", "{retry}");
     }
@@ -2031,8 +2325,7 @@ mod tests {
 
         let same = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}),
-        );
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}), &test_host());
         assert_eq!(same["error_code"], "ledger_missing", "{same}");
         let message = same["error"].as_str().unwrap();
         assert!(message.contains(clear), "{message}");
@@ -2040,8 +2333,7 @@ mod tests {
 
         let other = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-2"}),
-        );
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-2"}), &test_host());
         assert_eq!(other["error_code"], "assignment_conflict", "{other}");
         let message = other["error"].as_str().unwrap();
         assert!(message.contains(clear), "{message}");
@@ -2049,13 +2341,11 @@ mod tests {
         // The named command runs finish_run on the host.
         let finished = handle_request(
             "finish_run",
-            &json!({"workspace": fix.ws(), "id": "run_orphan"}),
-        );
+            &json!({"workspace": fix.ws(), "id": "run_orphan"}), &test_host());
         assert_eq!(finished["ok"], true, "{finished}");
         let next = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-2"}),
-        );
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-2"}), &test_host());
         assert_eq!(next["ok"], true, "the cleared agent spawns again: {next}");
     }
 
@@ -2074,8 +2364,7 @@ mod tests {
         );
         let spawned = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}),
-        );
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-1"}), &test_host());
         let parent = spawned["run"]["id"].as_str().unwrap();
         let widened = handle_request(
             "delegate",
@@ -2084,8 +2373,7 @@ mod tests {
                 "parent_run": parent,
                 "name": "rogue",
                 "grants": ["agents.admin=allow"],
-            }),
-        );
+            }), &test_host());
         assert_eq!(widened["error_code"], "permission_denied", "{widened}");
         assert!(!fix
             .ws()
@@ -2108,8 +2396,7 @@ mod tests {
                 "parent_run": parent,
                 "name": "scout",
                 "grants": ["agents.ping=allow", "agents.review=ask"],
-            }),
-        );
+            }), &test_host());
         assert_eq!(child["ok"], true, "{child}");
         let child_run = child["run"]["id"].as_str().unwrap();
         let card = read_agent(&fix.ws().join(".plexi").join("agents").join("scout")).unwrap();
@@ -2124,8 +2411,7 @@ mod tests {
                 "run_id": child_run,
                 "tool": "agents.ping",
                 "input_json": "{}",
-            }),
-        );
+            }), &test_host());
         assert_eq!(ping["ok"], true, "{ping}");
         assert_eq!(ping["actor_id"], "agent:scout");
 
@@ -2136,8 +2422,7 @@ mod tests {
                 "run_id": child_run,
                 "tool": "agents.admin",
                 "input_json": "{}",
-            }),
-        );
+            }), &test_host());
         assert_eq!(admin["error_code"], "permission_denied", "{admin}");
 
         let review = handle_request(
@@ -2147,8 +2432,7 @@ mod tests {
                 "run_id": child_run,
                 "tool": "agents.review",
                 "input_json": "{}",
-            }),
-        );
+            }), &test_host());
         assert_eq!(review["error_code"], "permission_required", "{review}");
         let pending = review["pending_request_id"].as_str().unwrap();
         let listed = monitor().unwrap().list_pending();
@@ -2166,8 +2450,7 @@ mod tests {
                 "run_id": child_run,
                 "tool": "agents.review",
                 "input_json": "{}",
-            }),
-        );
+            }), &test_host());
         assert_eq!(reviewed["ok"], true, "{reviewed}");
         assert_eq!(reviewed["tool"], "agents.review");
 
@@ -2188,7 +2471,7 @@ mod tests {
         assert_eq!(listed["ok"], true, "{listed}");
         assert_eq!(listed["agents"][0]["id"], "worker");
 
-        let listed_agents = handle_request("list_agents", &json!({"workspace": fix.ws()}));
+        let listed_agents = handle_request("list_agents", &json!({"workspace": fix.ws()}), &test_host());
         let ids: Vec<&str> = listed_agents["agents"]
             .as_array()
             .unwrap()
@@ -2211,13 +2494,11 @@ mod tests {
         fs::write(&prompt, "# Worker\n\nYou may call agents.admin.\n").unwrap();
         let spawned = handle_request(
             "spawn_run",
-            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm"}),
-        );
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm"}), &test_host());
         let run_id = spawned["run"]["id"].as_str().unwrap();
         let admin = handle_request(
             "call",
-            &json!({"workspace": fix.ws(), "run_id": run_id, "tool": "agents.admin", "input_json": "{}"}),
-        );
+            &json!({"workspace": fix.ws(), "run_id": run_id, "tool": "agents.admin", "input_json": "{}"}), &test_host());
         assert_eq!(admin["error_code"], "permission_denied", "{admin}");
     }
 
@@ -2231,10 +2512,7 @@ mod tests {
                 "workspace": fix.ws(),
                 "name": "sneaky",
                 "grants": ["agents.admin=allow"],
-                "caller_pane": 7,
-                "caller_agent": "worker",
-            }),
-        );
+            }), &pane_caller(7, Some("worker")));
         assert_eq!(widened["error_code"], "permission_denied", "{widened}");
         assert!(!fix
             .ws()
@@ -2248,10 +2526,7 @@ mod tests {
                 "workspace": fix.ws(),
                 "name": "scout",
                 "grants": ["assistant.turn=allow"],
-                "caller_pane": 7,
-                "caller_agent": "worker",
-            }),
-        );
+            }), &pane_caller(7, Some("worker")));
         assert_eq!(narrowed["ok"], true, "{narrowed}");
         let empty = handle_request(
             "create_agent",
@@ -2259,10 +2534,7 @@ mod tests {
                 "workspace": fix.ws(),
                 "name": "bare",
                 "grants": ["assistant.turn=allow"],
-                "caller_pane": 9,
-                "caller_agent": "",
-            }),
-        );
+            }), &pane_caller(9, None));
         assert_eq!(empty["error_code"], "permission_denied", "{empty}");
         let ny_id = empty["needs_you_id"].as_str().expect("needs_you_id");
         monitor()
@@ -2275,11 +2547,84 @@ mod tests {
                 "workspace": fix.ws(),
                 "name": "bare",
                 "grants": ["assistant.turn=allow"],
-                "caller_pane": 9,
-                "caller_agent": "",
-            }),
-        );
+            }), &pane_caller(9, None));
         assert_eq!(retried["ok"], true, "{retried}");
+    }
+
+    /// Stint 1285: delegation never copies a one-use row. Two delegations
+    /// racing from a parent run that holds one `Once` approval both file a
+    /// request, and the parent's row is left for exactly one use.
+    #[test]
+    fn concurrent_delegations_never_copy_or_consume_a_once_row() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow", "agents.review=ask"]);
+        let spawned = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-once"}),
+            &test_host(),
+        );
+        let parent_run = spawned["run"]["id"].as_str().unwrap().to_string();
+        let call = || {
+            handle_request(
+                "call",
+                &json!({"workspace": fix.ws(), "run_id": parent_run, "tool": "agents.review",
+                    "input_json": "{}"}),
+                &test_host(),
+            )
+        };
+        let asked = call();
+        assert_eq!(asked["error_code"], "permission_required", "{asked}");
+        monitor()
+            .unwrap()
+            .approve_pending(asked["pending_request_id"].as_str().unwrap(), ApprovalChoice::Once)
+            .unwrap();
+        let live_once_rows = || {
+            monitor()
+                .unwrap()
+                .store()
+                .records()
+                .iter()
+                .filter(|rec| {
+                    rec.target_id == "agents.review"
+                        && rec.duration == GrantDuration::Once
+                        && !rec.consumed
+                })
+                .count()
+        };
+        assert_eq!(live_once_rows(), 1);
+
+        let profile = fix._profile.path().to_path_buf();
+        let workspace = fix.ws().to_path_buf();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let racers: Vec<_> = ["scout-a", "scout-b"]
+            .into_iter()
+            .map(|name| {
+                let (profile, workspace, parent_run, barrier) =
+                    (profile.clone(), workspace.clone(), parent_run.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    let _guard = crate::config::set_test_profile_dir(profile);
+                    barrier.wait();
+                    handle_request(
+                        "delegate",
+                        &json!({"workspace": workspace, "parent_run": parent_run, "name": name,
+                            "grants": ["agents.review=allow"]}),
+                        &test_host(),
+                    )
+                })
+            })
+            .collect();
+        for racer in racers {
+            let reply = racer.join().unwrap();
+            assert_eq!(reply["ok"], false, "{reply}");
+            assert!(reply["needs_you_id"].is_string(), "a delegation must file a request: {reply}");
+        }
+        assert!(find_agent(fix.ws(), "scout-a").is_err() && find_agent(fix.ws(), "scout-b").is_err());
+        assert_eq!(live_once_rows(), 1, "a delegation consumed or copied the one-use row");
+
+        let used = call();
+        assert_eq!(used["ok"], true, "{used}");
+        let again = call();
+        assert_eq!(again["error_code"], "permission_required", "used twice: {again}");
     }
 
     #[test]
@@ -2294,8 +2639,7 @@ mod tests {
                 "workspace": fix.ws(),
                 "agent": "worker",
                 "admission": "adm-run-1",
-            }),
-        );
+            }), &test_host());
         assert_eq!(spawned["ok"], true, "{spawned}");
         let parent_run = spawned["run"]["id"].as_str().unwrap().to_string();
 
@@ -2306,9 +2650,7 @@ mod tests {
                 "parent_run": parent_run,
                 "name": "scout",
                 "grants": ["agents.admin=allow"],
-                "caller_pane": 42,
-            }),
-        );
+            }), &pane_caller(42, None));
         assert_eq!(refused["ok"], false, "{refused}");
         assert_eq!(refused["error_code"], "permission_denied", "{refused}");
         let needs_you_id = refused["needs_you_id"]
@@ -2376,8 +2718,7 @@ mod tests {
                 "run_id": parent_run,
                 "tool": "agents.admin",
                 "input_json": "{}",
-            }),
-        );
+            }), &test_host());
         assert_eq!(direct_call["ok"], true, "{direct_call}");
 
         let delegated = handle_request(
@@ -2387,9 +2728,7 @@ mod tests {
                 "parent_run": parent_run,
                 "name": "scout",
                 "grants": ["agents.admin=allow"],
-                "caller_pane": 42,
-            }),
-        );
+            }), &pane_caller(42, None));
         assert_eq!(delegated["ok"], true, "{delegated}");
 
         // Finish `parent_run` and start a new run of `worker`: the new run must NOT hold `agents.admin`.
@@ -2398,8 +2737,7 @@ mod tests {
             &json!({
                 "workspace": fix.ws(),
                 "id": parent_run,
-            }),
-        );
+            }), &test_host());
         assert_eq!(finished["ok"], true, "{finished}");
 
         let spawned_next = handle_request(
@@ -2408,8 +2746,7 @@ mod tests {
                 "workspace": fix.ws(),
                 "agent": "worker",
                 "admission": "adm-run-2",
-            }),
-        );
+            }), &test_host());
         assert_eq!(spawned_next["ok"], true, "{spawned_next}");
         let next_run = spawned_next["run"]["id"].as_str().unwrap();
         let next_call = handle_request(
@@ -2419,8 +2756,7 @@ mod tests {
                 "run_id": next_run,
                 "tool": "agents.admin",
                 "input_json": "{}",
-            }),
-        );
+            }), &test_host());
         assert_eq!(
             next_call["error_code"], "permission_denied",
             "subsequent run must not inherit run-only grant: {next_call}"
@@ -2441,6 +2777,7 @@ mod tests {
                 "name": "worker",
                 "grants": ["agents.review=allow:soft"],
             }),
+            &test_host(),
         );
         assert_eq!(created["ok"], true, "{created}");
         let dir = agents_root(fix.ws()).join("worker");
@@ -2463,7 +2800,7 @@ mod tests {
             .iter()
             .find(|g| g.tool == "agents.review")
             .unwrap();
-        assert_eq!(review.decision, "ask");
+        assert_eq!(review.decision, Decision::Ask);
         assert!(review.expires_at.is_none());
     }
 
@@ -2529,6 +2866,233 @@ mod tests {
         assert!(error.contains("agent.json"), "{error}");
     }
 
+    /// Codex 3290 r1 P1: a run belongs to whoever started it. A socket caller
+    /// that did not start a run cannot call through it, finish it or have its
+    /// token re-issued, and starts a run of an agent only when it holds every
+    /// allow that agent holds.
+    #[test]
+    fn a_socket_caller_acts_only_on_runs_it_started() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow"]);
+        let payload = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-owned"});
+        let spawned = handle_request("spawn_run", &payload, &test_host());
+        assert_eq!(spawned["ok"], true, "{spawned}");
+        let run_id = spawned["run"]["id"].as_str().unwrap().to_string();
+        let stranger = pane_caller(42, None);
+
+        let call = handle_request(
+            "call",
+            &json!({"workspace": fix.ws(), "run_id": run_id, "tool": "agents.ping",
+                "input_json": "{}"}),
+            &stranger,
+        );
+        assert_eq!(call["error_code"], "permission_denied", "{call}");
+        assert!(call.get("output").is_none(), "the tool ran: {call}");
+        let reissued = handle_request("spawn_run", &payload, &stranger);
+        assert_eq!(reissued["ok"], false, "{reissued}");
+        assert!(reissued.get("run_token").is_none(), "a token leaked: {reissued}");
+        let finished = handle_request(
+            "finish_run",
+            &json!({"workspace": fix.ws(), "id": run_id}),
+            &stranger,
+        );
+        assert_eq!(finished["error_code"], "permission_denied", "{finished}");
+        assert_eq!(find_run(fix.ws(), &run_id).unwrap().active, true, "the run still runs");
+
+        // A caller holding none of the agent's allows starts no run of it.
+        let fresh = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-stranger"}),
+            &stranger,
+        );
+        assert_eq!(fresh["ok"], false, "{fresh}");
+        assert!(fresh["needs_you_id"].is_string(), "a request is filed: {fresh}");
+        assert!(fresh.get("run_token").is_none(), "{fresh}");
+
+        // The host, which started it, still can.
+        let own = handle_request(
+            "call",
+            &json!({"workspace": fix.ws(), "run_id": run_id, "tool": "agents.ping",
+                "input_json": "{}"}),
+            &test_host(),
+        );
+        assert_eq!(own["ok"], true, "{own}");
+    }
+
+    /// Codex 3290 r3 ruling A: a run's owner is kept in memory while the
+    /// host lives and nothing is written to the grant store on start or
+    /// finish. A stranger is refused a live owned run; the owner's replayed
+    /// finish answers as alpha's did. After a restart (the run's record is
+    /// gone) alpha's rules apply: no owner check. Durable ownership is stint
+    /// 1716.
+    #[test]
+    fn run_ownership_lives_with_the_host_and_ownerless_runs_follow_alpha() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=ask"]);
+        let grants = crate::config::config_dir().join("grants.toml");
+        let snapshot = || fs::read(&grants).ok();
+        let before = snapshot();
+        let owner = pane_caller(42, None);
+        let stranger = pane_caller(43, None);
+        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-owned-live"});
+        let started = handle_request("spawn_run", &start, &owner);
+        assert_eq!(started["ok"], true, "{started}");
+        let run_id = started["run"]["id"].as_str().unwrap().to_string();
+        let finish = json!({"workspace": fix.ws(), "id": run_id});
+
+        // Live host: the stranger is refused, the owner retries.
+        let foreign_retry = handle_request("spawn_run", &start, &stranger);
+        assert_eq!(foreign_retry["error_code"], "permission_denied", "{foreign_retry}");
+        let foreign_finish = handle_request("finish_run", &finish, &stranger);
+        assert_eq!(foreign_finish["error_code"], "permission_denied", "{foreign_finish}");
+        assert!(find_run(fix.ws(), &run_id).unwrap().active);
+        let retry = handle_request("spawn_run", &start, &owner);
+        assert_eq!(retry["run_token"], started["run_token"], "{retry}");
+
+        // The owner's finish, then its replay: both answer as alpha's did.
+        let finished = handle_request("finish_run", &finish, &owner);
+        assert_eq!(finished["ok"], true, "{finished}");
+        let replayed = handle_request("finish_run", &finish, &owner);
+        assert_eq!(replayed["ok"], true, "a replayed finish answers as alpha: {replayed}");
+        assert_eq!(snapshot(), before, "run start and finish wrote the grant store");
+
+        // After a restart the run has no live owner record. The owner retries
+        // and finishes; alpha's rule admits any caller for such a run, and
+        // that is asserted here until stint 1716 makes ownership durable.
+        let restarted = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-restart"});
+        let second = handle_request("spawn_run", &restarted, &owner);
+        let second_id = second["run"]["id"].as_str().unwrap().to_string();
+        forget_run_for_test(&second_id);
+        let retry = handle_request("spawn_run", &restarted, &owner);
+        assert_eq!(retry["ok"], true, "{retry}");
+        assert!(retry["run_token"].is_string(), "{retry}");
+        let stranger_retry = handle_request("spawn_run", &restarted, &stranger);
+        assert_eq!(stranger_retry["ok"], true, "alpha's rule (stint 1716): {stranger_retry}");
+        let finished = handle_request(
+            "finish_run",
+            &json!({"workspace": fix.ws(), "id": second_id}),
+            &owner,
+        );
+        assert_eq!(finished["ok"], true, "{finished}");
+        assert_eq!(snapshot(), before, "no grant-store write");
+    }
+
+    /// Codex 3290 r4 L1: a retry of a charged admission is found before the
+    /// fresh-start grant check. An agent holding a persistent allow, started
+    /// before a restart, is retried by a pane without that allow: the
+    /// existing run's bearer is reissued and authenticates as that run, its
+    /// agent and its workspace, as on alpha.
+    #[test]
+    fn a_retried_admission_is_found_before_the_fresh_start_check() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow"]);
+        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-upgrade"});
+        let started = handle_request("spawn_run", &start, &test_host());
+        assert_eq!(started["ok"], true, "{started}");
+        let run_id = started["run"]["id"].as_str().unwrap().to_string();
+        forget_run_for_test(&run_id);
+
+        let pane = pane_caller(42, None);
+        let fresh = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-new"}),
+            &pane,
+        );
+        assert_eq!(fresh["ok"], false, "a fresh start still needs the allow: {fresh}");
+        let retried = handle_request("spawn_run", &start, &pane);
+        assert_eq!(retried["ok"], true, "{retried}");
+        let token = retried["run_token"].as_str().expect("a bearer");
+        let auth = authenticate_run_token(token).expect("the bearer authenticates");
+        assert_eq!(auth.run_id, run_id);
+        assert_eq!(auth.actor_id, "agent:worker");
+        assert_eq!(auth.workspace, crate::platform::path::canonical_or_self(fix.ws()));
+    }
+
+    /// Design 1285 section 4, condition 3: the dashboard projection of one
+    /// workspace lists only the pending requests whose stored binding names
+    /// that workspace.
+    #[test]
+    fn dashboard_projection_lists_only_its_workspaces_pending_requests() {
+        use crate::broker::gate::{Admission, AdmitRequest};
+        let fix = Fixture::new();
+        let other = tempfile::tempdir().unwrap();
+        let ask = |workspace: &Path, marker: &str| {
+            let Admission::Required { pending_request_id } = monitor().unwrap().admit(AdmitRequest {
+                call_id: &format!("call-{marker}"),
+                tool: "agents.review",
+                input_json: &json!({"marker": marker}).to_string(),
+                principal: &Principal::agent("agent:worker"),
+                actor_scope: ActorScope::Workspace,
+                trust_origin: "host",
+                workspace_root: &crate::platform::path::canonical_or_self(workspace),
+                context_id: 0,
+                package_id: PACKAGE,
+                instance_id: 0,
+                target_type: TargetType::HostTool,
+            }) else {
+                panic!("expected a pending request");
+            };
+            pending_request_id
+        };
+        let mine = ask(fix.ws(), "alpha-1285");
+        let theirs = ask(other.path(), "bravo-1285");
+        let listed = |workspace: &Path| -> Vec<String> {
+            projection(workspace)["needs_you"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["pending_request_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(listed(fix.ws()), vec![mine.clone()]);
+        assert_eq!(listed(other.path()), vec![theirs.clone()]);
+        let body = projection(fix.ws()).to_string();
+        assert!(!body.contains("bravo-1285"), "another workspace's summary leaked: {body}");
+    }
+
+    /// Codex 3290 r1 P1: a delegated allow stops working when the parent's
+    /// does. A parent soft allow that expires takes the child's row with it,
+    /// though the child asked for a hard allow.
+    #[test]
+    fn a_delegated_allow_expires_with_its_parents_row() {
+        let fix = Fixture::new();
+        fs::write(
+            crate::config::config_dir().join("config.toml"),
+            "[permissions]\nsoft_grant_days = 10\n",
+        )
+        .unwrap();
+        let t0: i64 = 1_700_000_000;
+        monitor().unwrap().set_now_for_test(t0);
+        create(&fix, "worker", &["agents.ping=allow:soft"]);
+        let spawned = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-expiry"}),
+            &test_host(),
+        );
+        let parent_run = spawned["run"]["id"].as_str().unwrap().to_string();
+        let delegated = handle_request(
+            "delegate",
+            &json!({"workspace": fix.ws(), "parent_run": parent_run, "name": "scout",
+                "grants": ["agents.ping=allow"]}),
+            &test_host(),
+        );
+        assert_eq!(delegated["ok"], true, "{delegated}");
+        let child_run = delegated["run"]["id"].as_str().unwrap().to_string();
+        let ping = |run: &str| {
+            handle_request(
+                "call",
+                &json!({"workspace": fix.ws(), "run_id": run, "tool": "agents.ping",
+                    "input_json": "{}"}),
+                &test_host(),
+            )
+        };
+        assert_eq!(ping(&child_run)["ok"], true);
+        monitor().unwrap().set_now_for_test(t0 + 10 * 86_400 + 1);
+        assert_ne!(ping(&parent_run)["ok"], true, "the parent's soft allow expired");
+        let child = ping(&child_run);
+        assert_ne!(child["ok"], true, "the child outlived its parent's row: {child}");
+    }
+
     #[test]
     fn soft_grant_expires_past_soft_grant_days_and_audits_while_hard_grant_persists() {
         let fix = Fixture::new();
@@ -2548,11 +3112,10 @@ mod tests {
                 "workspace": fix.ws(),
                 "name": "worker",
                 "grants": ["agents.ping=allow:hard", "agents.review=allow:soft"],
-            }),
-        );
+            }), &test_host());
         assert_eq!(created["ok"], true, "{created}");
 
-        let grants_before = handle_request("list_grants", &json!({"workspace": fix.ws()}));
+        let grants_before = handle_request("list_grants", &json!({"workspace": fix.ws()}), &test_host());
         assert_eq!(grants_before["ok"], true, "{grants_before}");
         let list_before = grants_before["grants"].as_array().unwrap();
         let soft_row = list_before
@@ -2576,8 +3139,7 @@ mod tests {
                 "workspace": fix.ws(),
                 "agent": "worker",
                 "admission": "adm-soft",
-            }),
-        );
+            }), &test_host());
         let run_id = spawned["run"]["id"].as_str().unwrap();
 
         // Before expiry, both hard and soft grants allow without prompting.
@@ -2588,8 +3150,7 @@ mod tests {
                 "run_id": run_id,
                 "tool": "agents.review",
                 "input_json": "{}",
-            }),
-        );
+            }), &test_host());
         assert_eq!(review_ok["ok"], true, "{review_ok}");
 
         // Advance injected clock past 10 days (`soft_grant_days`).
@@ -2603,8 +3164,7 @@ mod tests {
                 "run_id": run_id,
                 "tool": "agents.review",
                 "input_json": "{}",
-            }),
-        );
+            }), &test_host());
         assert_eq!(
             review_after["error_code"], "permission_required",
             "expired soft grant must revert to ask: {review_after}"
@@ -2618,8 +3178,7 @@ mod tests {
                 "run_id": run_id,
                 "tool": "agents.ping",
                 "input_json": "{}",
-            }),
-        );
+            }), &test_host());
         assert_eq!(
             ping_after["ok"], true,
             "hard grant must not expire: {ping_after}"
@@ -2641,7 +3200,7 @@ mod tests {
         );
 
         // `list_grants` and `agent.json` reflect the reverted `ask` decision.
-        let grants_after = handle_request("list_grants", &json!({"workspace": fix.ws()}));
+        let grants_after = handle_request("list_grants", &json!({"workspace": fix.ws()}), &test_host());
         let soft_after = grants_after["grants"]
             .as_array()
             .unwrap()
@@ -2669,7 +3228,7 @@ mod tests {
             dir.join("agent.json").is_file() && !dir.join("head.json").exists(),
             "head.json is migrated in place, not read under its old name"
         );
-        let listed = handle_request("list_agents", &json!({"workspace": fix.ws()}));
+        let listed = handle_request("list_agents", &json!({"workspace": fix.ws()}), &test_host());
         assert_eq!(listed["agents"][0]["id"], "lead-120cadfb", "{listed}");
     }
 

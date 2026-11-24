@@ -1,8 +1,9 @@
 //! `plexi file open <path>` and its shorthand `plexi open <path>`.
 //!
 //! Both spellings build the same `HostRequest::FileOpen`: the path exactly as
-//! typed, this process's working directory, and the caller's claimed pane. The
-//! host resolves, classifies, places and answers (`src/app/file_open.rs`).
+//! typed and this process's working directory. The host identifies the
+//! caller from the kernel, then resolves, classifies, places and answers
+//! (`src/app/file_open.rs`).
 
 use super::args::FileOpenArgs;
 use crate::protocol::HostRequest;
@@ -13,16 +14,13 @@ fn file_open_request(
     args: &FileOpenArgs,
     from_pane_id: Option<u64>,
     cwd: Option<String>,
-    caller_pane_id: Option<u64>,
 ) -> HostRequest {
     HostRequest::FileOpen {
         path: args.path.clone(),
         cwd,
-        caller_pane_id,
         from_pane_id,
         placement: args.placement(),
         no_focus: args.no_focus,
-        peer: None,
         response_file: String::new(),
     }
 }
@@ -77,10 +75,7 @@ pub fn file_open_cli(args: &FileOpenArgs, from_pane_id: Option<u64>, json: bool)
             None
         }
     };
-    let caller_pane_id = std::env::var("PLEXI_PANE_ID")
-        .ok()
-        .and_then(|id| id.parse().ok());
-    let request = file_open_request(args, from_pane_id, cwd, caller_pane_id);
+    let request = file_open_request(args, from_pane_id, cwd);
     let payload = match serde_json::to_value(&request) {
         Ok(payload) => payload,
         Err(error) => {
@@ -89,7 +84,7 @@ pub fn file_open_cli(args: &FileOpenArgs, from_pane_id: Option<u64>, json: bool)
         }
     };
     log::info!(
-        "file_open:cli: path={:?} caller_pane_id={caller_pane_id:?} from={from_pane_id:?} placement={:?} no_focus={}",
+        "file_open:cli: path={:?} from={from_pane_id:?} placement={:?} no_focus={}",
         args.path,
         args.placement(),
         args.no_focus
@@ -145,7 +140,6 @@ mod tests {
             args,
             Some(7),
             Some("/work".into()),
-            Some(3),
         ))
         .unwrap()
     }
@@ -177,7 +171,6 @@ mod tests {
                 "type": "file_open",
                 "path": "README.md",
                 "cwd": "/work",
-                "caller_pane_id": 3,
                 "from_pane_id": 7,
                 "placement": "down",
                 "response_file": "",

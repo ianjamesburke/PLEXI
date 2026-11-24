@@ -69,35 +69,53 @@ mod tests {
         let socket = dir.path().join("trace.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let profile = dir.path().to_path_buf();
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let peer = crate::broker::caller::PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+        let mailbox = h.ipc_tx.clone();
         let server = std::thread::spawn(move || {
             let wrong_profile = tempfile::tempdir().unwrap();
             let _profile = crate::config::set_test_profile_dir(wrong_profile.path().to_path_buf());
             crate::host::flight_recorder::adopt_session(&profile, "sess-socket");
-            let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
-                egui::Context::default(),
-            ));
-            let (mailbox, _receiver) =
-                crate::app::ui_mailbox::UiMailbox::channel(wake, "cli_trace_test");
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut line = String::new();
                 std::io::BufReader::new(stream.try_clone().unwrap())
                     .read_line(&mut line)
                     .unwrap();
-                crate::app::handle_socket_line_in(&profile, &line, &mailbox, None, &mut stream);
+                crate::app::handle_socket_line_in(
+                    &profile,
+                    &line,
+                    &mailbox,
+                    Some(&peer),
+                    &mut stream,
+                );
             }
         });
         let id = uuid::Uuid::new_v4().to_string();
+        // The frame claims pane 19. The kernel says otherwise.
         let mut frame = json!({"type":"cli_trace","id":id,"phase":"start","pane_id":19,
             "argv":["plexi-alpha","pane","new","--right"]});
-        assert!(send_frame(&socket, &frame));
-        frame["phase"] = json!("exit");
-        frame["exit_code"] = json!(0);
-        assert!(send_frame(&socket, &frame));
+        let client_socket = socket.clone();
+        let client = std::thread::spawn(move || {
+            assert!(send_frame(&client_socket, &frame));
+            frame["phase"] = json!("exit");
+            frame["exit_code"] = json!(0);
+            assert!(send_frame(&client_socket, &frame));
+        });
+        while !client.is_finished() {
+            h.hidden_frame();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        client.join().unwrap();
         server.join().unwrap();
         let (_, _, rows) =
-            crate::cli::debug::build_show(dir.path(), Some("sess-socket"), Some(19), None).unwrap();
-        let calls = crate::host::flight_recorder::cli_calls(rows.clone(), Some(19));
+            crate::cli::debug::build_show(dir.path(), Some("sess-socket"), None, None).unwrap();
+        assert!(
+            crate::host::flight_recorder::cli_calls(rows.clone(), Some(19)).is_empty(),
+            "a claimed pane id is never recorded"
+        );
+        let calls = crate::host::flight_recorder::cli_calls(rows.clone(), Some(pane));
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["data"]["exit_code"], 0);
         assert!(crate::cli::debug::render_line(&calls[0], false).contains("--right"));
@@ -472,7 +490,6 @@ pub fn begin(
             &known_secret_names(&crate::config::config_dir()),
             capture_content(),
         ),
-        "pane_id": std::env::var("PLEXI_PANE_ID").ok().and_then(|v| v.parse::<u64>().ok()),
     });
     if send_frame(&socket, &frame) {
         *slot = Some(Invocation { frame, socket });

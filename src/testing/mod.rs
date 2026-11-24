@@ -174,7 +174,7 @@ pub struct HostHarness {
     /// Next pane id to assign.
     next_pane_id: u64,
     /// IPC mailbox for injecting HostRequests into the pane_ipc channel.
-    pub ipc_tx: crate::app::ui_mailbox::UiMailbox<HostRequest>,
+    pub ipc_tx: crate::app::ui_mailbox::UiMailbox<crate::app::socket_caller::PaneIpcMessage>,
     /// Platform output from the most recently completed frame.
     /// Contains clipboard writes, open URLs, etc.
     pub last_platform_output: egui::PlatformOutput,
@@ -705,6 +705,20 @@ impl HostHarness {
     /// Mutable access to a terminal pane's backend, for input-tap assertions
     /// (`enable_input_tap` / `take_input_tap`) that prove a keystroke reached
     /// the PTY writer.
+    /// The shell pid of terminal `pane_id`, wherever its window is.
+    pub fn shell_pid(&self, pane_id: PaneId) -> u32 {
+        self.app
+            .terminal_incarnation(pane_id)
+            .expect("pane is not a terminal")
+            .backend
+            .child_pid()
+    }
+
+    /// The origin a socket request from terminal `pane_id`'s own shell gets.
+    pub fn origin_from_pane(&self, pane_id: PaneId) -> crate::broker::caller::RequestOrigin {
+        self.app.socket_origin_for_pids(&[self.shell_pid(pane_id)])
+    }
+
     pub fn terminal_backend(&mut self, pane_id: PaneId) -> &mut egui_term::TerminalBackend {
         &mut self.app.windows[0]
             .panes
@@ -746,31 +760,47 @@ impl HostHarness {
             .map_err(|e| format!("failed to save PNG: {e}"))
     }
 
-    /// Inject a `HostRequest` directly into the pane_ipc channel.
+    /// Inject a `HostRequest` as host code would send it (origin
+    /// `HostSystem`). Socket callers go through `inject_socket`.
     pub fn inject_ipc(&self, cmd: HostRequest) -> &Self {
-        let _ = self.ipc_tx.send(cmd);
+        let _ = self
+            .ipc_tx
+            .send(crate::app::socket_caller::PaneIpcMessage::host(cmd));
         self
     }
 
-    /// Inject a launch request (`spawn_pane`, `agent_spawn`, `agent_open`)
-    /// as a verified in-process caller would send it: its claimed pane is
-    /// trusted. A request deserialized from wire JSON is otherwise
-    /// `Unverified` and refused (stint 1632).
-    pub fn inject_in_process(&self, mut cmd: HostRequest) -> &Self {
-        match &mut cmd {
-            HostRequest::SpawnPane { source, .. }
-            | HostRequest::AgentSpawn { source, .. }
-            | HostRequest::AgentOpen { source, .. }
-            | HostRequest::AgentNewChat { source, .. }
-            | HostRequest::AgentReopen { source, .. }
-            | HostRequest::CreateContext { source, .. }
-            | HostRequest::CreateSubContext { source, .. }
-            | HostRequest::FocusContext { source, .. } => {
-                *source = crate::protocol::SpawnSource::InProcess;
-            }
-            _ => panic!("inject_in_process: not a launch request"),
-        }
-        self.inject_ipc(cmd)
+    /// Inject a request as the command socket delivers it: the admission
+    /// entry classifies `peer` and applies the request's policy (stint 1285).
+    pub fn inject_socket(
+        &self,
+        cmd: HostRequest,
+        peer: Option<crate::broker::caller::PeerWitness>,
+    ) -> &Self {
+        let reply = serde_json::to_value(&cmd)
+            .ok()
+            .and_then(|value| value["response_file"].as_str().map(str::to_string))
+            .filter(|token| !token.is_empty());
+        let _ = self
+            .ipc_tx
+            .send(crate::app::socket_caller::PaneIpcMessage::Request {
+                ingress: crate::app::socket_caller::Ingress::Socket { peer, reply },
+                request: Box::new(cmd),
+            });
+        self
+    }
+
+    /// Inject a request from a live pane's own shell, over the socket path.
+    pub fn inject_from_pane(&self, pane: PaneId, cmd: HostRequest) -> &Self {
+        let peer = crate::broker::caller::PeerWitness::for_live_pids(&[self.shell_pid(pane)]);
+        self.inject_socket(cmd, Some(peer))
+    }
+
+    /// Handle a launch request as the person's own gesture in the host's UI
+    /// would (origin `HostUi`): its named pane is placement, never a grant.
+    pub fn inject_in_process(&mut self, cmd: HostRequest) -> &Self {
+        self.app
+            .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, cmd);
+        self
     }
 
     /// Launch a real process plugin from `plugins/dev/<name>` and return its pane
@@ -1044,6 +1074,8 @@ mod agent_chat_tests;
 
 #[cfg(test)]
 mod agent_security_tests;
+#[cfg(test)]
+mod socket_policy_tests;
 #[cfg(test)]
 mod cli_operation_tests;
 #[cfg(test)]

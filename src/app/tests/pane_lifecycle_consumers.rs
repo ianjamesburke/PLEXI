@@ -14,7 +14,15 @@ pub(super) struct Connection {
 }
 
 impl Connection {
-    pub(super) fn open(h: &mut HostHarness, request: Value) -> Self {
+    /// A stream frame from the shell of its `from_pane_id`: the kernel names
+    /// the caller, so the field is the fixture's and never reaches the wire.
+    pub(super) fn open(h: &mut HostHarness, mut request: Value) -> Self {
+        let caller = request
+            .as_object_mut()
+            .and_then(|fields| fields.remove("from_pane_id"))
+            .and_then(|pane| pane.as_u64())
+            .expect("a consumer request names its calling pane");
+        let peer = crate::broker::caller::PeerWitness::for_live_pids(&[h.shell_pid(caller)]);
         let wake = Arc::new(EguiWake::new(h.app.ctx.clone()));
         let (subscribe, rx) = UiMailbox::channel(wake.clone(), "consumer-test");
         h.app.event_subscribe_rx = rx;
@@ -30,7 +38,7 @@ impl Connection {
                 ipc,
                 subscribe,
                 publish,
-                None,
+                Some(peer),
             );
         });
         writeln!(socket, "{request}").unwrap();
@@ -101,7 +109,7 @@ fn report(h: &mut HostHarness, pane: u64, state: &str, event: &str) {
 #[test]
 fn pane_consumer_wait_matches_current_idle_while_hidden() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     report(&mut h, pane, "idle", "Stop");
     let connection = Connection::open(
         &mut h,
@@ -183,8 +191,8 @@ fn follow(h: &mut HostHarness, pane: u64) -> Connection {
 #[test]
 fn pane_consumer_closed_pane_cannot_match_stale_idle() {
     let mut h = HostHarness::new();
-    let caller = h.add_test_pane();
-    let target = h.add_test_pane();
+    let caller = h.add_focused_terminal();
+    let target = h.add_focused_terminal();
     report(&mut h, target, "idle", "Stop");
     close(&mut h, target);
     let connection = Connection::open(&mut h, wait_request(target, caller, "idle", 1.0));
@@ -199,8 +207,8 @@ fn pane_consumer_closed_pane_cannot_match_stale_idle() {
 fn pane_consumer_retains_unknown_exit_after_close() {
     use crate::host::pane_lifecycle::{ExitStatus, PaneLifecycleEvent};
     let mut h = HostHarness::new();
-    let caller = h.add_test_pane();
-    let target = h.add_test_pane();
+    let caller = h.add_focused_terminal();
+    let target = h.add_focused_terminal();
     h.app.emit_pane_lifecycle(
         target,
         PaneLifecycleEvent::Exited {
@@ -218,7 +226,7 @@ fn pane_consumer_retains_unknown_exit_after_close() {
 fn pane_consumer_retains_exit_code_signal_and_keeps_provider_stop_separate() {
     use crate::host::pane_lifecycle::{ExitStatus, PaneLifecycleEvent};
     let mut h = HostHarness::new();
-    let caller = h.add_test_pane();
+    let caller = h.add_focused_terminal();
 
     for (status, expected) in [
         (ExitStatus::Code(0), json!({"code": 0})),
@@ -226,7 +234,7 @@ fn pane_consumer_retains_exit_code_signal_and_keeps_provider_stop_separate() {
         (ExitStatus::Signal(9), json!({"signal": 9})),
         (ExitStatus::Unknown, json!("unknown")),
     ] {
-        let target = h.add_test_pane();
+        let target = h.add_focused_terminal();
         for provider_event in ["Stop", "StopFailure", "SessionEnd"] {
             report(&mut h, target, "idle", provider_event);
         }
@@ -253,7 +261,7 @@ fn pane_consumer_retains_exit_code_signal_and_keeps_provider_stop_separate() {
 fn pane_consumer_failure_and_session_end_invalidate_idle() {
     for event in ["StopFailure", "SessionEnd", "UserPromptSubmit"] {
         let mut h = HostHarness::new();
-        let pane = h.add_test_pane();
+        let pane = h.add_focused_terminal();
         report(&mut h, pane, "idle", "Stop");
         report(
             &mut h,
@@ -277,7 +285,7 @@ fn pane_consumer_failure_and_session_end_invalidate_idle() {
 #[test]
 fn pane_consumer_follow_connections_do_not_steal_or_cancel_each_other() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     let first = follow(&mut h, pane);
     let second = follow(&mut h, pane);
     assert_eq!(subscriptions(pane), 2);
@@ -298,7 +306,7 @@ fn pane_consumer_follow_connections_do_not_steal_or_cancel_each_other() {
 #[test]
 fn pane_consumer_cancel_during_consent_releases_pending_state() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     let connection = Connection::open(&mut h, wait_request(pane, pane, "idle", 5.0));
     pump_until(&mut h, |h| !h.app.pending_event_consents.is_empty());
     drop(connection);
@@ -310,7 +318,7 @@ fn pane_consumer_cancel_during_consent_releases_pending_state() {
 #[test]
 fn pane_consumer_denied_subscription_returns_no_record() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     report(&mut h, pane, "idle", "Stop");
     let connection = Connection::open(&mut h, wait_request(pane, pane, "idle", 2.0));
     pump_until(&mut h, |h| !h.app.pending_event_consents.is_empty());
@@ -327,7 +335,7 @@ fn pane_consumer_denied_subscription_returns_no_record() {
 #[test]
 fn pane_consumer_follow_preserves_terminal_event_provenance() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     let connection = follow(&mut h, pane);
     for (raw, kind) in [
         ("Stop", "turn_finished"),
@@ -359,7 +367,7 @@ fn approve(h: &mut HostHarness) {
 #[test]
 fn pane_consumer_pending_wait_matches_transition_and_releases_subscription() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     let connection = Connection::open(&mut h, wait_request(pane, pane, "blocked", 5.0));
     pump_until(&mut h, |h| !h.app.pending_event_consents.is_empty());
     approve(&mut h);
@@ -375,8 +383,8 @@ fn pane_consumer_pending_wait_matches_transition_and_releases_subscription() {
 #[test]
 fn pane_consumer_close_during_wait_returns_error_without_deadline_delay() {
     let mut h = HostHarness::new();
-    let caller = h.add_test_pane();
-    let pane = h.add_test_pane();
+    let caller = h.add_focused_terminal();
+    let pane = h.add_focused_terminal();
     let connection = Connection::open(&mut h, wait_request(pane, caller, "idle", 60.0));
     pump_until(&mut h, |h| !h.app.pending_event_consents.is_empty());
     approve(&mut h);
@@ -410,7 +418,7 @@ fn another_context(h: &mut HostHarness, id: u64) -> u64 {
         context_id: id,
         tree_history: Default::default(),
     });
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     let (_, tile) = h.app.find_pane_in_any_window(pane).unwrap();
     h.app.windows[0].tree.tiles.remove(tile);
     let value = h.app.windows[0].take_pane(pane).unwrap();
@@ -424,7 +432,7 @@ fn another_context(h: &mut HostHarness, id: u64) -> u64 {
 #[test]
 fn pane_consumer_inactive_context_uses_caller_scope_and_rejects_other_context() {
     let mut h = HostHarness::new();
-    let caller = h.add_test_pane();
+    let caller = h.add_focused_terminal();
     // Global timeline is shared by parallel harness tests; this unfiltered
     // subscription needs its own context as well as unique pane IDs.
     h.app.router.get_mut(0).context_id = caller + 200_000;
@@ -457,8 +465,8 @@ fn pane_consumer_inactive_context_uses_caller_scope_and_rejects_other_context() 
 #[test]
 fn pane_consumer_follow_filters_resource_and_timeout_cleans_up() {
     let mut h = HostHarness::new();
-    let caller = h.add_test_pane();
-    let other = h.add_test_pane();
+    let caller = h.add_focused_terminal();
+    let other = h.add_focused_terminal();
     let stream = follow(&mut h, caller);
     report(&mut h, other, "blocked", "UsageLimit");
     report(&mut h, caller, "blocked", "PermissionRequest");

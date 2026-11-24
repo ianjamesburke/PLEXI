@@ -627,6 +627,7 @@ pub mod help;
 pub mod introspect;
 mod pane_caller;
 mod queued_spawn;
+mod reply;
 pub mod registry;
 pub mod setup;
 pub mod skill_draft;
@@ -697,6 +698,11 @@ pub(super) fn print_tip(msg: &str) {
 /// at all is passed through verbatim — the host's reply is never withheld
 /// from the caller.
 pub(super) fn print_json_output(json_str: &str) -> i32 {
+    let json_str = match reply::HostReply::decode(json_str).payload_or_report() {
+        Ok(payload) => payload,
+        Err(code) => return code,
+    };
+    let json_str = json_str.as_str();
     match serde_json::from_str::<serde_json::Value>(json_str) {
         Ok(v) => match serde_json::to_string_pretty(&v) {
             Ok(pretty) => {
@@ -1253,11 +1259,10 @@ pub(super) fn request_with(
 /// already owned by [`poll_rpc`], and swallowing a valid-but-unexpected shape
 /// would hide the response from the caller.
 pub(super) fn reply_error(content: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(content)
-        .ok()?
-        .get("error")?
-        .as_str()
-        .map(str::to_string)
+    match reply::HostReply::decode(content) {
+        reply::HostReply::Refused { reason, .. } => Some(reason),
+        reply::HostReply::Payload(_) => None,
+    }
 }
 
 /// Surface a host-reported `error` as `error: <msg>` on stderr with exit code 1.
@@ -1686,15 +1691,33 @@ fn send_line_to_socket(
     Ok(stream)
 }
 
+/// The fire-and-forget verbs whose caller matters to the host: the CLI waits
+/// for the host's identity ack before disconnecting for these only, the same
+/// set both alpha endpoints use, so a newer CLI adds no wait against an older
+/// host (Codex 3290 r4). Pane driving that is not in the set is served to an
+/// unidentified caller.
+const IDENTITY_ACK_VERBS: &[&str] = &[
+    "agent_ask", "agent_call", "agent_done", "agent_message", "agent_new_chat", "agent_open",
+    "agent_reopen", "agent_spawn", "agent_wait", "agents_api", "call_plugin_tool",
+    "caller_context", "create_context", "create_sub_context", "dismiss_notification",
+    "file_open", "focus_context", "list_plugin_tools", "needs_you_api", "notify",
+    "pane_message_send", "pane_secret_get", "pane_secret_list", "permissions", "resource_lease",
+    "send_to_pane", "set_agent_state", "spawn_pane",
+];
+
 /// Hold a fire-and-forget connection until the host acks that it read our
-/// peer identity (`PEER_IDENTITY_ACK` in `src/app/mod.rs`). Disconnecting
-/// first leaves the host no pid to attribute the request to. Requests that
-/// ignore identity, or carry a reply token, get no ack and return at once.
-/// A missed ack is logged, not fatal: the request was already delivered.
+/// peer identity (`PEER_IDENTITY_ACK` in `src/app/mod.rs`), for a verb whose
+/// caller matters. A request with a reply token holds its connection until
+/// the reply and returns at once. A missed ack is logged, not fatal: the
+/// request was already delivered.
 pub(crate) fn await_peer_identity_ack(stream: &mut crate::platform::ipc::IpcStream, line: &str) {
-    let consumes = serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
-        .is_ok_and(|request| request.consumes_peer_identity());
-    if !consumes || crate::rpc::extract_response_file_token(line).is_some() {
+    let verb = serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|frame| frame["type"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    if !IDENTITY_ACK_VERBS.contains(&verb.as_str())
+        || crate::rpc::extract_response_file_token(line).is_some()
+    {
         return;
     }
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
@@ -2052,6 +2075,11 @@ pub(super) fn queue_spawn_and_wait(
     summary: &str,
 ) -> Result<Option<String>, i32> {
     let response_file = crate::rpc::response_file("queued-spawn-response", "json");
+    let mut receipt = queued_spawn::open_receipt(&response_file).map_err(|error| {
+        log::warn!("queued spawn: {error}");
+        eprintln!("error: {error}");
+        1
+    })?;
     let Some(fields) = payload.as_object_mut() else {
         log::error!("queue_spawn_and_wait: '{intent}' payload is not a JSON object");
         eprintln!("error: could not write spawn request: payload is not a JSON object");
@@ -2062,16 +2090,15 @@ pub(super) fn queue_spawn_and_wait(
         serde_json::Value::String(response_file.clone()),
     );
     let queue_file = queue_spawn(payload, intent, summary)?;
-    queued_spawn::wait(
-        &queue_file,
-        std::path::Path::new(&response_file),
-        std::time::Duration::from_secs(10),
-    )
-    .map_err(|error| {
-        log::warn!("queued spawn: {error}");
-        eprintln!("error: {error}");
-        1
-    })
+    match queued_spawn::wait(&queue_file, &mut receipt, std::time::Duration::from_secs(10)) {
+        queued_spawn::SpawnOutcome::Answered(reply) => Ok(Some(reply)),
+        queued_spawn::SpawnOutcome::Pending => Ok(None),
+        queued_spawn::SpawnOutcome::Cancelled(error) => {
+            log::warn!("queued spawn: {error}");
+            eprintln!("error: {error}");
+            Err(1)
+        }
+    }
 }
 
 /// Decode the definitive reply to an outside-pane queued spawn.

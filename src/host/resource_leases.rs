@@ -364,14 +364,16 @@ mod integration_tests {
     fn host_request(h: &mut crate::testing::HostHarness, op: &str, pid: u32) -> Value {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("reply.json");
-        h.inject_ipc(crate::protocol::HostRequest::ResourceLease {
-            op: op.into(),
-            name: Some("lanes".into()),
-            max: Some(1),
-            holder_pid: pid,
-            peer_ancestry: vec![pid],
-            response_file: path.to_string_lossy().into_owned(),
-        });
+        h.inject_socket(
+            crate::protocol::HostRequest::ResourceLease {
+                op: op.into(),
+                name: Some("lanes".into()),
+                max: Some(1),
+                holder_pid: pid,
+                response_file: path.to_string_lossy().into_owned(),
+            },
+            Some(crate::broker::caller::PeerWitness::for_live_pids(&[pid])),
+        );
         h.hidden_frame();
         let deadline = std::time::Instant::now()
             + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
@@ -457,25 +459,23 @@ mod integration_tests {
         let mut harness = crate::testing::HostHarness::new();
         let dir = tempfile::tempdir().unwrap();
         let reply = dir.path().join("reply.json");
-        harness.inject_ipc(crate::protocol::HostRequest::ResourceLease {
+        harness.inject_socket(crate::protocol::HostRequest::ResourceLease {
             op: "acquire".into(),
             name: Some("lanes".into()),
             max: Some(1),
             holder_pid: std::process::id(),
-            peer_ancestry: vec![],
             response_file: reply.to_string_lossy().into_owned(),
-        });
+        }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[1])));
         harness.hidden_frame();
         let body: Value = serde_json::from_slice(&std::fs::read(&reply).unwrap()).unwrap();
         assert_eq!(body["error_code"], "permission_denied");
-        harness.inject_ipc(crate::protocol::HostRequest::ResourceLease {
+        harness.inject_socket(crate::protocol::HostRequest::ResourceLease {
             op: "release".into(),
             name: None,
             max: None,
             holder_pid: std::process::id(),
-            peer_ancestry: vec![std::process::id()],
             response_file: reply.to_string_lossy().into_owned(),
-        });
+        }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[std::process::id()])));
         std::fs::remove_file(&reply).unwrap();
         harness.hidden_frame();
         let timeout = crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));

@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use egui_tiles::{Container, LinearDir, Tile};
 
 use crate::host::pane::ViewRuntime;
-use crate::protocol::{AncestryEnd, HostRequest, OpenPlacement, PeerAncestry};
+use crate::broker::caller::{AncestryEnd, PeerHop, PeerWitness};
+use crate::protocol::{HostRequest, OpenPlacement};
 use crate::spatial::tiling::PaneId;
 use crate::testing::HostHarness;
 
@@ -14,25 +15,24 @@ use crate::testing::HostHarness;
 fn caller() -> (HostHarness, PaneId, u32) {
     let mut h = HostHarness::new();
     let pane = h.add_focused_terminal();
-    let pid = h.terminal_backend(pane).child_pid();
+    let pid = h.shell_pid(pane);
     (h, pane, pid)
 }
 
 struct Open<'a> {
     path: &'a str,
     cwd: Option<PathBuf>,
-    claim: Option<u64>,
     from: Option<u64>,
     placement: Option<OpenPlacement>,
     no_focus: bool,
 }
 
 impl<'a> Open<'a> {
-    fn new(path: &'a str, cwd: &Path, claim: PaneId) -> Self {
+    /// `_caller` is who sends it; nothing on the wire names it (stint 1285).
+    fn new(path: &'a str, cwd: &Path, _caller: PaneId) -> Self {
         Self {
             path,
             cwd: Some(cwd.to_path_buf()),
-            claim: Some(claim),
             from: None,
             placement: None,
             no_focus: false,
@@ -41,28 +41,20 @@ impl<'a> Open<'a> {
 
     /// Send over a socket whose peer walk reached the OS root.
     fn send(self, h: &mut HostHarness, ancestry: &[u32]) -> serde_json::Value {
-        self.send_walk(
-            h,
-            Some(PeerAncestry {
-                pids: ancestry.to_vec(),
-                end: AncestryEnd::ReachedRoot,
-            }),
-        )
+        self.send_walk(h, walk(ancestry, AncestryEnd::ReachedRoot))
     }
 
     /// Send with an explicit host-stamped peer walk (`None`: no credential).
-    fn send_walk(self, h: &mut HostHarness, peer: Option<PeerAncestry>) -> serde_json::Value {
+    fn send_walk(self, h: &mut HostHarness, peer: Option<PeerWitness>) -> serde_json::Value {
         let token = h
             .workspace_root()
             .join(format!("open-{}.json", uuid::Uuid::new_v4()));
         let request = HostRequest::FileOpen {
             path: self.path.to_string(),
             cwd: self.cwd.map(|cwd| cwd.display().to_string()),
-            caller_pane_id: self.claim,
             from_pane_id: self.from,
             placement: self.placement,
             no_focus: self.no_focus,
-            peer: None,
             response_file: token.to_string_lossy().into_owned(),
         };
         let line = serde_json::to_string(&request).unwrap();
@@ -247,24 +239,14 @@ fn missing_binary_and_unresolvable_targets_are_typed_and_open_nothing() {
 }
 
 #[test]
-fn a_caller_that_is_not_the_claimed_live_pane_is_stale() {
-    let (mut h, caller, pid) = caller();
+fn a_caller_outside_every_pane_without_an_anchor_places_nothing() {
+    let (mut h, caller, _pid) = caller();
     let root = h.workspace_root();
     std::fs::write(root.join("a.txt"), "a").unwrap();
     let before = pane_count(&h);
-
-    // Claims another pane than the socket peer's.
-    let reply = Open::new("a.txt", &root, caller + 1_000).send(&mut h, &[pid]);
-    assert_eq!(reply["error_code"], "stale_caller", "{reply}");
-    // Claims a pane, but the peer runs in none.
+    // No pane is named on the wire; the peer runs in none, so there is
+    // nothing to place beside (stint 1285).
     let reply = Open::new("a.txt", &root, caller).send(&mut h, &[999_999]);
-    assert_eq!(reply["error_code"], "stale_caller", "{reply}");
-    // Claims nothing and runs in no pane: nothing to place beside.
-    let reply = Open {
-        claim: None,
-        ..Open::new("a.txt", &root, caller)
-    }
-    .send(&mut h, &[999_999]);
     assert_eq!(reply["error_code"], "no_anchor", "{reply}");
     assert_eq!(pane_count(&h), before);
 }
@@ -570,8 +552,7 @@ fn only_a_verified_external_caller_places_into_another_context() {
     let (mut h, caller, pid) = caller();
     let (root_b, anchor_b) = second_context(&mut h);
     std::fs::write(root_b.path().join("b.txt"), "b").unwrap();
-    let in_b = |claim| Open {
-        claim,
+    let in_b = |_: Option<u64>| Open {
         from: Some(anchor_b),
         ..Open::new("b.txt", root_b.path(), caller)
     };
@@ -600,7 +581,6 @@ fn only_a_verified_external_caller_places_into_another_context() {
     let a_txt = h.workspace_root().join("a.txt");
     std::fs::write(&a_txt, "a").unwrap();
     let outside = Open {
-        claim: None,
         from: Some(anchor_b),
         ..Open::new(a_txt.to_str().unwrap(), root_b.path(), caller)
     };
@@ -828,9 +808,21 @@ fn a_background_tab_stays_hidden_when_focus_is_in_another_split() {
 
 // ── Approved caller-identity design: slice 1, caller evidence ────────────────
 
-fn walk(pids: &[u32], end: AncestryEnd) -> Option<PeerAncestry> {
-    Some(PeerAncestry {
-        pids: pids.to_vec(),
+/// A kernel-shaped walk over `pids`: a live pid carries its real start, a
+/// made-up one a start no live process has.
+fn walk(pids: &[u32], end: AncestryEnd) -> Option<PeerWitness> {
+    Some(PeerWitness {
+        pid: pids.first().copied().unwrap_or_default(),
+        hops: pids
+            .iter()
+            .map(|&pid| PeerHop {
+                pid,
+                start: crate::platform::process::process_info(pid)
+                    .map_or(crate::platform::process::ProcStart::for_test(0), |info| {
+                        info.start
+                    }),
+            })
+            .collect(),
         end,
     })
 }
@@ -844,7 +836,6 @@ fn caller_evidence_decides_pane_external_or_unidentified() {
     let root = h.workspace_root();
     std::fs::write(root.join("ok.txt"), "ok").unwrap();
     let external = || Open {
-        claim: None,
         from: Some(caller),
         placement: Some(OpenPlacement::Down),
         ..Open::new("ok.txt", &root, caller)
@@ -869,14 +860,6 @@ fn caller_evidence_decides_pane_external_or_unidentified() {
     assert_eq!(reply["error_code"], "caller_unidentified", "{reply}");
     assert_eq!(pane_count(&h), before, "nothing opens without evidence");
 
-    // A claimed pane never agrees with a walk that matches no pane.
-    let reply = Open {
-        from: Some(caller),
-        ..Open::new("ok.txt", &root, caller)
-    }
-    .send_walk(&mut h, walk(&prefix, AncestryEnd::ReachedRoot));
-    assert_eq!(reply["error_code"], "stale_caller", "{reply}");
-
     let reply = external().send_walk(&mut h, walk(&prefix, AncestryEnd::ReachedRoot));
     assert_eq!(
         reply["status"], "opened",
@@ -887,7 +870,6 @@ fn caller_evidence_decides_pane_external_or_unidentified() {
     // so no --from is needed.
     std::fs::write(root.join("pane.txt"), "p").unwrap();
     let reply = Open {
-        claim: None,
         ..Open::new("pane.txt", &root, caller)
     }
     .send_walk(&mut h, walk(&[pid, 999_996], AncestryEnd::LookupFailed));
@@ -990,7 +972,6 @@ fn scopes() -> Scopes {
 
 fn external_from<'a>(path: &'a str, cwd: &Path, from: PaneId) -> Open<'a> {
     Open {
-        claim: None,
         from: Some(from),
         placement: Some(OpenPlacement::Down),
         cwd: Some(cwd.to_path_buf()),
@@ -1037,13 +1018,14 @@ fn a_pane_callers_authority_follows_its_own_terminal() {
             .launch_view_by_id_with_layout("file_browser", Some("overlay".into()), &[], None)
             .unwrap();
     }
-    // A covered human keeps the person's reach into a nested context.
+    // A pane the person opened has no wider reach than any pane (stint
+    // 1285): a nested context is another scope, covered or not.
     let reply = Open {
         placement: Some(OpenPlacement::Down),
         ..Open::new("nested/n.txt", &root, s.human)
     }
     .send(&mut s.h, &[s.human_pid]);
-    assert_eq!(reply["status"], "opened", "{reply}");
+    assert_eq!(reply["error_code"], "outside_authority", "{reply}");
     // A covered worker keeps its restriction, even anchored on the human.
     let before = pane_count(&s.h);
     let reply = Open {
@@ -1263,4 +1245,29 @@ fn an_explicit_view_of_a_plugin_without_a_default_view_opens() {
     let reply = Open::new("a.txt", &root, caller).send(&mut h, &[pid]);
     assert_eq!(reply["status"], "opened", "{reply}");
     assert_eq!(reply["handler"], "notes.outline", "{reply}");
+}
+
+/// Stint 1673: a builtin view that cannot be placed is the launcher's error,
+/// carried to `file.open` with its reason, never an `Ok` read as opened.
+#[test]
+fn a_builtin_placement_failure_reaches_file_open_with_its_reason() {
+    let (mut h, caller, pid) = caller();
+    let root = h.workspace_root();
+    std::fs::write(root.join("note.txt"), "n").unwrap();
+    h.app.config.core_only = Some(true);
+    let (panes, windows) = (pane_count(&h), h.app.windows.len());
+    for placement in [None, Some(OpenPlacement::Tab), Some(OpenPlacement::Window)] {
+        let reply = Open {
+            placement,
+            ..Open::new("note.txt", &root, caller)
+        }
+        .send(&mut h, &[pid]);
+        assert_eq!(reply["error_code"], "handler_unavailable", "{placement:?}: {reply}");
+        assert!(
+            reply["error"].as_str().unwrap_or("").contains("core-only"),
+            "{placement:?}: the reason is the launcher's: {reply}"
+        );
+        assert_eq!(pane_count(&h), panes, "{placement:?}");
+        assert_eq!(h.app.windows.len(), windows, "{placement:?}");
+    }
 }

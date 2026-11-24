@@ -16,7 +16,7 @@
 use crate::app::input_router::PlexiInput;
 use crate::app::view_trait::KeyDisposition;
 use crate::app::PlexiApp;
-use crate::broker::gate::{ApprovalChoice, NeedsYouKind, PermissionMonitor, ResolveSurface};
+use crate::broker::gate::{ApprovalChoice, NeedsYouKind, PermissionMonitor};
 use crate::ui::card_block::{layout_card, paint_card, wrap_text, CardForm, CardSpec, CardState};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::style;
@@ -251,6 +251,8 @@ pub struct AttentionQueueState {
     pub verdicts: Vec<DecisionVerdict>,
     /// Open Decision Overlay state (`None` unless explicitly opened).
     pub decision_overlay: Option<DecisionOverlayState>,
+    /// Armed for the ask the overlay shows; issues its decision's evidence.
+    pub decision_guard: crate::broker::consent::ConsentGuard,
     /// Transient status hint in the path bar (e.g. `Cmd+Alt+B` with no asks, or `Esc` hint).
     pub transient_hint: Option<(String, Instant)>,
     /// Monotonic counter for ordering arrivals when timestamps tie.
@@ -1213,7 +1215,7 @@ impl PlexiApp {
         ids.sort();
         ids.dedup();
         for id in ids {
-            if let Err(error) = self.resolve_from_desktop(&id, false, "notice acknowledge") {
+            if let Err(error) = self.refuse_from_desktop(&id, "notice acknowledge") {
                 log::warn!("attention_queue: acknowledge {id} not persisted: {error}");
             }
             self.attention_queue.dismissed_ids.insert(id);
@@ -1315,6 +1317,10 @@ impl PlexiApp {
         if bar.category != QueueCategory::Notice && bar.pane_id != 0 {
             self.jump_to_pane_at_columns(bar.pane_id);
         }
+        self.attention_queue.decision_guard.focus(
+            crate::broker::consent::consent_request_key(&bar.id),
+            std::time::Instant::now(),
+        );
         self.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&bar));
         self.attention_queue.open = false;
         self.sync_attention_queue();
@@ -1327,13 +1333,14 @@ impl PlexiApp {
     }
 
     pub(crate) fn find_parent_pane_id(&self, pane_id: u64) -> Option<u64> {
+        use crate::broker::pane_authority::Spawner;
         if let Some(t) = self
             .windows
             .iter()
             .find_map(|w| w.panes.get(&pane_id))
             .and_then(|p| p.as_terminal())
         {
-            if t.spawned_by.as_deref() == Some("human") {
+            if Spawner::parse(t.spawned_by.as_deref()).ends_parent_walk() {
                 return None;
             }
             if let Some(pid) = t.parent_pane_id {
@@ -1348,7 +1355,7 @@ impl PlexiApp {
             .rev()
             .find(|r| r.pane_id == pane_id)
         {
-            if record.spawned_by.as_deref() == Some("human") {
+            if Spawner::parse(record.spawned_by.as_deref()).ends_parent_walk() {
                 return None;
             }
             if let Some(pid) = record.parent_pane_id {
@@ -1650,6 +1657,34 @@ impl PlexiApp {
         let _ = self.open_decision_overlay_for_ask(&oldest_id);
     }
 
+    /// Test hook: the overlay has been on screen past the arm delay.
+    #[cfg(test)]
+    pub(crate) fn arm_decision_overlay_for_test(&mut self) {
+        self.attention_queue
+            .decision_guard
+            .backdate(crate::broker::consent::ARM_DELAY * 2);
+    }
+
+    /// Evidence from the overlay's guard for one decision on the ask it shows.
+    fn witness_overlay_decision(
+        &self,
+        ask_id: &str,
+        target: &str,
+        choice: &str,
+        refuses: bool,
+    ) -> Result<crate::broker::consent::DecisionEvidence, String> {
+        self.attention_queue
+            .decision_guard
+            .witness(crate::broker::consent::ConsentDecision {
+                displayed: crate::broker::consent::consent_request_key(ask_id),
+                target,
+                choice,
+                refuses,
+                now: std::time::Instant::now(),
+                synthetic: self.synthetic_input_frame,
+            })
+    }
+
     /// Pick option `option_idx` in the open Decision Overlay.
     /// Sends at most one verdict, closes the overlay, and keeps focus on the pane.
     pub fn pick_decision_overlay_option(&mut self, option_idx: usize) -> bool {
@@ -1690,7 +1725,15 @@ impl PlexiApp {
                     "deny" => ApprovalChoice::Deny,
                     _ => ApprovalChoice::Once,
                 };
-                match monitor.approve_pending(request_id, choice) {
+                let decided = self
+                    .witness_overlay_decision(
+                        &overlay.ask_id,
+                        request_id,
+                        &format!("{choice:?}"),
+                        choice == ApprovalChoice::Deny,
+                    )
+                    .and_then(|evidence| monitor.decide_pending(&evidence, request_id, choice));
+                match decided {
                     Ok(()) => self.approval_keyboard.last_error = None,
                     Err(error) => {
                         // #2886: a failed decision must be visible and retryable.
@@ -1715,12 +1758,30 @@ impl PlexiApp {
                     self.acknowledge_notice(request_id);
                 } else {
                     let result = if *is_question {
-                        self.answer_from_desktop(request_id, &option.label, "decision overlay")
+                        self.witness_overlay_decision(
+                            &overlay.ask_id,
+                            request_id,
+                            &option.label,
+                            false,
+                        )
+                        .and_then(|evidence| {
+                            self.answer_from_desktop(
+                                evidence,
+                                request_id,
+                                &option.label,
+                                "decision overlay",
+                            )
+                        })
+                    } else if option.key != "deny"
+                        && !option.label.eq_ignore_ascii_case("deny")
+                        && !option.label.eq_ignore_ascii_case("dismiss")
+                    {
+                        self.witness_overlay_decision(&overlay.ask_id, request_id, "approve", false)
+                            .and_then(|evidence| {
+                                self.approve_from_desktop(evidence, request_id, "decision overlay")
+                            })
                     } else {
-                        let approve = option.key != "deny"
-                            && !option.label.eq_ignore_ascii_case("deny")
-                            && !option.label.eq_ignore_ascii_case("dismiss");
-                        self.resolve_from_desktop(request_id, approve, "decision overlay")
+                        self.refuse_from_desktop(request_id, "decision overlay")
                     };
                     match result {
                         Ok(()) => self.approval_keyboard.last_error = None,
@@ -2139,11 +2200,9 @@ impl PlexiApp {
             QueueSource::NeedsYou { request_id, .. } => {
                 match PermissionMonitor::for_profile(&crate::config::config_dir()) {
                     Ok(monitor) => {
-                        let _ = monitor.resolve_needs_you_from(
-                            request_id,
-                            false,
-                            ResolveSurface::Desktop,
-                        );
+                        if let Err(error) = monitor.dismiss_needs_you_at_desktop(request_id) {
+                            log::info!("attention: dismiss {request_id} failed: {error:?}");
+                        }
                     }
                     Err(error) => log::error!("attention: dismiss left item open: {error}"),
                 }
@@ -2760,7 +2819,7 @@ mod tests {
         assert!(!monitor.list_needs_you().iter().any(|row| row.id == id));
         let list_path = workspace.join("needs-you-list.json");
         h.app
-            .observe_needs_you("list", None, None, list_path.to_str().unwrap());
+            .observe_needs_you(&crate::broker::caller::RequestOrigin::HostSystem, "list", None, None, list_path.to_str().unwrap());
         let list: serde_json::Value =
             serde_json::from_slice(&std::fs::read(list_path).unwrap()).unwrap();
         assert!(!list["items"]
@@ -2769,7 +2828,7 @@ mod tests {
             .iter()
             .any(|row| row["id"] == id));
         let receipt = monitor
-            .resolve_needs_you_from(&id, true, ResolveSurface::Desktop)
+            .resolve_needs_you_from(&id, true, crate::broker::gate::ResolveSurface::Desktop)
             .unwrap();
         assert!(receipt.already);
         assert_eq!(receipt.resolution, NeedsYouResolution::Retired);
@@ -3507,7 +3566,6 @@ mod tests {
 
     fn report_attention(h: &mut HostHarness, pane_id: u64) {
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id,
             state: crate::protocol::AgentState::NeedsYou,
             agent: "test-agent".into(),
@@ -3522,7 +3580,6 @@ mod tests {
 
     fn report_failure_state(h: &mut HostHarness, pane_id: u64, state: crate::protocol::AgentState) {
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id,
             state,
             agent: "test-agent".into(),
@@ -3575,7 +3632,6 @@ mod tests {
             crate::protocol::AgentState::Failed,
         ] {
             h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-                peer_ancestry: None,
                 pane_id,
                 state,
                 agent: "test-agent".into(),
@@ -3627,7 +3683,6 @@ mod tests {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id,
             state: crate::protocol::AgentState::Blocked,
             agent: "codex".into(),
@@ -3680,7 +3735,6 @@ mod tests {
         let pane_id = h.add_focused_terminal();
         report_attention(&mut h, pane_id);
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None,
             pane_id,
             state: crate::protocol::AgentState::NeedsYou,
             agent: "test-agent".into(),
@@ -3711,7 +3765,7 @@ mod tests {
             );
         }
         monitor
-            .resolve_needs_you_from(&asks[0].id, false, ResolveSurface::Desktop)
+            .resolve_needs_you_from(&asks[0].id, false, crate::broker::gate::ResolveSurface::Desktop)
             .unwrap();
         assert!(monitor
             .get_needs_you(&asks[1].id)
@@ -3741,11 +3795,11 @@ mod tests {
                 },
                 None,
             )
-            .unwrap()
-            .0;
+            .unwrap();
         // No workspace or run is available to receive the grant.
         h.app.sync_attention_queue();
         assert!(h.app.open_decision_overlay_for_ask(&id));
+        h.app.arm_decision_overlay_for_test();
         assert!(!h.app.pick_decision_overlay_option(0));
         assert!(h.app.attention_queue.verdicts.is_empty());
         assert!(h
@@ -4166,8 +4220,7 @@ mod tests {
                     ..Default::default()
                 }),
             )
-            .unwrap()
-            .0;
+            .unwrap();
         h.app.sync_attention_queue();
         let bar = h
             .app
@@ -4179,6 +4232,7 @@ mod tests {
         assert_eq!(bar.context_id, context);
         assert_eq!(bar.pane_id, 0);
         assert!(h.app.open_decision_overlay_for_ask(&id));
+        h.app.arm_decision_overlay_for_test();
         assert!(h.app.pick_decision_overlay_option(0));
         assert_eq!(
             monitor.get_needs_you(&id).unwrap().answer.as_deref(),
@@ -4356,8 +4410,7 @@ mod tests {
                             ..Default::default()
                         }),
                     )
-                    .unwrap()
-                    .0,
+                    .unwrap(),
             );
         }
         report_attention(&mut h, pane_id);
@@ -4380,6 +4433,7 @@ mod tests {
             matches!(bar.source, QueueSource::NeedsYou { is_question, .. } if is_question == with_choices)
         );
         assert!(h.app.open_decision_overlay_for_ask(&id));
+        h.app.arm_decision_overlay_for_test();
 
         monitor.fail_audit(true);
         let accepted = h.app.pick_decision_overlay_option(0);
@@ -4785,6 +4839,53 @@ mod tests {
             win.tree.root = Some(tile);
         }
         id
+    }
+
+    /// Stint 1285 R6: the parent walk reads the typed spawner on both the
+    /// live branch and the restored-history branch. A pane spawner continues
+    /// to the recorded parent; a desktop, host, outside, queue or plugin
+    /// spawner ends the walk even when a parent id was recorded.
+    #[test]
+    fn find_parent_pane_id_reads_the_typed_spawner_live_and_restored() {
+        let mut h = HostHarness::new();
+        let parent = add_test_terminal_pane(&mut h, None, None, None);
+        let cases = [
+            (Some(format!("pane:{parent}")), Some(parent)),
+            (Some("agent:boss".to_string()), Some(parent)),
+            (Some("human".to_string()), None),
+            (Some("system".to_string()), None),
+            (Some("outside".to_string()), None),
+            (Some("queue".to_string()), None),
+            (Some(format!("plugin:{parent}")), None),
+        ];
+        for (spawned_by, expected) in &cases {
+            let live = add_test_terminal_pane(
+                &mut h,
+                Some(("claude", "child")),
+                Some(parent),
+                spawned_by.as_deref(),
+            );
+            assert_eq!(h.app.find_parent_pane_id(live), *expected, "live {spawned_by:?}");
+        }
+        for (index, (spawned_by, expected)) in cases.iter().enumerate() {
+            let pane_id = 900_000 + index as u64;
+            let record: crate::workspace::AgentHistoryRecord =
+                serde_json::from_value(serde_json::json!({
+                    "run_id": format!("run-{index}"),
+                    "pane_id": pane_id,
+                    "context_id": 1,
+                    "context_name": "c",
+                    "parent_pane_id": parent,
+                    "spawned_by": spawned_by,
+                    "harness": "claude",
+                    "cwd": "/tmp",
+                    "last_state": "completed",
+                    "closed_at": 1,
+                }))
+                .unwrap();
+            h.app.fleet_history.borrow_mut().push(record);
+            assert_eq!(h.app.find_parent_pane_id(pane_id), *expected, "restored {spawned_by:?}");
+        }
     }
 
     #[test]

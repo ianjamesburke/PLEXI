@@ -517,7 +517,18 @@ mod tests {
 
 /// Transport-only trace frames never dispatch a host action or confer identity.
 /// The caller pane is diagnostic provenance, not an authorization credential.
+#[cfg(test)]
 pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), String> {
+    record_cli_trace(profile, frame, frame["pane_id"].as_u64())
+}
+
+/// Record one CLI invocation. `pane` is the pane the kernel identified as the
+/// caller; the frame's own fields never name it (stint 1285).
+pub(crate) fn record_cli_trace(
+    profile: &Path,
+    frame: &Value,
+    pane: Option<u64>,
+) -> Result<(), String> {
     let id = frame["id"]
         .as_str()
         .filter(|id| uuid::Uuid::parse_str(id).is_ok())
@@ -537,7 +548,6 @@ pub(crate) fn handle_cli_trace(profile: &Path, frame: &Value) -> Result<(), Stri
     // The host cannot tell who sent a frame, so it builds every record itself
     // from the static grammar and keeps no sender value.
     let argv = crate::cli::trace::host_record(&argv);
-    let pane = frame["pane_id"].as_u64();
     // Session identity comes from the host's own pane mapping, never the frame.
     let agent_session = pane.and_then(|pane| {
         let key = crate::platform::path::canonical_or_self(profile);

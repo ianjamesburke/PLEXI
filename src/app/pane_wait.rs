@@ -200,11 +200,50 @@ pub(crate) struct PendingSendApproval {
     pub submit: bool,
     pub paste: bool,
     pub response_file: Option<String>,
-    pub peer_ancestry: Option<Vec<u32>>,
+    /// The request's origin, replayed with it once approved. Its pane
+    /// caller's authority handle is re-checked first (stint 1285).
+    pub origin: crate::broker::caller::RequestOrigin,
+    /// The caller's scope revision when the send was deferred.
+    pub scope_revision: Option<u64>,
     pub expires_at: Instant,
 }
 
 impl PlexiApp {
+    /// Whether a deferred request's origin still names the live caller it
+    /// was admitted for (stint 1285): the same terminal incarnation's
+    /// authority handle, not revoked, at the same scope revision.
+    pub(crate) fn deferred_origin_is_current(
+        &self,
+        origin: &crate::broker::caller::RequestOrigin,
+        scope_revision: Option<u64>,
+    ) -> Result<(), String> {
+        let Some(pane) = origin
+            .socket_caller()
+            .and_then(crate::broker::caller::SocketCaller::pane)
+        else {
+            return Ok(());
+        };
+        let live = self
+            .terminal_incarnation(pane.terminal_pane)
+            .and_then(|terminal| terminal.authority().cloned());
+        if !live.is_some_and(|live| std::sync::Arc::ptr_eq(&live, &pane.authority)) {
+            return Err(format!(
+                "pane {} is no longer the incarnation that asked",
+                pane.terminal_pane
+            ));
+        }
+        if pane.authority.is_revoked() {
+            return Err(format!("pane {} was revoked", pane.terminal_pane));
+        }
+        if scope_revision.is_some_and(|revision| revision != pane.authority.scope().revision) {
+            return Err(format!(
+                "pane {}'s scope changed while the request waited",
+                pane.terminal_pane
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn pane_heartbeat_json(&self, pane_id: u64) -> serde_json::Value {
         self.pane_heartbeats
             .get(&pane_id)
@@ -1648,10 +1687,10 @@ impl PlexiApp {
         let mut approved_to_dispatch = Vec::new();
         for item in items {
             let caller_exited = item
-                .peer_ancestry
-                .as_ref()
-                .and_then(|ancestry| ancestry.first())
-                .is_some_and(|pid| !crate::host::pane_liveness::pid_is_alive(*pid))
+                .origin
+                .socket_caller()
+                .and_then(crate::broker::caller::SocketCaller::peer)
+                .is_some_and(|peer| !crate::host::pane_liveness::pid_is_alive(peer.pid))
                 || item
                     .response_file
                     .as_deref()
@@ -1734,16 +1773,31 @@ impl PlexiApp {
         }
         self.pending_send_approvals = remaining_items;
         for item in approved_to_dispatch {
-            self.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
-                generated_operation_id: false,
-                pane_id: item.pane_id,
-                text: item.text,
-                operation_id: Some(item.operation_id),
-                submit: item.submit,
-                paste: item.paste,
-                response_file: item.response_file,
-                peer_ancestry: item.peer_ancestry,
-            });
+            if let Err(error) = self.deferred_origin_is_current(&item.origin, item.scope_revision) {
+                log::info!(
+                    "pane_send: approved send {} not replayed: {error}",
+                    item.operation_id
+                );
+                if let Some(rf) = &item.response_file {
+                    crate::rpc::write_json_response(
+                        rf,
+                        serde_json::json!({"error": error, "error_code": "permission_denied", "operation_id": item.operation_id}),
+                    );
+                }
+                continue;
+            }
+            self.handle_pane_ipc_request(
+                item.origin,
+                crate::protocol::HostRequest::SendToPane {
+                    generated_operation_id: false,
+                    pane_id: item.pane_id,
+                    text: item.text,
+                    operation_id: Some(item.operation_id),
+                    submit: item.submit,
+                    paste: item.paste,
+                    response_file: item.response_file,
+                },
+            );
         }
         if let Some(next_expiry) = self
             .pending_send_approvals

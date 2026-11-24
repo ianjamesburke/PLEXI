@@ -8,7 +8,7 @@
 //! which has a loadable test plugin.
 
 use super::pane_lifecycle_consumers::{pump_until, subscriptions, wait_request, Connection};
-use crate::app::approval_keyboard::ARM_DELAY;
+use crate::broker::consent::ARM_DELAY;
 use crate::spatial::tiling::PaneId;
 use crate::testing::HostHarness;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput};
@@ -125,7 +125,7 @@ fn open_event_consent(h: &mut HostHarness, pane: PaneId) -> Connection {
 #[test]
 fn event_consent_takes_only_a_fresh_real_enter_after_the_arm_delay() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     let connection = open_event_consent(&mut h, pane);
@@ -194,7 +194,7 @@ fn event_consent_appearing_under_a_focused_terminal_ignores_the_keystroke_in_fli
 #[test]
 fn event_consent_ignores_a_click_on_a_synthetic_frame() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     let connection = open_event_consent(&mut h, pane);
@@ -233,7 +233,7 @@ fn queue_raw_wasm_review(h: &mut HostHarness) {
     h.app
         .pending_raw_wasm_launches
         .push_back(crate::app::focus::PendingRawWasmLaunch {
-            request_id: crate::app::approval_keyboard::next_consent_request_id(),
+            request_id: crate::broker::consent::next_consent_request_id(),
             plugin_id: "raw-guard-test".to_string(),
             wasm_path: root.join("missing.wasm"),
             workspace_root: root.clone(),
@@ -245,7 +245,7 @@ fn queue_raw_wasm_review(h: &mut HostHarness) {
 #[test]
 fn raw_wasm_review_takes_only_a_fresh_real_enter_after_the_arm_delay() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     queue_raw_wasm_review(&mut h);
@@ -281,7 +281,7 @@ fn raw_wasm_review_takes_only_a_fresh_real_enter_after_the_arm_delay() {
 #[test]
 fn event_consent_refusal_works_at_once_from_real_input_but_not_injected() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     let connection = open_event_consent(&mut h, pane);
@@ -305,7 +305,7 @@ fn event_consent_refusal_works_at_once_from_real_input_but_not_injected() {
 #[test]
 fn identical_event_consents_queued_together_each_arm_on_their_own() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     // Two identical publish requests from the same pane: same actor id, verb
@@ -359,7 +359,7 @@ fn identical_event_consents_queued_together_each_arm_on_their_own() {
 #[test]
 fn identical_raw_wasm_reviews_queued_together_each_arm_on_their_own() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     queue_raw_wasm_review(&mut h);
@@ -385,7 +385,7 @@ fn identical_raw_wasm_reviews_queued_together_each_arm_on_their_own() {
 #[test]
 fn raw_wasm_review_re_arms_after_the_window_was_hidden() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     queue_raw_wasm_review(&mut h);
@@ -404,7 +404,7 @@ fn raw_wasm_review_re_arms_after_the_window_was_hidden() {
 #[test]
 fn raw_wasm_review_ignores_a_click_on_a_synthetic_frame() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     queue_raw_wasm_review(&mut h);
@@ -439,7 +439,7 @@ fn raw_wasm_review_ignores_a_click_on_a_synthetic_frame() {
 #[test]
 fn raw_wasm_review_ignores_a_real_click_inside_the_arm_delay() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     queue_raw_wasm_review(&mut h);
@@ -461,7 +461,7 @@ fn raw_wasm_review_ignores_a_real_click_inside_the_arm_delay() {
 #[test]
 fn screenshot_event_consent_button_row() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
+    let pane = h.add_focused_terminal();
     h.focus_pane(pane);
     h.run_frames(1);
     let connection = open_event_consent(&mut h, pane);

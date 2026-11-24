@@ -8,7 +8,6 @@ use super::harness_tests::{
 };
 use super::*;
 use crate::app::agent_open::AgentOpenOutcome;
-use crate::protocol::SpawnSource;
 
 fn terminal(h: &HostHarness, pane_id: PaneId) -> &crate::host::pane::TerminalPane {
     h.app
@@ -39,7 +38,6 @@ fn start_agent(h: &mut HostHarness, fx: &AgentFocusFixture, name: &str, caller: 
         &fx.profile_dir,
         &fx.proj_dir,
         None,
-        Some(caller),
         &fx.stops(),
     )
     .expect("resolve agent start payload");
@@ -48,7 +46,7 @@ fn start_agent(h: &mut HostHarness, fx: &AgentFocusFixture, name: &str, caller: 
         panic!("expected AgentSpawn");
     };
     let reply = response_file.clone();
-    h.inject_ipc(req);
+    h.inject_from_pane(caller, req);
     h.run_frames(2);
     read_json_response(&reply)["pane_id"]
         .as_u64()
@@ -66,7 +64,7 @@ fn new_chat(
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("new chat");
     h.run_frames(2);
@@ -132,7 +130,7 @@ fn new_chat_archives_the_current_chat() {
             "researcher",
             &fx.proj_dir,
             Some(caller),
-            &SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect("open");
     assert_eq!(outcome, AgentOpenOutcome::Focused { pane_id });
@@ -174,7 +172,7 @@ fn new_chat_with_no_chat_yet_only_starts_one() {
             "no-such-agent",
             &fx.proj_dir,
             Some(caller),
-            &SpawnSource::InProcess,
+            &crate::broker::caller::RequestOrigin::HostUi,
         )
         .expect_err("unknown agents fail before anything is archived");
     assert!(error.contains("no-such-agent"), "{error}");
@@ -197,7 +195,6 @@ fn archived_chat_reopens_from_history() {
         query: run_id.clone(),
         subcontext: None,
         response_file: reply.clone(),
-        source: SpawnSource::Unverified,
     });
     h.run_frames(2);
 
@@ -225,7 +222,6 @@ fn new_chat_reads_the_same_memory_folder() {
         "researcher",
         &fx.profile_dir,
         &fx.proj_dir,
-        None,
         None,
         &fx.stops(),
     )
@@ -256,7 +252,6 @@ fn new_chat_reads_the_same_memory_folder() {
         &fx.profile_dir,
         &fx.proj_dir,
         None,
-        None,
         &fx.stops(),
     )
     .unwrap();
@@ -279,7 +274,6 @@ fn new_chat_reads_the_same_memory_folder() {
         Some("task"),
         None,
         Some(true),
-        None,
         &fx.stops(),
     )
     .unwrap();
@@ -368,7 +362,7 @@ fn agent_open_after_restart_returns_the_new_chat_never_the_archived_one() {
         let cwd = fx.proj_dir.canonicalize().unwrap();
         let outcome = restarted
             .app
-            .open_named_agent("researcher", &cwd, Some(caller), &SpawnSource::InProcess)
+            .open_named_agent("researcher", &cwd, Some(caller), &crate::broker::caller::RequestOrigin::HostUi)
             .expect("open after restart");
         match (new_chat_state, &outcome) {
             ("open", AgentOpenOutcome::Focused { pane_id }) => {
@@ -389,4 +383,77 @@ fn agent_open_after_restart_returns_the_new_chat_never_the_archived_one() {
             _ => panic!("{new_chat_state}: unexpected {outcome:?}"),
         }
     }
+}
+
+/// Codex 3290 r3 B4: a new chat asked for from inside the chat it replaces.
+/// The archive closes the caller's own pane; the replacement is launched
+/// for the caller as classified again after that close (as alpha resolved
+/// live ancestry), never with the retired pane as its parent.
+#[test]
+fn new_chat_from_the_pane_it_replaces_names_no_retired_parent() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let launcher = h.add_focused_terminal();
+    let _other = h.add_focused_terminal();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-self");
+    let current = start_agent(&mut h, &fx, "researcher", launcher);
+    terminal_mut(&mut h, current).agent_session_id = Some("sess-self".into());
+    let witness = crate::broker::caller::PeerWitness::for_live_pids(&[h.shell_pid(current)]);
+    let origin = crate::broker::caller::RequestOrigin::Socket(
+        h.app.classify_socket_peer(Some(&witness)),
+    );
+    assert!(matches!(
+        origin,
+        crate::broker::caller::RequestOrigin::Socket(crate::broker::caller::SocketCaller::Pane(ref p))
+            if p.terminal_pane == current
+    ));
+    let outcome = h
+        .app
+        .new_named_agent_chat("researcher", &fx.proj_dir, None, &origin)
+        .expect("new chat");
+    h.run_frames(2);
+    let AgentOpenOutcome::NewChat { pane_id, .. } = outcome else {
+        panic!("expected new_chat, got {outcome:?}");
+    };
+    assert!(!pane_exists(&h, current), "the caller's chat was archived");
+    let replacement = terminal(&h, pane_id);
+    assert_ne!(replacement.parent_pane_id, Some(current), "a retired pane is the parent");
+    assert!(
+        h.app.pane_authority(pane_id).is_some_and(|a| a.grant().sealed_reason().is_none()),
+        "the replacement launched with a usable grant"
+    );
+}
+
+/// Codex 3290 r4 S2: a new chat asked for from inside the chat it replaces,
+/// by a caller whose process walk could not be completed past that chat's
+/// shell. Without the chat's pane the caller cannot be placed, so the
+/// request is refused before anything closes: the current chat survives.
+#[test]
+fn new_chat_that_cannot_launch_refuses_before_closing_the_chat() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let launcher = h.add_focused_terminal();
+    let sessions = fx.home.path().join("pi-sessions");
+    let _pi = seed_pi_session(&sessions, "sess-keep");
+    let current = start_agent(&mut h, &fx, "researcher", launcher);
+    terminal_mut(&mut h, current).agent_session_id = Some("sess-keep".into());
+    let mut witness = crate::broker::caller::PeerWitness::for_live_pids(&[h.shell_pid(current)]);
+    witness.end = crate::broker::caller::AncestryEnd::LookupFailed;
+    let origin = crate::broker::caller::RequestOrigin::Socket(
+        h.app.classify_socket_peer(Some(&witness)),
+    );
+    assert!(matches!(
+        origin,
+        crate::broker::caller::RequestOrigin::Socket(crate::broker::caller::SocketCaller::Pane(_))
+    ));
+    let refused = h.app.new_named_agent_chat("researcher", &fx.proj_dir, None, &origin);
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(pane_exists(&h, current), "the current chat was closed for a launch that could not happen");
+    assert!(
+        !crate::workspace::load_agent_history()
+            .iter()
+            .any(|record| record.pane_id == current && record.chat_archived),
+        "the current chat was archived"
+    );
 }

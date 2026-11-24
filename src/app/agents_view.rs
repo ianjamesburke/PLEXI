@@ -44,6 +44,7 @@ impl AgentsPaneView {
         {
             self.commands.push(ViewCommand::ForwardPaneRequest {
                 request: crate::protocol::HostRequest::FocusPane { pane_id },
+                origin: crate::broker::caller::RequestOrigin::HostUi,
             });
         }
     }

@@ -15,9 +15,9 @@
 //! only by the host model (`PlexiApp::origin_for_pane`) from host-observed
 //! facts — the pane table, the window's `context_id`, the router's
 //! `Context.root` — never from a request payload, cwd, or env var.
-//! Socket-peer callers (e.g. `PlexiApp::resolve_event_bus_caller`) resolve
-//! ancestry to a pane id first via stint 0636's `resolve_socket_peer_pane`
-//! (kernel-captured ancestry, not the wire), then hand that pane id to
+//! Socket-peer callers (e.g. `PlexiApp::resolve_event_bus_caller`) take the
+//! pane id from the typed `SocketCaller` that `PlexiApp::classify_socket_peer`
+//! built from kernel-captured ancestry (not the wire), then hand it to
 //! `origin_for_pane` — never re-deriving context/window from the caller's
 //! own claims.
 
@@ -25,8 +25,8 @@ use std::path::PathBuf;
 
 /// Host-established identity of the acting pane at the dispatch boundary.
 ///
-/// Constructed ONLY by the host model or from socket-peer resolution (stint
-/// 0636's `resolve_socket_peer_pane`) — never from client payloads, active
+/// Constructed ONLY by the host model or from the typed socket caller
+/// (`PlexiApp::classify_socket_peer`) — never from client payloads, active
 /// focus, `active_window`, `router.active()`, pane cwd, or ambient env vars.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopeOrigin {

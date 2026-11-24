@@ -275,13 +275,13 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
 #[test]
 fn socket_line_queues_request_and_requests_repaint() {
     let ctx = egui::Context::default();
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app::socket_caller::PaneIpcMessage>::channel(
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
     handle_socket_line(r#"{"type":"wake"}"#, &mailbox, None, &mut std::io::sink());
     assert!(
-        matches!(rx.try_recv(), Ok(crate::protocol::HostRequest::Wake)),
+        matches!(rx.try_recv(), Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) if matches!(*request, crate::protocol::HostRequest::Wake)),
         "request must be queued on the pane-IPC channel"
     );
     assert!(
@@ -294,7 +294,7 @@ fn socket_line_queues_request_and_requests_repaint() {
 #[test]
 fn socket_line_parse_error_queues_nothing() {
     let ctx = egui::Context::default();
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app::socket_caller::PaneIpcMessage>::channel(
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -307,12 +307,12 @@ fn socket_line_parse_error_queues_nothing() {
 
 fn run_socket_connection(
     payload: &[u8],
-) -> crate::app::ui_mailbox::MailboxReceiver<crate::protocol::HostRequest> {
+) -> crate::app::ui_mailbox::MailboxReceiver<crate::app::socket_caller::PaneIpcMessage> {
     use std::io::Write as _;
 
     let ctx = egui::Context::default();
     let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app::socket_caller::PaneIpcMessage>::channel(
         wake.clone(),
         "pane_ipc",
     );
@@ -393,60 +393,36 @@ fn pane_send_persistent_grant_deduplicates_and_unknown_claim_never_replays() {
     pane_send_socket_approval(false, true);
 }
 
-#[cfg(unix)]
+/// An explicit operation id is a promise only the broker can keep: a sender
+/// outside it is refused, and a pane's send with one waits for a decision.
 #[test]
-fn pane_send_human_explicit_operation_id_is_rejected_before_socket_dispatch() {
-    use std::io::{Read as _, Write as _};
+fn pane_send_explicit_operation_id_needs_a_brokered_caller() {
     let mut h = crate::testing::HostHarness::new();
     let caller = h.add_focused_terminal();
     let target = h.add_focused_terminal();
     h.terminal_backend(target).enable_input_tap();
-    let caller_pid = h.app.windows[0].panes[&caller]
-        .as_terminal()
-        .unwrap()
-        .backend
-        .child_pid();
     let profile = tempfile::tempdir().unwrap();
-    for _ in 0..2 {
-        let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
-            egui::Context::default(),
-        ));
-        let (subscribe, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<
-            crate::host::event_subscriptions::HostSubscribeRequest,
-        >::channel(wake.clone(), "subscribe");
-        let (publish, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<
-            crate::host::event_subscriptions::HostPublishRequest,
-        >::channel(wake, "publish");
-        let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
-        client
-            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-            .unwrap();
-        let profile_path = profile.path().to_path_buf();
-        let payload = serde_json::json!({"type":"send_to_pane", "pane_id": target, "text":"hello", "operation_id":"human-explicit", "response_file":profile.path().join("response")});
-        let mailbox = h.ipc_tx.clone();
-        let worker = std::thread::spawn(move || {
-            handle_socket_connection(
-                &profile_path,
-                server,
-                mailbox,
-                subscribe,
-                publish,
-                Some(crate::protocol::PeerAncestry {
-                    pids: vec![std::process::id(), caller_pid],
-                    end: crate::protocol::AncestryEnd::ReachedRoot,
-                }),
-            )
-        });
-        writeln!(client, "{payload}").unwrap();
-        worker.join().unwrap();
-        h.hidden_frame();
-        let mut reply = String::new();
-        client.read_to_string(&mut reply).unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&reply).unwrap()["error_code"],
-            "idempotency_unavailable"
-        );
-    }
+    let send = |reply: &std::path::Path| crate::protocol::HostRequest::SendToPane {
+        pane_id: target,
+        text: "hello".into(),
+        submit: false,
+        paste: false,
+        response_file: Some(reply.to_string_lossy().into_owned()),
+        operation_id: Some("explicit-op".into()),
+        generated_operation_id: false,
+    };
+    let host_reply = profile.path().join("host");
+    h.inject_in_process(send(&host_reply));
+    let body: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&host_reply).unwrap()).unwrap();
+    assert_eq!(body["error_code"], "idempotency_unavailable", "{body}");
+    assert!(h.terminal_backend(target).take_input_tap().is_empty());
+
+    let pane_reply = profile.path().join("pane");
+    h.inject_from_pane(caller, send(&pane_reply));
+    h.hidden_frame();
+    assert!(!pane_reply.exists(), "the pane's send waits for a decision");
+    assert_eq!(h.app.pending_send_approvals.len(), 1);
     assert!(h.terminal_backend(target).take_input_tap().is_empty());
 }
 
@@ -508,10 +484,7 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
             mailbox,
             subscribe,
             publish,
-            Some(crate::protocol::PeerAncestry {
-                pids: vec![std::process::id(), caller_pid],
-                end: crate::protocol::AncestryEnd::ReachedRoot,
-            }),
+            Some(crate::broker::caller::PeerWitness::for_live_pids(&[std::process::id(), caller_pid])),
         );
     });
     writeln!(client, "{payload}").unwrap();
@@ -596,13 +569,16 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
         if persistent {
             let dispatch = |h: &mut crate::testing::HostHarness, operation: &str, name: &str| {
                 let reply = profile.path().join(name);
-                h.inject_ipc(
+                h.inject_socket(
                     serde_json::from_value(serde_json::json!({
                         "type": "send_to_pane", "pane_id": target, "text": "hello",
                         "operation_id": operation, "response_file": reply,
-                        "peer_ancestry": [std::process::id(), caller_pid]
                     }))
                     .unwrap(),
+                    Some(crate::broker::caller::PeerWitness::for_live_pids(&[
+                        std::process::id(),
+                        caller_pid,
+                    ])),
                 );
                 h.hidden_frame();
                 serde_json::from_slice::<serde_json::Value>(&std::fs::read(reply).unwrap()).unwrap()
@@ -676,7 +652,7 @@ fn socket_connection_dispatches_newline_framed_json_once() {
     let rx = run_socket_connection(b"{\"type\":\"wake\"}\n");
     assert!(matches!(
         rx.try_recv(),
-        Ok(crate::protocol::HostRequest::Wake)
+        Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) if matches!(*request, crate::protocol::HostRequest::Wake)
     ));
     assert!(
         rx.try_recv().is_err(),
@@ -953,7 +929,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
     let windows_before = app.windows.len();
 
     // Inject a spawn-pane IPC from context 1's pane (pane_id_ctx1) with layout=new_window.
-    let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(crate::protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("new_window".to_string()),
         args: vec![],
@@ -972,8 +948,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        source: crate::protocol::SpawnSource::InProcess,
-    });
+    }));
     app.drain_pane_cmd_channel();
 
     // PTY creation may fail in some CI environments; guard before asserting.
@@ -1040,7 +1015,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
 
     // Inject a spawn-pane IPC from window 0's pane (pane_id_ctx1) with layout=tab,
     // while window 1 is active.
-    let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(crate::protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("tab".to_string()),
         args: vec![],
@@ -1059,8 +1034,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        source: crate::protocol::SpawnSource::InProcess,
-    });
+    }));
     app.drain_pane_cmd_channel();
 
     // PTY creation may fail in some CI environments; guard on total pane count
@@ -1134,7 +1108,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
 
     // Split spawn (not --window), no from_pane_id: falls into the empty-window
     // fallback branch.
-    let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(crate::protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("split_h".to_string()),
         args: vec![],
@@ -1153,8 +1127,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        source: crate::protocol::SpawnSource::InProcess,
-    });
+    }));
     app.drain_pane_cmd_channel();
 
     // Determine PTY availability independently of the code under test:
@@ -1248,7 +1221,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
         delays_cb.lock().unwrap().push(info.delay);
     });
 
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app::socket_caller::PaneIpcMessage>::channel(
         Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -1256,7 +1229,10 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     handle_socket_line(line, &mailbox, None, &mut std::io::sink());
 
     match rx.try_recv() {
-        Ok(crate::protocol::HostRequest::LogMarker { source, .. }) => {
+        Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) => {
+            let crate::protocol::HostRequest::LogMarker { source, .. } = *request else {
+                panic!("expected queued LogMarker request, got {request:?}");
+            };
             assert_eq!(source, "test");
         }
         other => panic!("expected queued LogMarker request, got {other:?}"),
@@ -1281,7 +1257,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     assert!(
         matches!(
             rx.try_recv(),
-            Ok(crate::protocol::HostRequest::ListPanes { .. })
+            Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) if matches!(*request, crate::protocol::HostRequest::ListPanes { .. })
         ),
         "post-idle pane list must queue on the pane-IPC channel"
     );
@@ -1320,7 +1296,7 @@ fn socket_line_parse_error_does_not_wake() {
     let woke_cb = woke.clone();
     ctx.set_request_repaint_callback(move |_| *woke_cb.lock().unwrap() += 1);
 
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::app::socket_caller::PaneIpcMessage>::channel(
         Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -1520,7 +1496,6 @@ fn external_spawn_uses_supplied_cwd_for_plugin_workspace() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let browser = h.app.windows[0]
@@ -1610,7 +1585,6 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
         boot_timeout_secs: None,
         worktree: None,
         result_schema: None,
-        source: crate::protocol::SpawnSource::InProcess,
     });
     h.hidden_frame();
     let browser = h.app.windows[0]
@@ -1795,7 +1769,6 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
                     boot_timeout_secs: None,
                     worktree: None,
                     result_schema: None,
-                    source: crate::protocol::SpawnSource::InProcess,
                 });
                 h.hidden_frame();
             }
@@ -1837,7 +1810,6 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
 
 fn fire_and_forget_set_agent_state() -> String {
     serde_json::to_string(&crate::protocol::HostRequest::SetAgentState {
-        peer_ancestry: None,
         pane_id: 1,
         state: crate::protocol::AgentState::Working,
         agent: "test-agent".into(),
@@ -1876,9 +1848,11 @@ fn host_acks_fire_and_forget_requests_that_consume_peer_identity() {
     let mut acked = Vec::new();
     handle_socket_line_in(profile.path(), &fire_and_forget_set_agent_state(), &mailbox, None, &mut acked);
     assert_eq!(acked, PEER_IDENTITY_ACK);
-    let mut silent = Vec::new();
-    handle_socket_line_in(profile.path(), r#"{"type":"wake"}"#, &mailbox, None, &mut silent);
-    assert!(silent.is_empty(), "requests that ignore identity get no ack");
+    // Every request is admitted by its caller, so every fire-and-forget
+    // client waits for the witness (stint 1285).
+    let mut wake_ack = Vec::new();
+    handle_socket_line_in(profile.path(), r#"{"type":"wake"}"#, &mailbox, None, &mut wake_ack);
+    assert_eq!(wake_ack, PEER_IDENTITY_ACK);
 }
 
 /// The client holds the connection until the host acks, so the accept loop
@@ -1904,28 +1878,9 @@ fn client_waits_for_the_identity_ack_so_a_late_accept_still_sees_its_pid() {
     assert!(server.join().unwrap().is_some());
 }
 
-/// The ancestry walk keeps why it ended; only reaching the OS root is a
-/// complete lineage.
-#[test]
-fn peer_ancestry_walk_records_how_it_ended() {
-    use crate::protocol::AncestryEnd;
-    let chain = |pairs: &'static [(u32, u32)]| {
-        move |pid: u32| pairs.iter().find(|(child, _)| *child == pid).map(|(_, p)| *p)
-    };
-    let walk = super::super::walk_peer_ancestry(30, chain(&[(30, 20), (20, 1)]));
-    assert_eq!((walk.pids, walk.end), (vec![30, 20], AncestryEnd::ReachedRoot));
-    let walk = super::super::walk_peer_ancestry(30, chain(&[(30, 20)]));
-    assert_eq!((walk.pids, walk.end), (vec![30, 20], AncestryEnd::LookupFailed));
-    let walk = super::super::walk_peer_ancestry(30, chain(&[(30, 20), (20, 30)]));
-    assert_eq!((walk.pids, walk.end), (vec![30, 20], AncestryEnd::Cycle));
-    let walk = super::super::walk_peer_ancestry(1_000, |pid| Some(pid + 1));
-    assert_eq!(walk.end, AncestryEnd::HopLimit);
-    assert_eq!(walk.pids.len(), 32);
-}
-
 /// Through a real socket: the listener's kernel credential walk reaches the
-/// root for this process, the connection stamps it onto `FileOpen`, and a
-/// wire `peer` field is not accepted.
+/// root for this process, travels with the request in its envelope, and a
+/// wire `peer` field is not accepted (stint 1285).
 #[cfg(unix)]
 #[test]
 fn file_open_peer_walk_is_stamped_by_the_listener_not_the_wire() {
@@ -1933,9 +1888,9 @@ fn file_open_peer_walk_is_stamped_by_the_listener_not_the_wire() {
     let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
     let pid = super::super::resolve_socket_peer_pid(&server).expect("kernel peer pid");
     assert_eq!(pid, std::process::id());
-    let walk = super::super::capture_peer_ancestry(pid);
-    assert_eq!(walk.pids.first(), Some(&pid));
-    assert_eq!(walk.end, crate::protocol::AncestryEnd::ReachedRoot, "{walk:?}");
+    let walk = crate::broker::caller::PeerWitness::capture(pid);
+    assert_eq!(walk.hops.first().map(|hop| hop.pid), Some(pid));
+    assert_eq!(walk.end, crate::broker::caller::AncestryEnd::ReachedRoot, "{walk:?}");
 
     let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
         egui::Context::default(),
@@ -1976,15 +1931,112 @@ fn file_open_peer_walk_is_stamped_by_the_listener_not_the_wire() {
         .unwrap();
     }
     let mut seen = Vec::new();
-    while let Ok(request) = rx.try_recv() {
-        seen.push(request);
+    while let Ok(message) = rx.try_recv() {
+        seen.push(message);
     }
     assert_eq!(seen.len(), 1, "the forged line is refused: {seen:?}");
     match &seen[0] {
-        crate::protocol::HostRequest::FileOpen { peer, response_file, .. } => {
+        crate::app::socket_caller::PaneIpcMessage::Request {
+            ingress: crate::app::socket_caller::Ingress::Socket { peer, .. },
+            request,
+        } if matches!(**request, crate::protocol::HostRequest::FileOpen { .. }) => {
+            let crate::protocol::HostRequest::FileOpen { response_file, .. } = &**request else {
+                unreachable!()
+            };
             assert_eq!(response_file, "y");
             assert_eq!(peer.as_ref(), Some(&walk));
         }
-        other => panic!("expected file_open, got {other:?}"),
+        other => panic!("expected a socket file_open, got {other:?}"),
     }
+}
+
+/// Codex 3290 r2/r3, through the real follow stream: a pane following its
+/// own context's workspace gets the projection of that workspace only (no
+/// pending request filed for another workspace), and a pane naming another
+/// workspace is refused before anything is served.
+#[cfg(unix)]
+#[test]
+fn dashboard_follow_stream_serves_only_the_callers_workspace() {
+    use std::io::{BufRead as _, Write as _};
+    let _dashboard =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentsDashboard]);
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    for (workspace, marker) in [(root.clone(), "own-1285"), (elsewhere.path().to_path_buf(), "foreign-1285")] {
+        let admission = monitor.admit(crate::broker::gate::AdmitRequest {
+            call_id: &format!("follow-{marker}"),
+            tool: "agents.review",
+            input_json: &serde_json::json!({"marker": marker}).to_string(),
+            principal: &crate::broker::principal::Principal::agent("agent:worker"),
+            actor_scope: crate::broker::ActorScope::Workspace,
+            trust_origin: "host",
+            workspace_root: &crate::platform::path::canonical_or_self(&workspace),
+            context_id: 0,
+            package_id: "agents",
+            instance_id: 0,
+            target_type: crate::broker::TargetType::HostTool,
+        });
+        assert!(matches!(admission, crate::broker::gate::Admission::Required { .. }));
+    }
+    let peer = crate::broker::caller::PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+    let follow = |h: &mut crate::testing::HostHarness, workspace: &std::path::Path| {
+        let ctx = egui::Context::default();
+        let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
+        let (subscribe, _subscribe_rx) = crate::app::ui_mailbox::UiMailbox::<
+            crate::host::event_subscriptions::HostSubscribeRequest,
+        >::channel(wake.clone(), "event_subscribe");
+        let (publish, _publish_rx) = crate::app::ui_mailbox::UiMailbox::<
+            crate::host::event_subscriptions::HostPublishRequest,
+        >::channel(wake, "event_publish");
+        let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let line = serde_json::json!({"type": "command_view_follow", "workspace": workspace});
+        writeln!(client, "{line}").unwrap();
+        let mailbox = h.ipc_tx.clone();
+        let peer = peer.clone();
+        let profile = tempfile::tempdir().unwrap();
+        let profile_path = profile.path().to_path_buf();
+        // The stream thread reads the same profile as the host (the test
+        // profile is per thread).
+        let host_profile = crate::config::config_dir();
+        let worker = std::thread::spawn(move || {
+            let _profile = crate::config::set_test_profile_dir(host_profile);
+            handle_socket_connection(&profile_path, server, mailbox, subscribe, publish, Some(peer))
+        });
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(client.try_clone().unwrap());
+        let mut lines = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while lines.len() < 2 && std::time::Instant::now() < deadline {
+            h.run_frames(1);
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => lines.push(serde_json::from_str::<serde_json::Value>(&line).unwrap()),
+                Err(_) => {}
+            }
+        }
+        drop(reader);
+        drop(client);
+        h.run_frames(1);
+        worker.join().unwrap();
+        drop(profile);
+        lines
+    };
+    let own = follow(&mut h, &root);
+    assert_eq!(own.len(), 2, "{own:?}");
+    assert_eq!(own[0]["type"], "subscribed", "{own:?}");
+    let projection = own[1].to_string();
+    assert!(projection.contains("own-1285"), "{projection}");
+    assert!(!projection.contains("foreign-1285"), "another workspace leaked: {projection}");
+    let foreign = follow(&mut h, elsewhere.path());
+    assert_eq!(foreign[0]["type"], "error", "{foreign:?}");
+    assert_eq!(foreign[0]["error_code"], "permission_denied", "{foreign:?}");
+    assert_eq!(foreign.len(), 1, "nothing served after the refusal: {foreign:?}");
 }

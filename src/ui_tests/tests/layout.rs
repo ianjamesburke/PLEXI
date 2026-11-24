@@ -542,9 +542,7 @@ fn launch_plan_tab_drag_and_back_invalidates_a_container_anchor() {
             boot_timeout_secs: None,
             worktree: None,
             result_schema: None,
-            source: crate::protocol::SpawnSource::InProcess,
-        },
-    )
+        }, crate::broker::caller::RequestOrigin::HostUi)
     .unwrap();
     // A container anchor: the window's root, admitted with no focus.
     let admit = |h: &mut PlexiUiHarness| {

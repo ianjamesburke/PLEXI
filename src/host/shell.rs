@@ -732,7 +732,7 @@ fn invoked_exec_basename(pid: u32) -> Option<String> {
 
 /// Parent pid of `pid`, or `None` if the process is gone or the platform has
 /// no supported lookup. Used to walk a socket peer's ancestor chain back to
-/// the shell process a `TerminalPane` owns (`resolve_socket_peer_pane`).
+/// the shell process a `TerminalPane` owns (`PeerWitness::capture`).
 #[cfg(target_os = "macos")]
 pub fn get_pid_ppid(pid: u32) -> Option<u32> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };

@@ -47,10 +47,15 @@ fn client_reply_streams() -> &'static StreamMap {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Drop old registrations whose other end has gone. A stream whose peer is
+/// still connected is kept however old it is: a person can answer a waiting
+/// choice long after it was posted, and the answer goes only to this stream
+/// (Codex 3290 r4).
 fn prune_expired(map: &mut HashMap<String, (Instant, IpcStream)>) {
     let now = Instant::now();
-    map.retain(|_, (registered_at, _)| {
+    map.retain(|_, (registered_at, stream)| {
         now.saturating_duration_since(*registered_at) <= SWEEP_MAX_AGE
+            || crate::platform::ipc::peer_connected(stream)
     });
 }
 
@@ -81,12 +86,39 @@ impl ReplyRegistry {
         guard.insert(response_file.into(), (Instant::now(), stream));
     }
 
+    /// Test only: a registration made `age` ago.
+    #[cfg(test)]
+    pub(crate) fn register_aged(response_file: &str, stream: IpcStream, age: Duration) {
+        let at = Instant::now().checked_sub(age).expect("a representable past instant");
+        host_reply_streams()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(response_file.to_string(), (at, stream));
+    }
+
     /// Take the registered stream for `response_file`, if any.
     pub(crate) fn take(response_file: &str) -> Option<IpcStream> {
         let mut guard = host_reply_streams()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         guard.remove(response_file).map(|(_, stream)| stream)
+    }
+
+    /// Drop the stream registered for `response_file` if its client has
+    /// gone; `true` when it was dropped or is no longer registered.
+    pub(crate) fn release_if_disconnected(response_file: &str) -> bool {
+        let mut guard = host_reply_streams()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match guard.get(response_file) {
+            None => true,
+            Some((_, stream)) if crate::platform::ipc::peer_connected(stream) => false,
+            Some(_) => {
+                guard.remove(response_file);
+                log::info!("rpc: dropped reply stream {response_file:?}: client gone");
+                true
+            }
+        }
     }
 
     /// Drop any registered stream for `response_file` without writing.
@@ -331,9 +363,8 @@ fn write_to_registered_stream(mut stream: IpcStream, wire_body: &[u8]) -> std::i
 
 /// Host-side response write: sends `body` over the open `notify.sock` stream
 /// registered in [`ReplyRegistry`] for `response_file` (or its base token when
-/// `response_file` ends with `.err`), falling back to an atomic file write only
-/// when no stream is registered (e.g. unit tests that inject requests without a
-/// socket).
+/// `response_file` ends with `.err`). With no stream there is no reply, except
+/// in unit tests that inject requests without a socket.
 pub(crate) fn write_response(response_file: &str, body: &[u8]) -> bool {
     if let Some(stream) = ReplyRegistry::take(response_file) {
         return match write_to_registered_stream(stream, body) {
@@ -358,6 +389,21 @@ pub(crate) fn write_response(response_file: &str, body: &[u8]) -> bool {
             };
         }
     }
+    write_reply_without_stream(response_file, body)
+}
+
+/// A reply with no live stream has nowhere to go: the host never writes where
+/// a caller points it (stint 1285).
+#[cfg(not(test))]
+fn write_reply_without_stream(response_file: &str, _body: &[u8]) -> bool {
+    log::error!("rpc: no live reply stream for {response_file:?}; reply dropped");
+    false
+}
+
+/// Tests that inject requests with no socket read the reply from a file in
+/// this profile's `rpc/` directory or their own fixture directory.
+#[cfg(test)]
+fn write_reply_without_stream(response_file: &str, body: &[u8]) -> bool {
     match crate::platform::fs::atomic_write(Path::new(response_file), body) {
         Ok(()) => true,
         Err(e) => {
@@ -536,6 +582,42 @@ pub(crate) fn sweep_stale(profile_dir: &Path) {
 mod tests {
     use super::*;
 
+    /// Codex 3290 r4 L2: a waiting choice answered after the prune window
+    /// still reaches its client. Another registration prunes old entries,
+    /// but a stream whose client is still connected stays; a dead one goes.
+    /// The client reads its connection as the CLI does.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_waiter_outlives_the_prune_window() {
+        let token = format!("live-waiter-{}", uuid::Uuid::new_v4());
+        let dead = format!("dead-waiter-{}", uuid::Uuid::new_v4());
+        let (host_side, client_side) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (dead_host, dead_client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let old = SWEEP_MAX_AGE + Duration::from_secs(60);
+        ReplyRegistry::register_aged(&token, host_side, old);
+        ReplyRegistry::register_aged(&dead, dead_host, old);
+        drop(dead_client);
+        // Any later reply-bearing request prunes the registry.
+        let (other, _other_client) = std::os::unix::net::UnixStream::pair().unwrap();
+        ReplyRegistry::register(format!("other-{}", uuid::Uuid::new_v4()), other);
+        assert_eq!(ReplyRegistry::connected(&dead), None, "a dead waiter is pruned");
+        assert_eq!(
+            ReplyRegistry::connected(&token),
+            Some(true),
+            "a live waiter was pruned by age"
+        );
+        assert!(write_response(&token, b"talk"), "the late answer had no stream");
+        // The client reads its own connection; no file can stand in.
+        let mut client_side = client_side;
+        let mut answer = String::new();
+        // macOS refuses a timeout (EINVAL) once the host half has closed;
+        // the read then ends at once.
+        let _ = client_side.set_read_timeout(Some(Duration::from_secs(2)));
+        std::io::Read::read_to_string(&mut client_side, &mut answer).unwrap();
+        assert_eq!(answer, "talk");
+        assert!(!std::path::Path::new(&token).exists());
+    }
+
     /// A peer that keeps the connection open and writes one byte every
     /// 100 ms, until the reader goes away.
     #[cfg(unix)]
@@ -688,7 +770,8 @@ mod tests {
             BufReader::new(stream)
                 .read_line(&mut line)
                 .expect("read request");
-            crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[]), &mut write_half);
+            let shell = h.shell_pid(pane_id);
+            crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[shell]), &mut write_half);
             drop(write_half);
             h.hidden_frame();
         });
@@ -734,7 +817,7 @@ mod tests {
             response_file: wait_token.clone(),
         };
         let line = serde_json::to_string(&wait_req).expect("serialize");
-        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[]), &mut server_stream);
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[h.shell_pid(pane_id)]), &mut server_stream);
         drop(server_stream);
 
         let token_for_client = wait_token.clone();
@@ -764,7 +847,7 @@ mod tests {
             response_file: write_token.clone(),
         };
         let write_line = serde_json::to_string(&write_req).expect("serialize");
-        crate::app::handle_socket_line(&write_line, &h.ipc_tx, Some(&[]), &mut write_srv);
+        crate::app::handle_socket_line(&write_line, &h.ipc_tx, Some(&[h.shell_pid(pane_id)]), &mut write_srv);
         drop(write_srv);
         h.hidden_frame();
 
