@@ -235,7 +235,12 @@ pub fn load_toml<T: DeserializeOwned + Default>(host: &HostProcess, path: &Path)
                             };
                         }
                         SealStateStatus::Trusted(_) | SealStateStatus::Absent => {
-                            mark_profile_sealed(host, dir);
+                            if let Err(error) = mark_profile_sealed(host, dir) {
+                                log::error!(
+                                    "permission_seal: could not record seal marker for {}: {error}",
+                                    dir.display()
+                                );
+                            }
                         }
                     }
                 }
@@ -291,11 +296,8 @@ pub fn write_toml<T: Serialize>(
 
 pub fn write_sealed(host: &HostProcess, path: &Path, body: &[u8]) -> Result<(), String> {
     let dir = profile_dir_for_path(path);
-    write_sealed_with_dir(host, path, &dir, body)?;
-    if let Some(parent) = path.parent() {
-        mark_profile_sealed(host, parent);
-    }
-    Ok(())
+    mark_profile_sealed(host, &dir)?;
+    write_sealed_with_dir(host, path, &dir, body)
 }
 
 fn write_sealed_with_dir(
@@ -354,6 +356,7 @@ pub fn append_audit(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| SealError::Io(error.to_string()))?;
     }
+    mark_profile_sealed(host, &dir).map_err(SealError::Io)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -364,11 +367,7 @@ pub fn append_audit(
     file.sync_all()
         .map_err(|error| SealError::Io(error.to_string()))?;
     let tip = format!("{seq}:{}", sha256_hex(line.as_bytes()));
-    store_tip(host, path, &tip).map_err(SealError::Io)?;
-    if let Some(parent) = path.parent() {
-        mark_profile_sealed(host, parent);
-    }
-    Ok(())
+    store_tip(host, path, &tip).map_err(SealError::Io)
 }
 
 /// Walk the chain and compare the authenticated tip. Does not move the file.
@@ -716,14 +715,18 @@ fn write_seal_state(host: &HostProcess, dir: &Path, state: &SealState) -> Result
 
 fn read_seal_state(host: &HostProcess, dir: &Path) -> SealStateStatus {
     let path = seal_state_path(dir);
-    if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return SealStateStatus::Untrusted("seal-state.json is a symlink".to_string());
-    }
+    // Writers publish state first. Check for sealed files before the state read
+    // so first use cannot pair an earlier missing state with a later sealed file.
+    let state_expected = match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return SealStateStatus::Untrusted("seal-state.json is a symlink".to_string());
+        }
+        Ok(_) => true,
+        Err(_) => has_sealed_files_on_disk(dir),
+    };
     match read_sealed_with_dir(host, &path, dir) {
+        SealStatus::Absent if !state_expected => SealStateStatus::Absent,
         SealStatus::Absent => {
-            if !has_sealed_files_on_disk(dir) {
-                return SealStateStatus::Absent;
-            }
             if let Err(error) = existing_mac_key(host, dir) {
                 if super::host_key::is_key_unreadable(&error) {
                     return SealStateStatus::KeyUnreadable(error);
@@ -839,18 +842,10 @@ pub(crate) fn store_needs_you_tip(
     })
 }
 
-fn mark_profile_sealed(host: &HostProcess, dir: &Path) {
-    if dir.as_os_str().is_empty() {
-        return;
-    }
-    if let Err(error) = update_seal_state(host, dir, |state| {
+pub(crate) fn mark_profile_sealed(host: &HostProcess, dir: &Path) -> Result<(), String> {
+    update_seal_state(host, dir, |state| {
         state.sealed = true;
-    }) {
-        log::error!(
-            "permission_seal: could not record seal marker for {}: {error}",
-            dir.display()
-        );
-    }
+    })
 }
 
 fn store_tip(host: &HostProcess, path: &Path, tip: &str) -> Result<(), String> {
@@ -1277,6 +1272,70 @@ mod tests {
         scrub_pane_env(&mut human, false);
         assert!(human.contains_key("PLEXI_SOCKET"));
         assert!(!human.contains_key("LEAK"));
+    }
+
+    #[test]
+    fn first_creation_never_exposes_sealed_files_without_seal_state() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Barrier;
+
+        fn check_writer(name: &str, write: impl Fn(&Path) -> Result<(), String>) {
+            for iteration in 0..25 {
+                let dir = tempfile::tempdir().unwrap();
+                let profile = dir.path();
+                let audit = profile.join("permission-audit.jsonl");
+                let ready = Barrier::new(2);
+                let finished = AtomicBool::new(false);
+                std::thread::scope(|scope| {
+                    let reader = scope.spawn(|| {
+                        ready.wait();
+                        loop {
+                            needs_you_tip_lookup(TEST_HOST, profile)?;
+                            tip_lookup(TEST_HOST, &audit)?;
+                            if finished.load(Ordering::Acquire) {
+                                return Ok::<(), String>(());
+                            }
+                        }
+                    });
+                    ready.wait();
+                    let result = write(profile);
+                    finished.store(true, Ordering::Release);
+                    reader.join().unwrap().unwrap_or_else(|error| {
+                        panic!("{name}, iteration {iteration}: reader saw {error}")
+                    });
+                    result.unwrap();
+                });
+            }
+        }
+
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        check_writer("grants.toml", |dir| {
+            write_sealed(TEST_HOST, &dir.join("grants.toml"), b"records = []\n")
+        });
+        check_writer("permission-audit.jsonl", |dir| {
+            append_audit(
+                TEST_HOST,
+                &dir.join("permission-audit.jsonl"),
+                &serde_json::json!({"kind": "seed"}),
+            )
+            .map_err(|error| error.to_string())
+        });
+        check_writer("needs-you.json", |dir| {
+            crate::broker::needs_you_store::save(TEST_HOST, dir, &[])
+        });
+    }
+
+    #[test]
+    fn first_sealed_write_creates_seal_state_before_rename_fails() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let grants = dir.path().join("grants.toml");
+        std::fs::create_dir(&grants).unwrap();
+        std::fs::write(grants.join("keep"), b"occupied").unwrap();
+
+        let error = write_sealed(TEST_HOST, &grants, b"records = []\n").unwrap_err();
+        assert!(error.contains("rename"), "{error}");
+        assert!(seal_state_path(dir.path()).is_file());
     }
 
     #[test]

@@ -202,6 +202,7 @@ pub(crate) fn save(
     file_bytes.extend_from_slice(hex_encode(&mac).as_bytes());
     file_bytes.push(b'\n');
     let journal = host_dir.join("needs-you.json");
+    super::seal::mark_profile_sealed(host, profile)?;
     write_private(&journal, &file_bytes)?;
     store_tip(host, profile, &mac)?;
     log::info!(
