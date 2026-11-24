@@ -995,9 +995,10 @@ pub(crate) fn legacy_runs(
 ) -> Result<Option<std::collections::BTreeSet<String>>, String> {
     match read_seal_state(host, dir) {
         SealStateStatus::Absent => Ok(None),
-        SealStateStatus::Trusted(state) => {
-            Ok(state.legacy_runs.get(&workspace.to_string_lossy().into_owned()).cloned())
-        }
+        SealStateStatus::Trusted(state) => Ok(state
+            .legacy_runs
+            .get(&workspace.to_string_lossy().into_owned())
+            .cloned()),
         SealStateStatus::KeyUnreadable(error) | SealStateStatus::Untrusted(error) => Err(error),
     }
 }

@@ -242,7 +242,10 @@ pub(crate) fn mint_run<Op>(
             binding.run_id,
             subject.label()
         );
-        return Err(format!("run {} was not started by this caller", binding.run_id));
+        return Err(format!(
+            "run {} was not started by this caller",
+            binding.run_id
+        ));
     }
     let live = subject.live();
     if let Some(live) = &live {
