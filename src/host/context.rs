@@ -94,9 +94,11 @@ impl<'de> Deserialize<'de> for ContextName {
     }
 }
 
+/// The root a focused pane or view offers, captured when the action is
+/// taken. `scope` is the supplying terminal's incarnation; a view has none.
 pub(crate) struct PaneCwd {
     pub(crate) target_context_id: u64,
-    pub(crate) scope: crate::host::plugin_timeline::AdmittedScope,
+    pub(crate) scope: Option<crate::host::plugin_timeline::AdmittedScope>,
     pub(crate) cwd: PathBuf,
 }
 
@@ -662,11 +664,20 @@ impl Window {
     }
 
     pub(crate) fn focused_root_source(&self, target_context_id: u64) -> Option<PaneCwd> {
-        let terminal = self.visible_pane_in(self.focused_pane?)?.as_terminal()?;
+        let pane = self.visible_pane_in(self.focused_pane?)?;
+        let (scope, cwd) = match pane.as_terminal() {
+            Some(terminal) => (
+                terminal
+                    .authority()
+                    .map(crate::host::plugin_timeline::AdmittedScope::of),
+                shell::get_pid_cwd_fresh(terminal.backend.child_pid())?,
+            ),
+            None => (None, pane.as_view()?.workspace_root.clone()),
+        };
         Some(PaneCwd {
             target_context_id,
-            scope: crate::host::plugin_timeline::AdmittedScope::of(terminal.authority()?),
-            cwd: shell::get_pid_cwd_fresh(terminal.backend.child_pid())?,
+            scope,
+            cwd,
         })
     }
 

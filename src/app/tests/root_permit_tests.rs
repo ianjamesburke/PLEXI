@@ -88,6 +88,8 @@ fn focused_cwd_action_requires_the_panes_permit() {
         h.app
             .dispatch_host_action(Action::SetContextRootFromCwd, &h.app.ctx.clone());
     };
+    // Socket-injected input is the pane's own request: it needs the permit.
+    h.app.synthetic_input_frame = true;
     act(&mut h);
     assert_eq!(h.app.router.active().root, old.path());
     approve_root(&format!("pane:{pane}"), id);
@@ -95,20 +97,129 @@ fn focused_cwd_action_requires_the_panes_permit() {
     assert_eq!(h.app.router.active().root, cwd);
 }
 
-fn click(h: &mut HostHarness, pos: egui::Pos2, button: egui::PointerButton) {
+#[test]
+fn a_persons_own_keypress_sets_the_root_in_one_gesture() {
+    let mut h = HostHarness::new();
+    h.add_focused_terminal();
+    let id = h.app.router.active().context_id;
+    let cwd = h.workspace_root().canonicalize().unwrap();
+    let old = tempfile::tempdir().unwrap();
+    h.app.set_context_root(old.path().into(), Some(id));
+    assert!(!h.app.synthetic_input_frame);
+    h.app
+        .dispatch_host_action(Action::SetContextRootFromCwd, &h.app.ctx.clone());
+    assert_eq!(h.app.router.active().root, cwd);
+    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    assert!(monitor.list_pending().is_empty(), "no approval is filed");
+}
+
+#[test]
+fn focused_app_view_offers_its_workspace_root_to_a_person_only() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let tile = h.app.windows[0].tree.tiles.find_pane(&pane).unwrap();
+    h.app.windows[0].focused_pane = Some(tile);
+    let id = h.app.router.active().context_id;
+    let view_root = h.workspace_root();
+    let old = tempfile::tempdir().unwrap();
+    h.app.set_context_root(old.path().into(), Some(id));
+    let act = |h: &mut HostHarness| {
+        h.app
+            .dispatch_host_action(Action::SetContextRootFromCwd, &h.app.ctx.clone());
+    };
+    h.app.synthetic_input_frame = true;
+    act(&mut h);
+    assert_eq!(
+        h.app.router.active().root,
+        old.path(),
+        "a view has no permit"
+    );
+    h.app.synthetic_input_frame = false;
+    act(&mut h);
+    assert_eq!(h.app.router.active().root, view_root);
+}
+
+#[test]
+fn synthetic_input_cannot_commit_the_root_editor() {
+    use crate::app::{FocusKind, OverlayTarget, TextInputOverlay};
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let id = h.app.router.active().context_id;
+    let old = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    h.app.set_context_root(old.path().into(), Some(id));
+    let open = |h: &mut HostHarness| {
+        h.app.text_overlay = Some((
+            TextInputOverlay {
+                label: "Root directory".to_string(),
+                hint: String::new(),
+                buffer: target.path().display().to_string(),
+                session: crate::ui::text_field::OpenSession::new(),
+            },
+            OverlayTarget::ContextRoot(id),
+        ));
+        h.app.push_focus_layer(FocusKind::TextInput);
+        h.run_frames(1);
+    };
+    let enter = |h: &mut HostHarness, socket: Option<u64>| {
+        let key = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        input_frame(h, socket, vec![key]);
+    };
+    open(&mut h);
+    enter(&mut h, Some(pane));
+    assert_eq!(h.app.router.active().root, old.path());
+    open(&mut h);
+    enter(&mut h, None);
+    assert_eq!(h.app.router.active().root, target.path());
+}
+
+/// One input frame. With `socket_pane`, the events are queued for that pane
+/// exactly as `plexi pane` injection queues them, so the frame is marked
+/// synthetic; otherwise they arrive as a person's own input.
+fn input_frame(h: &mut HostHarness, socket_pane: Option<u64>, events: Vec<egui::Event>) {
+    let raw = egui::RawInput {
+        events,
+        ..Default::default()
+    };
+    match socket_pane {
+        Some(pane) => {
+            h.app.pending_pane_inputs.entry(pane).or_default().push(raw);
+            h.frame(egui::RawInput::default());
+            assert!(
+                h.app.synthetic_input_frame,
+                "queued pane input is synthetic"
+            );
+        }
+        None => {
+            h.frame(raw);
+            assert!(!h.app.synthetic_input_frame);
+        }
+    }
+}
+
+fn click(
+    h: &mut HostHarness,
+    socket_pane: Option<u64>,
+    pos: egui::Pos2,
+    button: egui::PointerButton,
+) {
     for pressed in [true, false] {
-        h.frame(egui::RawInput {
-            events: vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-            ..Default::default()
-        });
+        let events = vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        input_frame(h, socket_pane, events);
     }
     h.run_frames(2);
 }
@@ -126,13 +237,13 @@ fn sidebar_set_root_from_cwd_requires_the_supplying_panes_permit() {
     h.app.router.push(clicked);
     h.app.sidebar_visible = true;
     h.run_frames(2);
-    let act = |h: &mut HostHarness| {
+    let act = |h: &mut HostHarness, socket: Option<u64>| {
         let row = h
             .app
             .ctx
             .read_response(egui::Id::new(("ctx", 1usize)))
             .unwrap();
-        click(h, row.rect.center(), egui::PointerButton::Secondary);
+        click(h, socket, row.rect.center(), egui::PointerButton::Secondary);
         let pos = h
             .last_full_output
             .as_ref()
@@ -146,11 +257,18 @@ fn sidebar_set_root_from_cwd_requires_the_supplying_panes_permit() {
                 _ => None,
             })
             .expect("sidebar root action");
-        click(h, pos, egui::PointerButton::Primary);
+        click(h, socket, pos, egui::PointerButton::Primary);
     };
-    act(&mut h);
+    act(&mut h, Some(pane));
     assert_eq!(h.app.context_root_for(id).unwrap(), old.path());
     approve_root(&format!("pane:{pane}"), id);
-    act(&mut h);
+    act(&mut h, Some(pane));
     assert_eq!(h.app.context_root_for(id).unwrap(), cwd);
+    h.app.set_context_root(old.path().into(), Some(id));
+    act(&mut h, None);
+    assert_eq!(
+        h.app.context_root_for(id).unwrap(),
+        cwd,
+        "a person's own click applies in one gesture"
+    );
 }

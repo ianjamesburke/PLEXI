@@ -3,13 +3,25 @@ use crate::broker::permit::ContextRootProof;
 
 pub(crate) struct WindowChosenRoot(());
 
+/// The proof for a root a person chose in the Plexi window: typed or picked in
+/// the root editor, or taken from the focused view by their own keypress or
+/// click. The caller must have checked that the frame carried no synthetic
+/// input; this proves which UI handled the value, not that a human did
+/// (human-input evidence is stint 1283).
+pub(crate) fn window_chosen_root() -> ContextRootProof {
+    ContextRootProof::HostUi(WindowChosenRoot(()))
+}
+
 #[cfg(test)]
 impl PlexiApp {
     /// Set up a fixture through the same boundary as a window-chosen root.
     pub(crate) fn set_context_root(&mut self, root: std::path::PathBuf, id: Option<u64>) {
-        let proof = ContextRootProof::HostUi(WindowChosenRoot(()));
-        self.commit_context_root(root, id.unwrap_or(self.router.active().context_id), proof)
-            .unwrap();
+        self.commit_context_root(
+            root,
+            id.unwrap_or(self.router.active().context_id),
+            window_chosen_root(),
+        )
+        .unwrap();
     }
 }
 
@@ -626,8 +638,13 @@ impl PlexiApp {
                             "TextInputOverlay: set context root id={id} path={}",
                             resolved.display()
                         );
-                        let proof = ContextRootProof::HostUi(WindowChosenRoot(()));
-                        if let Err(error) = self.commit_context_root(resolved, id, proof) {
+                        if self.synthetic_input_frame {
+                            log::info!(
+                                "TextInputOverlay: root change for context {id} refused: synthetic input"
+                            );
+                        } else if let Err(error) =
+                            self.commit_context_root(resolved, id, window_chosen_root())
+                        {
                             log::info!("TextInputOverlay: root change refused: {error}");
                         }
                     }
