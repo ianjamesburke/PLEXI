@@ -40,12 +40,15 @@ impl SecretScope {
 
     /// Arguments covered by a standing grant. The broker binds Once to the call ID.
     pub(crate) fn input(&self, tool: &str, name: &str, outside: Option<&str>) -> serde_json::Value {
-        let place = if tool == super::SECRET_READ_TOOL {
-            "folder"
-        } else {
-            "scope"
+        // A saved folder-read decision is keyed `NAME@<path>` since before the
+        // host owned this verb; keep that key so it still applies. Set and
+        // delete share the workspace key space, so a folder is prefixed there.
+        let (place, label) = match (tool == super::SECRET_READ_TOOL, self) {
+            (true, Self::Folder { path }) => ("folder", path.to_string_lossy().into_owned()),
+            (true, _) => ("folder", self.label()),
+            (false, _) => ("scope", self.label()),
         };
-        let mut input = serde_json::json!({"name": name, (place): self.label()});
+        let mut input = serde_json::json!({"name": name, (place): label});
         if let Some(caller) = outside {
             input["caller"] = caller.into();
         }
@@ -200,6 +203,49 @@ mod tests {
         assert!(
             matches!(read.result, ReadResult::Value(ref value) if value.as_str() == "global-canary-0788")
         );
+    }
+
+    /// A deny saved by the desktop folder reader is keyed `NAME@<path>` with
+    /// the `host` origin. The same reader must still be refused by it.
+    #[test]
+    fn a_saved_always_deny_on_the_old_folder_key_still_refuses() {
+        use crate::broker::gate::Admission;
+        use crate::workspace::secrets::{read_folder_secret, take_test_store_calls};
+        let store = InMemoryKeychain::new();
+        let monitor = PermissionMonitor::ephemeral();
+        let actor = SecretActor::agent("me");
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().canonicalize().unwrap();
+        // The key alpha wrote, spelled out so a format change cannot follow it.
+        let old_input =
+            serde_json::json!({"name": "OLD_DENY", "folder": path.to_string_lossy()}).to_string();
+        let principal =
+            crate::broker::principal::Principal::from_actor(actor.kind, &actor.id, None).unwrap();
+        let saved = AdmitRequest {
+            call_id: "before-upgrade",
+            tool: super::super::SECRET_READ_TOOL,
+            input_json: &old_input,
+            principal: &principal,
+            actor_scope: crate::broker::ActorScope::User,
+            trust_origin: "host",
+            workspace_root: &path,
+            context_id: 0,
+            package_id: "",
+            instance_id: 0,
+            target_type: crate::broker::TargetType::Secret,
+        };
+        let Admission::Required { pending_request_id } = monitor.admit_with_posture(saved, None)
+        else {
+            panic!("expected a pending approval");
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::DenyAlways)
+            .unwrap();
+        take_test_store_calls();
+        let read = read_folder_secret(&monitor, &store, &actor, "OLD_DENY", &path).unwrap();
+        assert!(matches!(read, ReadResult::Denied), "{read:?}");
+        assert_eq!(take_test_store_calls(), 0);
+        assert!(monitor.open_needs_you().is_empty());
     }
 
     #[test]

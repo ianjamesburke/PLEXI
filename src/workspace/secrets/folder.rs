@@ -798,7 +798,7 @@ fn handle_gate_line(line: &str) -> Result<String, String> {
         Path::new(folder),
     )?;
     if let ReadResult::PermissionRequired { pending_id } = &result {
-        let resource = format!("{name}@folder:{folder}");
+        let resource = format!("{name}@{folder}");
         let summary = format!("{name} @ {folder}");
         post_human_sheet(pending_id, actor_id, &resource, &summary);
     }

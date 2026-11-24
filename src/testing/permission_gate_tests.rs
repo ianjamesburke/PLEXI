@@ -1935,7 +1935,12 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             assert!(mon.audit_records().iter().any(|row| row.kind == "deny"
                 && row.actor == format!("pane:{human_pane}")
                 && row.call_id == tool
-                && row.resource_id == format!("{name}@folder:{}", target.display())
+                && row.resource_id
+                    == format!(
+                        "{name}@{}{}",
+                        if op == "read" { "" } else { "folder:" },
+                        target.display()
+                    )
                 && row.decision == "context_scope_violation"));
         }
     }

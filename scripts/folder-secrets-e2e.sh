@@ -238,7 +238,8 @@ folder_call() {
   local choice="$1" op="$2" name="$3" folder="$4"
   local client pending resource attempt tool="secret.$2"
   [[ "$op" != rm ]] || tool="secret.delete"
-  resource="$name@folder:$(cd "$folder" && pwd -P)" || return 125
+  resource="$name@$(cd "$folder" && pwd -P)" || return 125
+  [[ "$op" == read ]] || resource="$name@folder:$(cd "$folder" && pwd -P)"
   "$PLEXI" secret "$op" "$name" --folder "$folder" <&3 &
   client=$!
   for attempt in {1..60}; do

@@ -201,7 +201,11 @@ impl PlexiApp {
                     authority.as_ref() != Some(root) || !self.pane_may_access_context_root(id, root)
                 }) || (matches!(ask, SecretAsk::DiscoverFolder(_)) && authority.is_none())
                 {
-                    let prefix = if ask.is_folder() { "folder:" } else { "" };
+                    let prefix = if ask.is_folder() && tool != crate::workspace::secrets::SECRET_READ_TOOL {
+                        "folder:"
+                    } else {
+                        ""
+                    };
                     let path = target.map(|p| p.display().to_string()).unwrap_or_default();
                     monitor.note_denial(
                         &format!("pane:{id}"),
@@ -2211,7 +2215,11 @@ mod cli_tests {
                 assert_eq!(cards.len(), 1);
                 assert_eq!(
                     cards[0].resource,
-                    format!("{}@folder:{}", f.name, folder.display())
+                    if op == "folder-read" {
+                        format!("{}@{}", f.name, folder.display())
+                    } else {
+                        format!("{}@folder:{}", f.name, folder.display())
+                    }
                 );
                 assert_eq!(fs::read_to_string(&path).unwrap().trim(), "running 1 test");
                 f.decide(&ask, choice);
