@@ -1092,7 +1092,7 @@ mod agent_chat_tests;
 #[cfg(test)]
 mod agent_security_tests;
 #[cfg(test)]
-mod socket_policy_tests;
+pub(crate) mod socket_policy_tests;
 #[cfg(test)]
 mod cli_operation_tests;
 #[cfg(test)]

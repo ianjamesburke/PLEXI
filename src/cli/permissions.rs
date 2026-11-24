@@ -6,8 +6,7 @@
 //! `revoke` narrows and applies directly.
 
 use super::reply::OutputMode;
-/// Exit code when the request was filed and waits for a click in the Plexi
-/// window (same meaning as `secret get`'s `permission_required`).
+/// Exit code for a filed permissions request awaiting a desktop click.
 const EXIT_WAITING_FOR_APPROVAL: i32 = 2;
 
 /// `plexi permissions list [--json]`, and `reset` / `revoke` / `allow <id>`.

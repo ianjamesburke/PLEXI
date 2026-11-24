@@ -24,7 +24,7 @@ fn outside() -> PeerWitness {
 /// Read the client half of a reply connection to its end, as the CLI does:
 /// the host's ack byte is dropped and the JSON body returned. There is no
 /// file fallback on this path, so a reply that took one is never seen.
-pub(super) fn read_client(
+pub(crate) fn read_client(
     mut client: std::os::unix::net::UnixStream,
     line: &str,
 ) -> serde_json::Value {
@@ -44,7 +44,11 @@ pub(super) fn read_client(
 
 /// Send one request line as the socket listener would, from `peer`, and
 /// return the reply read from the client's end of that connection.
-fn send(h: &mut HostHarness, mut request: serde_json::Value, peer: Option<PeerWitness>) -> serde_json::Value {
+pub(crate) fn send(
+    h: &mut HostHarness,
+    mut request: serde_json::Value,
+    peer: Option<PeerWitness>,
+) -> serde_json::Value {
     let token = crate::rpc::response_file("socket-policy-test", "json");
     request["response_file"] = serde_json::json!(token);
     let line = request.to_string();
@@ -1131,43 +1135,8 @@ fn socket_operations_admit_by_caller_class() {
     assert!(!foreign_terminal.agent_completed && foreign_terminal.agent.is_none());
 }
 
-// Exercise the real decoder, classification and dispatch for metadata replies.
-// cfg(test) writes those to the profile when the writer has no socket stream.
-fn secret_metadata(
-    h: &mut HostHarness,
-    mut request: serde_json::Value,
-    peer: &PeerWitness,
-) -> serde_json::Value {
-    let token = crate::rpc::response_file("secret-metadata", "json");
-    request["response_file"] = token.as_str().into();
-    crate::app::handle_socket_line_in(
-        &crate::config::config_dir(),
-        &request.to_string(),
-        &h.ipc_tx,
-        Some(peer),
-        &mut Vec::new(),
-    );
-    h.hidden_frame();
-    serde_json::from_slice(&std::fs::read(token).expect("metadata reply")).unwrap()
-}
-
-fn secret_ask(
-    h: &mut HostHarness,
-    request: &serde_json::Value,
-    peer: &PeerWitness,
-) -> crate::broker::gate::PendingView {
-    let reply = secret_metadata(h, request.clone(), peer);
-    assert_eq!(reply["status"], "permission_required", "{reply}");
-    assert!(reply.get("value").is_none());
-    let monitor =
-        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-    monitor
-        .show_pending(reply["pending_request_id"].as_str().unwrap())
-        .unwrap()
-}
-
 // Keep the original reply stream while the worker waits for the desktop.
-pub(super) fn live_secret(
+pub(crate) fn live_secret(
     h: &mut HostHarness,
     mut request: serde_json::Value,
     peer: &PeerWitness,
@@ -1180,6 +1149,15 @@ pub(super) fn live_secret(
     }
     let (mut server, client) = std::os::unix::net::UnixStream::pair().unwrap();
     let ask = h.dispatch_live_secret(&request.to_string(), peer, &mut server);
+    drop(server);
+    // A card is observable on the host while the original connection has no reply.
+    use std::io::Read;
+    client.set_nonblocking(true).unwrap();
+    assert_eq!(
+        (&client).read(&mut [0]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    client.set_nonblocking(false).unwrap();
     (client, ask)
 }
 
@@ -1228,6 +1206,30 @@ fn external_secret_get_asks_and_returns_no_value() {
         .open_needs_you()
         .iter()
         .any(|item| item.id == ask.pending_request_id));
+}
+
+#[test]
+fn secret_reply_with_a_foreign_profile_label_stays_on_its_connection() {
+    let mut h = HostHarness::new();
+    let foreign = tempfile::tempdir().unwrap();
+    let label = foreign.path().join("rpc").join("client-label.json");
+    let request = serde_json::json!({"type":"secret_get","name":"OTHER_PROFILE_1280",
+        "global":true,"response_file":label});
+    let peer = witness(std::process::id(), AncestryEnd::ReachedRoot);
+    let (client, ask) = live_secret(&mut h, request, &peer);
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    assert_eq!(ask.actor_id, crate::broker::principal::EXTERNAL_ID);
+    monitor
+        .approve_pending(
+            &ask.pending_request_id,
+            crate::broker::gate::ApprovalChoice::Once,
+        )
+        .unwrap();
+    assert_eq!(
+        read_client(client, "foreign profile label")["status"],
+        "not_found"
+    );
+    assert!(!label.exists());
 }
 
 #[test]
@@ -1373,12 +1375,12 @@ fn pane_secret_mutations_ask_as_the_pane_within_its_root() {
         if value == Some("first") {
             req["route_name"] = "VENDOR_TOKEN".into();
         }
-        let ask = secret_ask(&mut h, &req, &peer);
+        let (client, ask) = live_secret(&mut h, req.clone(), &peer);
         assert_eq!(ask.actor_id, format!("pane:{pane}"));
         let mut foreign = req.clone();
         foreign["workspace_root"] = serde_json::json!(other.path());
         assert_eq!(
-            secret_metadata(&mut h, foreign, &peer)["error_code"],
+            send(&mut h, foreign, Some(peer.clone()))["error_code"],
             "permission_denied"
         );
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
@@ -1388,7 +1390,7 @@ fn pane_secret_mutations_ask_as_the_pane_within_its_root() {
                 crate::broker::gate::ApprovalChoice::Once,
             )
             .unwrap();
-        let reply = secret_metadata(&mut h, req, &peer);
+        let reply = read_client(client, op);
         assert_eq!(reply["target"]["Workspace"]["id"], cfg.id, "{reply}");
         let stored = system_store().get(&account);
         assert_eq!(stored.as_deref().map(String::as_str), value);
@@ -1535,11 +1537,10 @@ fn a_covered_worker_secret_get_is_satisfied_by_its_exact_approval() {
     let root = workspace_secret(&h, "ws-1673-ask", "KEY_1673", canary);
     let get = serde_json::json!({"type": "secret_get", "name": "KEY_1673",
         "workspace_root": root});
-    let first = send(&mut h, get.clone(), Some(peer.clone()));
-    assert_eq!(first["status"], "permission_required", "{first}");
+    let (client, ask) = live_secret(&mut h, get, &peer);
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-    let pending = first["pending_request_id"].as_str().unwrap();
+    let pending = &ask.pending_request_id;
     assert_eq!(
         monitor.show_pending(pending).unwrap().actor_id,
         format!("pane:{worker}"),
@@ -1548,7 +1549,7 @@ fn a_covered_worker_secret_get_is_satisfied_by_its_exact_approval() {
     monitor
         .approve_pending(pending, crate::broker::gate::ApprovalChoice::Once)
         .unwrap();
-    let granted = send(&mut h, get, Some(peer));
+    let granted = read_client(client, "covered worker get");
     assert_eq!(granted["status"], "value", "{granted}");
     assert_eq!(granted["value"], canary);
 }

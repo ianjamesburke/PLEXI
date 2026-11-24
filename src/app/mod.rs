@@ -958,10 +958,6 @@ pub(crate) fn handle_socket_line_in(
             };
             let secret_stream = secret_token.is_some();
             if let Some(token) = secret_token.filter(|_| ack_writer.requires_reply_stream()) {
-                if std::path::Path::new(token).parent() != Some(profile.join("rpc").as_path()) {
-                    log::warn!("pane_ipc: invalid secret reply token");
-                    return;
-                }
                 *token = crate::rpc::response_file_in(profile, SECRET_STREAM, "json");
                 reply_token = Some(token.clone());
             }

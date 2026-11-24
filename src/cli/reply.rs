@@ -564,6 +564,22 @@ mod waiter_tests {
     refusal_test!(submit_reports_refusal, "submit", CODE_ONLY, false);
     refusal_test!(boot_reports_refusal, "boot", CODE_ONLY, false);
     refusal_test!(secret_get_reports_refusal, "secret get", REFUSAL, false);
+    #[test]
+    fn secret_get_reports_caller_revocation() {
+        let (output, _) = run_against_host(
+            "secret get",
+            r#"{"status":"denied","reason":"revoked"}"#,
+            false,
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .any(|line| line == "Caller revoked"));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "running 1 test"
+        );
+    }
     refusal_test!(
         assistant_send_reports_refusal,
         "assistant send",

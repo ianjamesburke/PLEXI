@@ -35,7 +35,7 @@ impl PlexiApp {
                         Some(serde_json::json!({"status":"error","error":error}))
                     });
                 if let Some(body) = body {
-                    request.reply(body);
+                    stream_reply(&request.reply_path, body);
                 }
             },
         );
@@ -91,56 +91,50 @@ impl SecretRequest {
         ) else {
             return Ok(None);
         };
-        match admission {
-            UseDecision::Required { pending_request_id } => Ok(Some(serde_json::json!({
-                "status":"permission_required", "pending_request_id":pending_request_id
-            }))),
-            UseDecision::Denied => Ok(Some(serde_json::json!({"status":"denied"}))),
-            UseDecision::Allowed {
-                approved,
-                grant_id,
-                fingerprint,
-                resource_id,
-            } => {
-                monitor.note_use(
-                    principal.actor_id(),
-                    &call,
-                    &grant_id,
-                    &fingerprint,
-                    &resource_id,
-                    "",
-                )?;
-                // Recheck the claimed grant and pane together before handing the
-                // mutation to the worker's store. Store I/O can block.
-                {
-                    let _commit = monitor.commit(&approved)?;
-                    self.subject.current()?;
-                }
-                let result = mutate_secret(
-                    crate::workspace::secrets::system_store(),
-                    monitor,
-                    &target,
-                    &self.name,
-                    mutation,
-                );
-                monitor
-                    .note_outcome(
-                        principal.actor_id(),
-                        &call,
-                        &grant_id,
-                        &fingerprint,
-                        &resource_id,
-                        "",
-                        if result.is_ok() { "ok" } else { "failed" },
-                        "",
-                        "",
-                    )
-                    .map_err(|_| {
-                        "Could not audit the mutation outcome. Refresh before retrying."
-                    })?;
-                result?;
-                Ok(Some(serde_json::json!({"status":"ok", "target":target})))
-            }
+        let UseDecision::Allowed {
+            approved,
+            grant_id,
+            fingerprint,
+            resource_id,
+        } = admission
+        else {
+            return Ok(Some(serde_json::json!({"status":"denied"})));
+        };
+        monitor.note_use(
+            principal.actor_id(),
+            &call,
+            &grant_id,
+            &fingerprint,
+            &resource_id,
+            "",
+        )?;
+        // Recheck the claimed grant and pane together before handing the
+        // mutation to the worker's store. Store I/O can block.
+        {
+            let _commit = monitor.commit(&approved)?;
+            self.subject.current()?;
         }
+        let result = mutate_secret(
+            crate::workspace::secrets::system_store(),
+            monitor,
+            &target,
+            &self.name,
+            mutation,
+        );
+        monitor
+            .note_outcome(
+                principal.actor_id(),
+                &call,
+                &grant_id,
+                &fingerprint,
+                &resource_id,
+                "",
+                if result.is_ok() { "ok" } else { "failed" },
+                "",
+                "",
+            )
+            .map_err(|_| "Could not audit the mutation outcome. Refresh before retrying.")?;
+        result?;
+        Ok(Some(serde_json::json!({"status":"ok", "target":target})))
     }
 }

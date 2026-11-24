@@ -3,8 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use super::PlexiApp;
-use crate::broker::caller::{RequestOrigin, SocketCaller};
-use crate::broker::gate::{AdmitRequest, ApprovalChoice, PermissionMonitor, UseDecision};
+use crate::broker::caller::{PeerHop, RequestOrigin, SocketCaller};
+use crate::broker::gate::{
+    Admission, AdmitRequest, ApprovalChoice, PermissionMonitor, UseDecision,
+};
 use crate::broker::permit::{mint_pane, Coverage, Permit, SecretRelease};
 use crate::broker::principal::Principal;
 use crate::host::plugin_timeline::AdmittedScope;
@@ -157,19 +159,11 @@ impl PlexiApp {
             "{tool}: caller={} name={name} global={global} workspace={workspace_root:?}",
             origin.class()
         );
-        let write_reply = if matches!(
-            origin.socket_caller(),
-            Some(SocketCaller::External(_) | SocketCaller::Unidentified(_))
-        ) {
-            stream_reply
-        } else {
-            write_reply
-        };
         let monitor = match PermissionMonitor::for_profile(&profile) {
             Ok(monitor) => monitor,
             Err(error) => {
                 log::error!("{tool}: cannot open host monitor: {error}");
-                write_reply(&reply_path, serde_json::json!({"status":"denied"}));
+                stream_reply(&reply_path, serde_json::json!({"status":"denied"}));
                 return;
             }
         };
@@ -189,7 +183,7 @@ impl PlexiApp {
                             "",
                             "context_scope_violation",
                         );
-                        write_reply(
+                        stream_reply(
                             &reply_path,
                             serde_json::json!({"status":"denied","error_code":"permission_denied"}),
                         );
@@ -199,7 +193,7 @@ impl PlexiApp {
                 match self.pane_ceiling(id) {
                     Ok(posture) => (Subject::Pane(scope), posture),
                     Err(error) => {
-                        write_reply(
+                        stream_reply(
                             &reply_path,
                             serde_json::json!({"status":"error","error":error}),
                         );
@@ -207,16 +201,12 @@ impl PlexiApp {
                     }
                 }
             }
-            Some(SocketCaller::External(peer)) => (
-                Subject::Outside("a terminal outside Plexi", peer.hops.first().copied()),
-                None,
-            ),
-            Some(SocketCaller::Unidentified(_)) => (
-                Subject::Outside("a detached caller (unidentified)", None),
-                None,
-            ),
+            Some(SocketCaller::External(_)) => (Subject::Outside("a terminal outside Plexi"), None),
+            Some(SocketCaller::Unidentified(_)) => {
+                (Subject::Outside("a detached caller (unidentified)"), None)
+            }
             None => {
-                write_reply(&reply_path, serde_json::json!({"status":"denied"}));
+                stream_reply(&reply_path, serde_json::json!({"status":"denied"}));
                 return;
             }
         };
@@ -224,7 +214,7 @@ impl PlexiApp {
             Ok(scope) => scope,
             Err(error) => {
                 log::warn!("{tool}: workspace config unreadable: {error}");
-                write_reply(
+                stream_reply(
                     &reply_path,
                     serde_json::json!({"status": "error", "error": error}),
                 );
@@ -232,7 +222,7 @@ impl PlexiApp {
             }
         };
         if tool != "secret.get" && !global && matches!(scope, SecretScope::Global) {
-            write_reply(
+            stream_reply(
                 &reply_path,
                 serde_json::json!({"status":"error","error":"No workspace found. Run plexi workspace init or use --global."}),
             );
@@ -240,6 +230,11 @@ impl PlexiApp {
         }
         let request = SecretRequest {
             subject,
+            peer: origin
+                .socket_caller()
+                .and_then(SocketCaller::peer)
+                .and_then(|peer| peer.hops.first())
+                .copied(),
             repaint: self.ctx.clone(),
             name: name.into(),
             scope,
@@ -248,30 +243,26 @@ impl PlexiApp {
             reply_path: reply_path.clone(),
         };
         let repaint = self.ctx.clone();
-        #[cfg(test)]
-        let outside = request.subject.outside().is_some();
         let run = move || {
             match request.subject.current() {
                 Ok(()) => work(request, monitor),
                 Err(error) => {
                     log::info!("{tool}: withheld before admission: {error}");
-                    write_reply(&request.reply_path, serde_json::json!({"status":"denied"}));
+                    stream_reply(
+                        &request.reply_path,
+                        serde_json::json!({"status":"denied","reason":"revoked"}),
+                    );
                 }
             }
             repaint.request_repaint();
         };
-        #[cfg(test)]
-        if !outside {
-            run();
-            return;
-        }
         #[cfg(test)]
         let spawn = worker_test::spawn(tool, crate::config::config_dir(), run);
         #[cfg(not(test))]
         let spawn = std::thread::Builder::new().name(tool.into()).spawn(run);
         if let Err(error) = spawn {
             log::error!("{tool}: worker failed: {error}");
-            write_reply(
+            stream_reply(
                 &reply_path,
                 serde_json::json!({"status":"error","error":"Could not start the secret worker."}),
             );
@@ -288,7 +279,7 @@ pub(super) struct SecretAsk<'a> {
 
 enum Subject {
     Pane(AdmittedScope),
-    Outside(&'static str, Option<crate::broker::caller::PeerHop>),
+    Outside(&'static str),
 }
 
 impl Subject {
@@ -309,7 +300,7 @@ impl Subject {
     fn outside(&self) -> Option<&'static str> {
         match self {
             Self::Pane(_) => None,
-            Self::Outside(label, _) => Some(label),
+            Self::Outside(label) => Some(label),
         }
     }
 }
@@ -317,6 +308,7 @@ impl Subject {
 /// Host-classified request carried into the secret worker.
 struct SecretRequest {
     subject: Subject,
+    peer: Option<PeerHop>,
     repaint: egui::Context,
     name: String,
     scope: SecretScope,
@@ -326,76 +318,78 @@ struct SecretRequest {
 }
 
 impl SecretRequest {
-    fn reply(&self, body: serde_json::Value) {
-        if self.subject.outside().is_some() {
-            stream_reply(&self.reply_path, body);
-        } else {
-            write_reply(&self.reply_path, body);
-        }
-    }
-
     fn admit(&self, monitor: &PermissionMonitor, req: AdmitRequest<'_>) -> Option<UseDecision> {
-        let Subject::Outside(_, peer) = &self.subject else {
-            return Some(monitor.admit_for_use(req, self.posture.as_ref()));
-        };
         let tool = req.tool;
         let deadline = std::time::Instant::now() + crate::workspace::secrets::APPROVAL_TIMEOUT;
-        let decision = monitor.admit_for_use(req, None);
-        let UseDecision::Required {
-            pending_request_id: pending,
-        } = &decision
-        else {
-            return Some(decision);
+        let posture = self.posture.as_ref();
+        // Filing or finding an approval does not spend Once. Every grant,
+        // including one already present on arrival, is claimed below.
+        let pending = match monitor.admit_with_posture(req, posture) {
+            Admission::Denied { .. } => return Some(UseDecision::Denied),
+            Admission::Proceed { .. } => None,
+            Admission::Required { pending_request_id } => {
+                log::info!("{tool}: parked pending={pending_request_id}");
+                self.repaint.request_repaint();
+                Some(pending_request_id)
+            }
         };
         let token = self.reply_path.to_string_lossy();
         let stopped = |_claim: bool| {
             #[cfg(test)]
             let deadline = worker_test::deadline(deadline, _claim);
-            if crate::rpc::ReplyRegistry::connected(&token) != Some(true)
-                || peer.is_some_and(|p| !p.is_live())
-            {
+            if crate::rpc::ReplyRegistry::connected(&token) != Some(true) {
                 Some("client gone")
+            } else if self.subject.current().is_err()
+                || self.peer.is_some_and(|peer| !peer.is_live())
+            {
+                Some("revoked")
             } else if std::time::Instant::now() >= deadline {
                 Some("expired")
             } else {
                 None
             }
         };
-        log::info!("{tool}: parked pending={pending}");
-        self.repaint.request_repaint();
         let reason = loop {
             if let Some(reason) = stopped(false) {
                 break reason;
             }
-            if let Some(choice) = monitor.approval_resolution(pending) {
-                log::info!("{tool}: resolved pending={pending} choice={choice:?}");
-                if choice != ApprovalChoice::Once {
-                    break "denied";
+            if let Some(id) = &pending {
+                match monitor.approval_resolution(id) {
+                    Some(
+                        ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always,
+                    ) => (),
+                    Some(_) => break "denied",
+                    None => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        continue;
+                    }
                 }
-                // Only this worker starts or withdraws the effect. The final
-                // owner/deadline observation is inside the broker's Once claim.
-                let stop = std::cell::Cell::new(None);
-                let current = || {
-                    stop.set(stopped(true));
-                    stop.get().is_none()
-                };
-                let claim = monitor.admit_for_use_if(req, None, Some(&current));
-                if matches!(claim, UseDecision::Allowed { .. }) {
-                    log::info!("{tool}: effect started pending={pending}");
-                    return Some(claim);
-                }
-                break stop.get().unwrap_or("denied");
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            let stop = std::cell::Cell::new(None);
+            let current = || {
+                stop.set(stopped(true));
+                stop.get().is_none()
+            };
+            let claim = monitor.admit_for_use_if(req, posture, Some(&current));
+            if matches!(claim, UseDecision::Allowed { .. }) {
+                log::info!("{tool}: effect started pending={pending:?}");
+                return Some(claim);
+            }
+            break stop.get().unwrap_or("denied");
         };
-        log::info!("{tool}: {reason} pending={pending}");
-        if let Err(error) = monitor.withdraw_live_ask(pending) {
-            log::error!("{tool}: withdraw {pending}: {error}");
+        log::info!("{tool}: {reason} pending={pending:?}");
+        if let Some(id) = pending {
+            if let Err(error) = monitor.withdraw_live_ask(&id) {
+                log::error!("{tool}: withdraw {id}: {error}");
+            }
         }
         if reason == "client gone" {
             crate::rpc::ReplyRegistry::remove(&token);
         } else {
-            self.reply(serde_json::json!({"status":"denied","reason":reason}));
+            stream_reply(
+                &self.reply_path,
+                serde_json::json!({"status":"denied","reason":reason}),
+            );
         }
         None
     }
@@ -437,7 +431,7 @@ impl SecretRequest {
                             Coverage::new(monitor.clone(), vec![(target.clone(), approved)]);
                         mint_pane::<SecretRelease>(scope.clone(), target.clone(), coverage)
                     }
-                    Subject::Outside(class, _) => crate::broker::permit::mint_external_secret(
+                    Subject::Outside(class) => crate::broker::permit::mint_external_secret(
                         class,
                         target.clone(),
                         monitor.clone(),
@@ -452,16 +446,11 @@ impl SecretRequest {
                     }
                 }
             }
-            Ok((ReadResult::Value(_), None)) | Ok((ReadResult::Denied, _)) => {
-                serde_json::json!({"status": "denied"})
-            }
-            Ok((ReadResult::PermissionRequired { pending_id }, _)) => {
-                serde_json::json!({"status": "permission_required", "pending_request_id": pending_id})
-            }
             Ok((ReadResult::NotFound, _)) => serde_json::json!({"status": "not_found"}),
+            Ok(_) => serde_json::json!({"status": "denied"}),
             Err(error) => serde_json::json!({"status": "error", "error": error}),
         };
-        self.reply(body);
+        stream_reply(&self.reply_path, body);
     }
 }
 
@@ -526,13 +515,6 @@ fn stream_reply(path: &Path, body: serde_json::Value) {
     );
 }
 
-/// A reply that holds no secret value.
-fn write_reply(path: &Path, body: serde_json::Value) {
-    if !crate::rpc::write_json_response(&path.to_string_lossy(), body) {
-        log::error!("secret_get: reply write for {} failed", path.display());
-    }
-}
-
 #[cfg(test)]
 mod worker_test {
     use std::{cell::RefCell, path::PathBuf, thread::JoinHandle};
@@ -595,6 +577,9 @@ mod worker_test {
 
 #[cfg(test)]
 mod list_tests {
+    use crate::broker::caller::PeerWitness;
+    use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
+    use crate::testing::socket_policy_tests::{live_secret, read_client, send};
     use crate::testing::HostHarness;
     use crate::workspace::secrets;
 
@@ -699,27 +684,24 @@ mod list_tests {
         .unwrap();
     }
 
-    fn secret_get_request(h: &mut HostHarness, name: &str, peer: &[u32]) -> serde_json::Value {
-        let response_file = crate::rpc::response_file("secret-get", "json");
-        let request = crate::protocol::HostRequest::SecretGet {
-            name: name.into(),
-            global: false,
-            workspace_root: Some(h.workspace_root()),
-            response_file: response_file.clone(),
-        };
-        let line = serde_json::to_string(&request).unwrap();
-        let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
-        crate::rpc::register_client_stream(response_file.clone(), client_stream);
-        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut server_stream);
-        drop(server_stream);
-        h.hidden_frame();
-        let body = crate::rpc::poll_string(&response_file, Some(std::time::Duration::from_secs(2)))
-            .unwrap();
-        assert!(
-            !std::path::Path::new(&response_file).exists(),
-            "secret_get must never create a response file on disk"
-        );
-        serde_json::from_str(&body).unwrap()
+    fn pane_get(
+        h: &mut HostHarness,
+        name: &str,
+        pid: u32,
+        choice: Option<ApprovalChoice>,
+    ) -> serde_json::Value {
+        let request = serde_json::json!({"type":"secret_get","name":name,"workspace_root":h.workspace_root()});
+        let peer = PeerWitness::for_live_pids(&[pid]);
+        if let Some(choice) = choice {
+            let (client, ask) = live_secret(h, request, &peer);
+            let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+            monitor
+                .approve_pending(&ask.pending_request_id, choice)
+                .unwrap();
+            read_client(client, name)
+        } else {
+            send(h, request, Some(peer))
+        }
     }
 
     #[test]
@@ -757,17 +739,8 @@ mod list_tests {
         let pid = h.terminal_backend(pane).child_pid();
 
         let rpc_dir = crate::config::config_dir().join("rpc");
-        let ask = secret_get_request(&mut h, secret_name, &[pid]);
-        assert_eq!(ask["status"], "permission_required", "{ask}");
-        let pending_id = ask["pending_request_id"].as_str().unwrap();
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-                .unwrap();
-        monitor
-            .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Once)
-            .unwrap();
-
-        let reply = secret_get_request(&mut h, secret_name, &[pid]);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let reply = pane_get(&mut h, secret_name, pid, Some(ApprovalChoice::Once));
         assert_eq!(reply["status"], "value", "{reply}");
         assert_eq!(reply["value"], secret_val);
 
@@ -776,7 +749,8 @@ mod list_tests {
                 let fname = entry.file_name();
                 let name_str = fname.to_string_lossy();
                 assert!(
-                    !name_str.starts_with("secret-get-"),
+                    !name_str.starts_with("secret-get-")
+                        && !name_str.starts_with("host-secret-stream"),
                     "found unexpected secret-get file on disk: {}",
                     entry.path().display()
                 );
@@ -888,7 +862,7 @@ mod list_tests {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .unwrap();
-        let reply = secret_get_request(&mut h, "FOO", &[denied_pid]);
+        let reply = pane_get(&mut h, "FOO", denied_pid, None);
         assert_eq!(reply["status"], "denied", "{reply}");
         assert!(
             monitor.list_pending().is_empty(),
@@ -945,15 +919,7 @@ mod list_tests {
             )
             .unwrap();
         let ask_pid = h.terminal_backend(ask_pane).child_pid();
-        let ask_reply = secret_get_request(&mut h, "FOO", &[ask_pid]);
-        assert_eq!(ask_reply["status"], "permission_required", "{ask_reply}");
-        assert_eq!(monitor.list_pending().len(), 1);
-
-        let pending_id = ask_reply["pending_request_id"].as_str().unwrap();
-        monitor
-            .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Once)
-            .unwrap();
-        let val_reply = secret_get_request(&mut h, "FOO", &[ask_pid]);
+        let val_reply = pane_get(&mut h, "FOO", ask_pid, Some(ApprovalChoice::Once));
         assert_eq!(val_reply["status"], "value", "{val_reply}");
         assert_eq!(val_reply["value"], "top-secret");
 
@@ -1008,20 +974,9 @@ mod list_tests {
         );
 
         // 1. Missing-snapshot fallback on secret.get enters broker and requires approval (Decision::Ask).
-        let secret_reply = secret_get_request(&mut h, "QUAL", &[worker_pid]);
-        assert_eq!(
-            secret_reply["status"], "permission_required",
-            "missing-snapshot fallback on secret.get must enter broker gate and ask, never bypass: {secret_reply}"
-        );
-
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-                .unwrap();
-        assert_eq!(
-            monitor.list_pending().len(),
-            1,
-            "missing-snapshot secret.get must file an approval request"
-        );
+        let secret_reply = pane_get(&mut h, "QUAL", worker_pid, Some(ApprovalChoice::Deny));
+        assert_eq!(secret_reply["reason"], "denied");
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
 
         // 2. Missing-snapshot fallback on SendToPane must also enter the broker
         //    (Decision::Ask) instead of bypassing the gate: a worker with no
@@ -1066,6 +1021,103 @@ mod list_tests {
         );
 
         secrets::system_store().delete(&account).unwrap();
+    }
+
+    #[test]
+    fn a_denied_pane_set_never_opens_the_store() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let peer = PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+        let request = serde_json::json!({"type":"secret_set","global":true,"name":"DENIED_1280","value":"discard-me"});
+        let (client, ask) = live_secret(&mut h, request, &peer);
+        assert_eq!(ask.actor_id, format!("pane:{pane}"));
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        monitor
+            .approve_pending(&ask.pending_request_id, ApprovalChoice::Deny)
+            .unwrap();
+        assert_eq!(
+            read_client(client, "pane set"),
+            serde_json::json!({"status":"denied","reason":"denied"})
+        );
+        assert_eq!(super::worker_test::join().0, 0);
+        assert!(monitor.open_needs_you().is_empty());
+    }
+
+    #[test]
+    fn closing_a_parked_pane_withdraws_its_card() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let peer = PeerWitness::for_live_pids(&[std::process::id(), h.shell_pid(pane)]);
+        let get = serde_json::json!({"type":"secret_get","name":"CLOSED_1280","global":true});
+        let (client, ask) = live_secret(&mut h, get, &peer);
+        assert_eq!(ask.actor_id, format!("pane:{pane}"));
+        h.app.close_pane_by_id(pane);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        // Closing the pane retires its asks and revokes its scope; the parked
+        // worker may observe either first. Both end with no effect.
+        let reason = read_client(client, "closed pane")["reason"].clone();
+        assert!(reason == "revoked" || reason == "denied", "{reason}");
+        assert_eq!(super::worker_test::join().0, 0);
+        assert!(monitor.open_needs_you().is_empty());
+        assert!(monitor
+            .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
+            .is_err());
+        assert!(monitor
+            .store()
+            .records()
+            .iter()
+            .all(|r| r.target_id != "secret.get"));
+    }
+
+    #[test]
+    fn a_pane_session_grant_answers_the_next_call_without_a_card() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let pid = h.shell_pid(pane);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        assert_eq!(
+            pane_get(
+                &mut h,
+                "SESSION_PANE_1280",
+                pid,
+                Some(ApprovalChoice::Session)
+            )["status"],
+            "not_found"
+        );
+        let asks = || {
+            monitor
+                .audit_records()
+                .iter()
+                .filter(|row| row.kind == "ask")
+                .count()
+        };
+        assert_eq!(asks(), 1);
+        assert_eq!(
+            pane_get(&mut h, "SESSION_PANE_1280", pid, None)["status"],
+            "not_found"
+        );
+        assert_eq!(asks(), 1);
+        assert!(monitor.open_needs_you().is_empty());
+    }
+
+    #[test]
+    fn a_parked_pane_checks_the_connecting_process_even_with_an_open_stream() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let peer = PeerWitness::for_live_pids(&[child.id(), h.shell_pid(pane)]);
+        let get = serde_json::json!({"type":"secret_get","name":"DEAD_PEER_1280","global":true});
+        let (client, ask) = live_secret(&mut h, get, &peer);
+        assert_eq!(ask.actor_id, format!("pane:{pane}"));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(read_client(client, "dead peer")["reason"], "revoked");
+        assert_eq!(super::worker_test::join().0, 0);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        assert!(monitor.open_needs_you().is_empty());
     }
 
     /// A pane the person opened has no posture snapshot either, and that buys
@@ -1182,7 +1234,7 @@ mod list_tests {
             )
             .unwrap();
         let child_pid = pane_pid(&h, child_pane);
-        let child_reply = secret_get_request(&mut h, "BAR", &[child_pid]);
+        let child_reply = pane_get(&mut h, "BAR", child_pid, None);
         assert_eq!(child_reply["status"], "denied", "{child_reply}");
 
         // Two independent workers joining the same named sub-context keep distinct postures and grants.
@@ -1225,22 +1277,13 @@ mod list_tests {
 
         let pid_a = pane_pid(&h, peer_a);
         let pid_b = pane_pid(&h, peer_b);
-        let req_a = secret_get_request(&mut h, "BAR", &[pid_a]);
-        assert_eq!(req_a["status"], "permission_required", "{req_a}");
-        let pending_id = req_a["pending_request_id"].as_str().unwrap();
-        let monitor =
-            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-                .unwrap();
-        monitor
-            .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Always)
-            .unwrap();
-
-        let ok_a = secret_get_request(&mut h, "BAR", &[pid_a]);
+        let ok_a = pane_get(&mut h, "BAR", pid_a, Some(ApprovalChoice::Always));
         assert_eq!(ok_a["status"], "value", "{ok_a}");
+        assert_eq!(pane_get(&mut h, "BAR", pid_a, None)["status"], "value");
 
-        // Peer B in the same sub-context must NOT inherit Peer A's grant.
-        let req_b = secret_get_request(&mut h, "BAR", &[pid_b]);
-        assert_eq!(req_b["status"], "permission_required", "{req_b}");
+        // Peer B in the same sub-context still has to ask.
+        let req_b = pane_get(&mut h, "BAR", pid_b, Some(ApprovalChoice::Deny));
+        assert_eq!(req_b["reason"], "denied", "{req_b}");
 
         secrets::system_store().delete(&account).unwrap();
     }
@@ -1267,8 +1310,6 @@ mod release_tests {
         ClosePane,
         RescopePane,
         RevokeGrant,
-        /// A second reader with the same approval arrives mid-read.
-        SecondReader,
     }
 
     /// A store that acts on the asking pane or its grant mid-read.
@@ -1279,18 +1320,13 @@ mod release_tests {
         during: DuringRead,
         profile: tempfile::TempDir,
         gets: std::sync::atomic::AtomicUsize,
-        second: std::sync::Mutex<Option<serde_json::Value>>,
     }
 
     impl NonDestructiveStore for ActsDuringRead {
         fn get(&self, account: &str) -> Option<Zeroizing<String>> {
-            let first = self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             match self.during {
                 DuringRead::Nothing => {}
-                DuringRead::SecondReader if first => {
-                    *self.second.lock().unwrap() = Some(read(self));
-                }
-                DuringRead::SecondReader => {}
                 DuringRead::ClosePane => self.pane.revoke(),
                 DuringRead::RescopePane => {
                     self.pane.publish_scope(PathBuf::from("/tmp/elsewhere"));
@@ -1326,35 +1362,28 @@ mod release_tests {
         }
     }
 
-    fn read(store: &ActsDuringRead) -> serde_json::Value {
-        let scope = SecretScope::Global;
-        let reply = crate::rpc::response_file("secret-release-1716", "json");
-        // As the socket listener wires a reply: the host writes one end, the
-        // waiting client reads the other.
-        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
-        crate::rpc::register_client_stream(reply.clone(), client);
-        crate::rpc::ReplyRegistry::register(reply.clone(), server.try_clone().unwrap());
+    fn request(store: &ActsDuringRead, reply: &str) -> SecretRequest {
         SecretRequest {
             subject: Subject::Pane(AdmittedScope::of(&store.pane)),
+            peer: None,
             repaint: Default::default(),
             name: "TOKEN_1716".into(),
-            scope,
+            scope: SecretScope::Global,
             profile: store.profile.path().to_path_buf(),
             posture: None,
-            reply_path: PathBuf::from(&reply),
+            reply_path: PathBuf::from(reply),
         }
-        .read_and_release(&store.monitor, store);
-        drop(server);
-        let body =
-            crate::rpc::poll_string(&reply, Some(std::time::Duration::from_secs(2))).unwrap();
-        serde_json::from_str(&body).unwrap()
     }
 
-    /// Approve the read with `choice`, then read once while `during` happens.
-    fn read_while(
-        during: DuringRead,
-        choice: ApprovalChoice,
-    ) -> (serde_json::Value, ActsDuringRead) {
+    fn read(store: &ActsDuringRead) -> serde_json::Value {
+        let reply = crate::rpc::response_file_in(store.profile.path(), "secret-release", "json");
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        crate::rpc::ReplyRegistry::register(reply.clone(), server);
+        request(store, &reply).read_and_release(&store.monitor, store);
+        crate::testing::socket_policy_tests::read_client(client, "pane read")
+    }
+
+    fn fixture(during: DuringRead) -> ActsDuringRead {
         let pane = LivePaneAuthority::admitted(PaneAuthority::for_test(
             7,
             Ceiling::Baseline,
@@ -1369,7 +1398,6 @@ mod release_tests {
             during,
             profile: tempfile::tempdir().unwrap(),
             gets: Default::default(),
-            second: Default::default(),
         };
         store
             .inner
@@ -1378,20 +1406,88 @@ mod release_tests {
                 "canary-1716",
             )
             .unwrap();
-        // Admission comes before the store is touched: this read only asks.
-        let ask = read(&store);
-        assert_eq!(ask["status"], "permission_required", "{ask}");
+        store
+    }
+
+    fn decide(store: &ActsDuringRead, asks: usize, choice: ApprovalChoice) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while store
+            .monitor
+            .audit_records()
+            .iter()
+            .filter(|row| row.kind == "ask")
+            .count()
+            < asks
+        {
+            assert!(std::time::Instant::now() < deadline, "read did not ask");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let pending = store.monitor.list_pending();
+        assert_eq!(pending.len(), 1);
         store
             .monitor
-            .approve_pending(ask["pending_request_id"].as_str().unwrap(), choice)
+            .approve_pending(&pending[0].pending_request_id, choice)
             .unwrap();
-        (read(&store), store)
+    }
+
+    fn read_while(during: DuringRead, choice: ApprovalChoice) -> serde_json::Value {
+        let store = fixture(during);
+        std::thread::scope(|s| {
+            let worker = s.spawn(|| read(&store));
+            decide(&store, 1, choice);
+            worker.join().unwrap()
+        })
+    }
+
+    #[test]
+    fn a_pane_request_without_its_connection_withdraws() {
+        let store = fixture(DuringRead::Nothing);
+        let token = crate::rpc::response_file_in(store.profile.path(), "gone", "json");
+        request(&store, &token).read_and_release(&store.monitor, &store);
+        assert!(store.monitor.open_needs_you().is_empty());
+        assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!Path::new(&token).exists());
+    }
+
+    #[test]
+    fn a_disconnected_pane_cannot_claim_an_already_approved_read() {
+        let store = fixture(DuringRead::Nothing);
+        let actor = SecretActor {
+            kind: crate::broker::ActorType::Agent,
+            id: "pane:7".into(),
+        };
+        let ReadResult::PermissionRequired { pending_id } =
+            crate::workspace::secrets::read_pane_secret(
+                &store.monitor,
+                &store,
+                &actor,
+                "TOKEN_1716",
+                &SecretScope::Global,
+                store.profile.path(),
+            )
+            .unwrap()
+        else {
+            panic!("expected a card")
+        };
+        store
+            .monitor
+            .approve_pending(&pending_id, ApprovalChoice::Once)
+            .unwrap();
+        let token = crate::rpc::response_file_in(store.profile.path(), "gone", "json");
+        request(&store, &token).read_and_release(&store.monitor, &store);
+        assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(store
+            .monitor
+            .store()
+            .records()
+            .iter()
+            .all(|row| !row.consumed));
     }
 
     #[test]
     fn the_value_is_released_only_while_pane_and_grant_still_hold() {
         for choice in [ApprovalChoice::Once, ApprovalChoice::Always] {
-            let (released, _) = read_while(DuringRead::Nothing, choice);
+            let released = read_while(DuringRead::Nothing, choice);
             assert_eq!(released["status"], "value", "{choice:?}: {released}");
             assert_eq!(released["value"], "canary-1716");
             for during in [
@@ -1399,28 +1495,30 @@ mod release_tests {
                 DuringRead::RescopePane,
                 DuringRead::RevokeGrant,
             ] {
-                let (reply, _) = read_while(during, choice);
+                let reply = read_while(during, choice);
                 assert_eq!(reply["status"], "denied", "{during:?} {choice:?}: {reply}");
                 assert!(!reply.to_string().contains("canary-1716"));
             }
         }
     }
 
-    /// Stint 1716 (design-3306 once): one approval admits one read. A
-    /// second reader arriving mid-read is asked again and never reaches the
-    /// store; once the first read has run, the next read asks again too.
     #[test]
     fn a_once_approval_admits_exactly_one_read() {
-        let (first, store) = read_while(DuringRead::SecondReader, ApprovalChoice::Once);
-        assert_eq!(first["status"], "value", "{first}");
-        let second = store.second.lock().unwrap().take().unwrap();
-        assert_eq!(second["status"], "permission_required", "{second}");
+        let store = fixture(DuringRead::Nothing);
+        std::thread::scope(|s| {
+            let first = s.spawn(|| read(&store));
+            let second = s.spawn(|| read(&store));
+            decide(&store, 2, ApprovalChoice::Once);
+            let replies = [first.join().unwrap(), second.join().unwrap()];
+            assert!(replies.contains(&serde_json::json!({"status":"value","value":"canary-1716"})));
+            assert!(replies.contains(&serde_json::json!({"status":"denied","reason":"denied"})));
+
+            let next = s.spawn(|| read(&store));
+            decide(&store, 3, ApprovalChoice::Deny);
+            assert_eq!(next.join().unwrap()["reason"], "denied");
+        });
         assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(
-            read(&store)["status"],
-            "permission_required",
-            "the claim was spent"
-        );
+        assert!(store.monitor.open_needs_you().is_empty());
     }
 }
 

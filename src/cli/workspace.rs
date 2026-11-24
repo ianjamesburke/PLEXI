@@ -404,6 +404,7 @@ fn send_secret(op: &str, name: &str, payload: Value) -> Result<Value, i32> {
             match refusal.fields["reason"].as_str() {
                 Some("denied") => eprintln!("Request denied"),
                 Some("expired") => eprintln!("Approval expired"),
+                Some("revoked") => eprintln!("Caller revoked"),
                 _ => return Err(refusal.report(OutputMode::Text)),
             }
             Err(1)
@@ -420,17 +421,6 @@ fn secret_result(op: &str, name: &str, reply: Value) -> Result<Value, i32> {
     match (reply["status"].as_str(), op) {
         (Some("value"), "get") if reply["value"].is_string() => Ok(reply),
         (Some("ok"), "set" | "delete") => Ok(reply),
-        (Some("permission_required"), _) if reply["pending_request_id"].is_string() => {
-            println!("permission_required");
-            println!(
-                "pending_request_id={}",
-                reply["pending_request_id"].as_str().unwrap()
-            );
-            if op != "set" {
-                eprintln!("Approve in the Plexi window, then run this again.");
-            }
-            Err(2)
-        }
         (Some("not_found"), _) => {
             eprintln!("error: {}", secret_not_set(name));
             Err(1)
@@ -1057,6 +1047,19 @@ mod secret_set_tests {
     use super::folder_secret_grant;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn secret_commands_require_a_final_reply() {
+        let pending =
+            serde_json::json!({"status":"permission_required","pending_request_id":"old"});
+        for op in ["get", "set", "delete"] {
+            assert_eq!(
+                super::secret_result(op, "KEY", pending.clone()),
+                Err(1),
+                "{op}"
+            );
+        }
+    }
 
     /// Stint 1635: the CLI refuses a grant without touching any store, with
     /// or without `--folder`, and writes no allow or audit.

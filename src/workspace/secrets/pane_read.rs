@@ -3,9 +3,8 @@
 //! Any process in a pane may be an agent, so `plexi secret get` from a pane
 //! does not read the store itself. It asks the host, which admits tool
 //! `secret.get` for the host-stamped pane identity. Without a grant the read
-//! files a click approval and returns its pending id; the store is read only
-//! after a desktop click. Logs and audit rows carry the name and scope, never
-//! the value.
+//! waits for a desktop decision on the original connection. Logs and audit
+//! rows carry the name and scope.
 
 use std::path::{Path, PathBuf};
 

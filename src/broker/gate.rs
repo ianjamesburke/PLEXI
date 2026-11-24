@@ -1225,27 +1225,7 @@ impl PermissionMonitor {
             if before_claim.is_some() {
                 return UseDecision::Denied;
             }
-            let disclosure = (req.target_type == TargetType::Secret
-                && req.principal.actor_type() == ActorType::External
-                && super::workspace_secret_tool(req.tool))
-            .then(|| {
-                let input: serde_json::Value =
-                    serde_json::from_str(req.input_json).unwrap_or_default();
-                let caller = input["caller"].as_str().unwrap_or(req.principal.actor_id());
-                let resource = request.resource_id.as_deref().unwrap_or(req.tool);
-                let duration = if req.principal.actor_type() == ActorType::External {
-                    " once"
-                } else {
-                    ""
-                };
-                let mut summary =
-                    format!("Allow {caller} to use {}{duration} on {resource}", req.tool);
-                if let Some(route) = input["route_name"].as_str() {
-                    summary.push_str(&format!(" for environment variable {route}"));
-                }
-                summary
-            });
-            match self.admit_inner(req, posture, disclosure.as_deref()) {
+            match self.admit_with_posture(req, posture) {
                 Admission::Required { pending_request_id } => {
                     return UseDecision::Required { pending_request_id }
                 }
@@ -1525,6 +1505,22 @@ impl PermissionMonitor {
                 }
             }
             Decision::Ask => {
+                let outside_secret = (req.target_type == TargetType::Secret
+                    && req.principal.actor_type() == ActorType::External
+                    && super::workspace_secret_tool(req.tool))
+                .then(|| {
+                    let input: serde_json::Value =
+                        serde_json::from_str(req.input_json).unwrap_or_default();
+                    let caller = input["caller"].as_str().unwrap_or(req.principal.actor_id());
+                    let resource = binding.resource_id.as_deref().unwrap_or(req.tool);
+                    let mut summary =
+                        format!("Allow {caller} to use {} once on {resource}", req.tool);
+                    if let Some(route) = input["route_name"].as_str() {
+                        summary.push_str(&format!(" for environment variable {route}"));
+                    }
+                    summary
+                });
+                let disclosure = disclosure.or(outside_secret.as_deref());
                 let id = self.persist_pending(&binding, req.tool, req.input_json, disclosure);
                 trace("ask", mechanism, &format!("pending={id}"));
                 let _ = self.audit_with(
@@ -1656,9 +1652,8 @@ impl PermissionMonitor {
         result
     }
 
-    /// Withdraw a live ask with a private invocation binding. cancel_pending
-    /// takes the decision lock, so a racing click has either lost or finished
-    /// publishing the exact grant to retire.
+    /// Cancel the card or retire its unclaimed Once if a click won the race.
+    /// Another live call from the same pane may already own that claim.
     pub(crate) fn withdraw_live_ask(&self, pending: &str) -> Result<(), String> {
         if let Err(error) = self.cancel_pending(pending) {
             let resolution = self
@@ -1669,9 +1664,20 @@ impl PermissionMonitor {
                 .cloned();
             match resolution {
                 Some((ApprovalChoice::Once, id)) => {
-                    // Leave it spent even if saving the revocation fails.
-                    self.consume_once(&id, None);
-                    self.revoke_grant_id(&id)?;
+                    let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+                    {
+                        let mut store = self.store();
+                        let Some(row) = store.records_mut().iter_mut().find(|r| r.grant_id == id)
+                        else {
+                            return Ok(());
+                        };
+                        if row.consumed && row.bound_operation_id.is_some() {
+                            return Ok(());
+                        }
+                        // Leave it spent even if saving the revocation fails.
+                        row.consumed = true;
+                    }
+                    self.revoke_locked(&id)?;
                 }
                 Some(_) => (),
                 None => return Err(error),
@@ -6282,6 +6288,52 @@ mod tests {
     const TEST_HOST: &crate::broker::custody::HostProcess =
         &crate::broker::custody::HostProcess::for_test();
     use std::time::Duration;
+
+    #[test]
+    fn withdrawing_a_shared_secret_ask_preserves_the_claimed_use() {
+        let monitor = PermissionMonitor::ephemeral();
+        let principal = crate::broker::principal::Principal::agent("pane:7");
+        let req = AdmitRequest {
+            call_id: "first",
+            tool: "secret.get",
+            input_json: r#"{"name":"KEY","scope":"global"}"#,
+            principal: &principal,
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: Path::new("/ws"),
+            context_id: 0,
+            package_id: "",
+            instance_id: 0,
+            target_type: TargetType::Secret,
+        };
+        let UseDecision::Required { pending_request_id } = monitor.admit_for_use(req, None) else {
+            panic!("expected a card");
+        };
+        let second = AdmitRequest {
+            call_id: "second",
+            ..req
+        };
+        assert!(matches!(monitor.admit_for_use(second, None),
+            UseDecision::Required { pending_request_id: id } if id == pending_request_id));
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        let UseDecision::Allowed { approved, .. } =
+            monitor.admit_for_use_if(req, None, Some(&|| true))
+        else {
+            panic!("first use must claim Once");
+        };
+        assert!(matches!(
+            monitor.admit_for_use_if(second, None, Some(&|| true)),
+            UseDecision::Denied
+        ));
+        monitor.withdraw_live_ask(&pending_request_id).unwrap();
+        assert!(
+            monitor.commit(&approved).is_ok(),
+            "withdrawal invalidated the winner's permit"
+        );
+        assert!(monitor.open_needs_you().is_empty());
+    }
 
     #[test]
     fn only_the_desktop_approves_and_seal_items_need_the_desktop_to_deny() {
