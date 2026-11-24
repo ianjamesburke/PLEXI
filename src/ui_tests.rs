@@ -39,7 +39,23 @@ use std::time::{Duration, Instant};
 
 use crate::app::PlexiApp;
 use crate::host::pane::{Pane, ViewRuntime};
+use crate::host::wasm_python::PythonFramePhase;
 use crate::spatial::tiling::PaneId;
+
+struct FirstFrameWait {
+    phase: PythonFramePhase,
+    last_progress_at: Instant,
+}
+
+impl FirstFrameWait {
+    fn stalled(&mut self, phase: PythonFramePhase, now: Instant, window: Duration) -> bool {
+        if phase > self.phase {
+            self.phase = phase;
+            self.last_progress_at = now;
+        }
+        now.duration_since(self.last_progress_at) >= window
+    }
+}
 
 // ─── PlexiUiHarness ──────────────────────────────────────────────────────────
 
@@ -590,21 +606,24 @@ impl PlexiUiHarness {
         })
     }
 
-    /// Step frames until the real plugin process behind `pane_id` commits its
-    /// first rendered frame (FrameDone observed), sleeping between steps to
-    /// give the child process wall-clock time. Fails with the plugin's recent
-    /// stderr on crash or timeout.
+    /// Step frames until the plugin is rendering. Python startup milestones
+    /// reset a load-aware stall window because Wasmtime compilation is silent
+    /// until the guest starts. A failed or exited pane ends the wait early.
     pub fn wait_for_view_frame(
         &mut self,
         pane_id: PaneId,
-        timeout: Duration,
+        base_stall_window: Duration,
     ) -> Result<(), String> {
         enum Probe {
             Rendered,
-            Waiting,
+            Waiting(PythonFramePhase),
             Dead(String),
         }
-        let start = Instant::now();
+        let stall_window = crate::testing::load_aware_timeout(base_stall_window);
+        let mut wait = FirstFrameWait {
+            phase: PythonFramePhase::Booting,
+            last_progress_at: Instant::now(),
+        };
         loop {
             self.step();
             let probe = self.with_app(|app| {
@@ -612,25 +631,30 @@ impl PlexiUiHarness {
                 let Some(Pane::View(view_pane)) = win.panes.get(&pane_id) else {
                     return Probe::Dead(format!("pane {pane_id} is not a view pane"));
                 };
-                match &view_pane.runtime {
-                    ViewRuntime::Python(p) if p.has_rendered_tree() => Probe::Rendered,
-                    ViewRuntime::Python(p) => p
-                        .error()
-                        .map(|error| Probe::Dead(error.to_string()))
-                        .unwrap_or(Probe::Waiting),
-                    ViewRuntime::Wasm(p) if p.is_running() => Probe::Rendered,
-                    _ => Probe::Dead(format!("pane {pane_id} is not a WASM plugin")),
+                let runtime = &view_pane.runtime;
+                match (runtime, runtime.lifecycle()) {
+                    (ViewRuntime::Builtin(_), _) => {
+                        Probe::Dead(format!("pane {pane_id} is not a WASM plugin"))
+                    }
+                    (_, ("running", _)) => Probe::Rendered,
+                    (ViewRuntime::Python(p), ("starting", _)) => {
+                        Probe::Waiting(p.first_frame_phase())
+                    }
+                    (_, (_, Some(error))) => Probe::Dead(error.to_string()),
+                    _ => Probe::Dead(format!(
+                        "pane {pane_id} exited before its first plugin frame"
+                    )),
                 }
             });
             match probe {
                 Probe::Rendered => return Ok(()),
                 Probe::Dead(msg) => return Err(msg),
-                Probe::Waiting => {}
-            }
-            if start.elapsed() > timeout {
-                return Err(format!(
-                    "timed out after {timeout:?} waiting for first plugin frame"
-                ));
+                Probe::Waiting(phase) if wait.stalled(phase, Instant::now(), stall_window) => {
+                    return Err(format!(
+                        "timed out after {stall_window:?} without progress waiting for first plugin frame ({phase:?})"
+                    ));
+                }
+                Probe::Waiting(_) => {}
             }
             std::thread::sleep(Duration::from_millis(25));
         }
@@ -762,6 +786,26 @@ mod tests {
     use crate::host::context::Window;
     use crate::host::pane::{Pane, PortalPane, TerminalPane, ViewPane, ViewRuntime};
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn first_view_frame_wait_stalls_only_without_progress() {
+        use PythonFramePhase::{Booting, Initializing, Rendering};
+
+        let start = Instant::now();
+        let window = Duration::from_secs(15);
+        let mut wait = FirstFrameWait {
+            phase: Booting,
+            last_progress_at: start,
+        };
+        let at = |secs| start + Duration::from_secs(secs);
+
+        assert!(!wait.stalled(Booting, at(14), window));
+        assert!(!wait.stalled(Initializing, at(16), window));
+        assert!(!wait.stalled(Initializing, at(30), window));
+        assert!(!wait.stalled(Rendering, at(31), window));
+        assert!(!wait.stalled(Rendering, at(45), window));
+        assert!(wait.stalled(Rendering, at(46), window));
+    }
 
     /// Queue `events` for the focused pane the way `plexi pane key` and
     /// `pane click` do, step, and prove `raw_input_hook` delivered the batch
