@@ -12326,6 +12326,32 @@ fn hot_reload_serviced_while_window_hidden() {
             .is_empty(),
         "an edit in a trusted folder asks nothing"
     );
+
+    // Reload is a launch: once the folder's trust is revoked, the next reload
+    // is refused and asks again, and the edited code never runs.
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    let trust = monitor
+        .list_entries()
+        .into_iter()
+        .find(|entry| {
+            entry.tool == crate::host::plugin_admission::TRUST_FOLDER_TOOL && entry.kind == "allow"
+        })
+        .expect("the folder trust row");
+    assert!(monitor.revoke_grant_id(&trust.id).unwrap(), "trust revoked");
+    write_hidden_axis_probe(tmp.path(), "v3");
+    assert!(
+        !h.app.reload_view_pane(pane_id, "test edit after revoke"),
+        "a reload from an untrusted folder is refused"
+    );
+    h.run_hidden_frames(3);
+    assert_ne!(python_pane_title(&h, pane_id).as_deref(), Some("v3"));
+    assert!(
+        monitor
+            .list_pending()
+            .iter()
+            .any(|pending| pending.tool == crate::host::plugin_admission::TRUST_FOLDER_TOOL),
+        "the refused reload asks for the folder again"
+    );
 }
 
 /// Stint 0759: a WASM Python pane's first frame commit depends on
