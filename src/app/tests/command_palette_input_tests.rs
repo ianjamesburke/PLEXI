@@ -281,9 +281,10 @@ mod note_identity {
             panic!("test pane is a view pane");
         };
         view.runtime = ViewRuntime::Builtin(Box::new(
-            crate::app::text_editor_view::TextEditorView::new_with_workspace(
+            crate::app::text_editor_view::TextEditorView::from_read(
                 path.to_path_buf(),
                 Some(root),
+                std::fs::read_to_string(path),
             ),
         ));
         view.manifest_id = "text-editor".to_string();

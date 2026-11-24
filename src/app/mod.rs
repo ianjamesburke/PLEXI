@@ -19,7 +19,7 @@ mod directed_pipes;
 mod dispatch;
 mod event_stream;
 pub mod file_handlers;
-mod file_open;
+pub(crate) mod file_open;
 mod fleet;
 mod focus;
 pub(crate) mod focus_journal;

@@ -227,6 +227,14 @@ pub(crate) struct PaletteSources {
     /// The uploaded image of the selected row's preview.
     texture: Option<(RowKey, egui::TextureHandle)>,
     usage: PaletteUsage,
+    /// Files activated this pass, with the pane focused at activation:
+    /// opened from `App::logic`, never from the pass that activated them.
+    queued_opens: Vec<(std::path::PathBuf, crate::spatial::tiling::PaneId)>,
+    /// Opens whose disk reads run on a worker, with their anchor pane.
+    preparing: Vec<(
+        crate::spatial::tiling::PaneId,
+        std::sync::mpsc::Receiver<crate::app::file_open::PreparedOpen>,
+    )>,
 }
 
 /// A Files answer's hit as a picker row.
@@ -1611,6 +1619,40 @@ impl PlexiApp {
         }
     }
 
+    /// Open the files the palette activated: resolve each against host state
+    /// here, read it on a worker, and finish the open once the read is in.
+    fn drain_palette_opens(&mut self) {
+        for (path, anchor) in std::mem::take(&mut self.palette_sources.queued_opens) {
+            let Some(request) = self.open_request(anchor, &path) else {
+                continue;
+            };
+            let (done, prepared) = std::sync::mpsc::channel();
+            let wake = std::sync::Arc::clone(&self.ui_wake);
+            let spawned = std::thread::Builder::new()
+                .name("plexi-palette-open".to_owned())
+                .spawn(move || {
+                    // The receiver is gone only when the host shut down.
+                    let _closed = done.send(crate::app::file_open::prepare_open(request));
+                    wake.wake("palette_open");
+                });
+            match spawned {
+                Ok(_) => self.palette_sources.preparing.push((anchor, prepared)),
+                Err(error) => log::warn!("palette: could not start opening a file: {error}"),
+            }
+        }
+        for (anchor, prepared) in std::mem::take(&mut self.palette_sources.preparing) {
+            match prepared.try_recv() {
+                Ok(prepared) => self.finish_open(anchor, prepared),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.palette_sources.preparing.push((anchor, prepared));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    log::warn!("palette: a file open's reader exited without an answer");
+                }
+            }
+        }
+    }
+
     /// Ask the preview worker for `row`'s preview. Its path comes from the
     /// answer the row belongs to.
     fn load_palette_preview(&mut self, row: RowKey, kind: crate::host::picker::PreviewRef) {
@@ -1749,6 +1791,7 @@ impl PlexiApp {
     /// every later pass so live rows (pane state, context pips, update ready)
     /// stay current. Serviced from `App::logic`, never from drawing.
     pub(crate) fn refresh_command_palette(&mut self) {
+        self.drain_palette_opens();
         self.palette_sources.usage.poll();
         self.drain_palette_previews();
         let Some((source, query, generation)) = self
@@ -2591,9 +2634,12 @@ impl PlexiApp {
                 if let Some(key) = crate::host::picker::files::file_key(&path) {
                     palette_test_log::activated(key);
                 }
-                log::info!("palette: opening a file result");
+                // Only queued here: the open reads the disk, so it is
+                // resolved in `App::logic` and read on a worker.
                 let anchor = self.focused_pane_id().unwrap_or_default();
-                self.open_file_in_view(anchor, &path);
+                log::info!("palette: queued a file result to open beside pane {anchor}");
+                self.palette_sources.queued_opens.push((path, anchor));
+                self.ctx.request_repaint();
             }
         }
     }

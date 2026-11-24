@@ -20,7 +20,7 @@
 //!   frozen once and runs at most once.
 //! - Actions never run here.
 //! - A preview answer for a row that is no longer selected is dropped.
-//! - A source answer over `MAX_SEARCH_HITS` rows is refused, visibly.
+//! - An answer is cut to its best `MAX_SOURCE_ROWS` rows after ranking.
 
 /// Which picker a command addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -113,7 +113,7 @@ pub(crate) const PALETTE_STOPS: &[Stop] = &[
     },
 ];
 
-/// A source answer larger than this is refused (`SourceFailure::TooManyRows`).
+/// The most rows one answer shows; ranking decides which.
 pub(crate) const MAX_SOURCE_ROWS: usize = crate::search::MAX_SEARCH_HITS;
 
 /// A row's identity: `<source id>:<stable id>`, split on the first `:`.
@@ -206,27 +206,6 @@ pub(crate) enum PreviewBody {
 pub(crate) enum PreviewStatus {
     Loading,
     Ready(PreviewBody),
-}
-
-/// Why a source's answer was not shown.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SourceFailure {
-    TooManyRows {
-        source: &'static str,
-        count: usize,
-        max: usize,
-    },
-}
-
-impl std::fmt::Display for SourceFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SourceFailure::TooManyRows { source, count, max } => write!(
-                f,
-                "The {source} source answered {count} rows; at most {max} are shown. Narrow the search."
-            ),
-        }
-    }
 }
 
 /// The snapshot a presented row belongs to. `generation` names the open
@@ -360,7 +339,6 @@ pub(crate) struct PickerState {
     /// The preview of the last row selected on a preview stop. It is kept
     /// while a new query loads, so reselecting that row loads nothing.
     preview: Option<(RowKey, PreviewStatus)>,
-    failure: Option<SourceFailure>,
 }
 
 impl PickerState {
@@ -384,7 +362,6 @@ impl PickerState {
             pending: None,
             reveal: 0,
             preview: None,
-            failure: None,
         }
     }
 
@@ -438,11 +415,6 @@ impl PickerState {
             .as_ref()
             .filter(|(key, _)| key == selected)
             .map(|(_, status)| status)
-    }
-
-    /// Why the current query shows no answer, if a source failed it.
-    pub(crate) fn failure(&self) -> Option<&SourceFailure> {
-        self.failure.as_ref()
     }
 
     pub(crate) fn selected(&self) -> Option<&RowKey> {
@@ -586,7 +558,6 @@ impl PickerState {
         self.answered = false;
         self.pending = None;
         self.preview = None;
-        self.failure = None;
         // Answers and hits still in flight for this session are stale.
         self.generation += 1;
         log::info!("picker: closed");
@@ -611,7 +582,6 @@ impl PickerState {
         self.generation += 1;
         self.loading = true;
         self.answered = false;
-        self.failure = None;
         if self.pending.take().is_some() {
             log::info!("picker: pending Enter cancelled by a new query");
         }
@@ -648,23 +618,15 @@ impl PickerState {
             );
             return Vec::new();
         }
-        if rows.len() > MAX_SOURCE_ROWS {
-            let failure = SourceFailure::TooManyRows {
-                source: self.active_stop().source,
-                count: rows.len(),
-                max: MAX_SOURCE_ROWS,
-            };
-            log::warn!("picker: refused an answer: {failure}");
-            self.failure = Some(failure);
-            self.rows.clear();
-            self.answered = false;
-            self.loading = false;
-            if self.pending.take().is_some() {
-                log::info!("picker: pending Enter cancelled by a refused answer");
-            }
-            return Vec::new();
+        let mut ranked = rank(self.active_stop().ranking, &self.query, rows);
+        if ranked.len() > MAX_SOURCE_ROWS {
+            log::info!(
+                "picker: showing the best {MAX_SOURCE_ROWS} of {} rows from '{}'",
+                ranked.len(),
+                self.active_stop().source
+            );
+            ranked.truncate(MAX_SOURCE_ROWS);
         }
-        let ranked = rank(self.active_stop().ranking, &self.query, rows);
         if !self.answered || identity(&ranked) != identity(&self.rows) {
             self.rows_stamp = Stamp {
                 generation,

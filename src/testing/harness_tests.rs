@@ -26240,14 +26240,122 @@ fn palette_opens_a_file_with_no_explorer_open() {
     }
 
     h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
-    h.run_frames(2);
     assert!(
         !h.app.command_palette_open(),
         "Enter ran the row and closed"
     );
-    assert!(
-        h.app.find_open_text_editor_pane_any_window(&doc).is_some(),
-        "the file opened in the text editor"
-    );
+    wait_for_text_editor(&mut h, &doc);
     assert_eq!(explorers(&h), 0, "no Explorer was opened to reach it");
+}
+
+/// Run frames until a text editor holds `doc`; the palette reads the file on
+/// a worker, so this waits on the wall clock.
+fn wait_for_text_editor(h: &mut HostHarness, doc: &std::path::Path) -> PaneId {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(pane) = h.app.find_open_text_editor_pane_any_window(doc) {
+            return pane;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{doc:?} never opened in a text editor"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run_frames(1);
+    }
+}
+
+/// Stint 1392 review: activating a file reads nothing on the pass that
+/// activated it. The open is prepared on a worker from `App::logic` and lands
+/// to the right of the pane focused at activation, even if focus has moved
+/// by the time the read finishes.
+#[test]
+fn palette_file_open_reads_off_the_ui_pass_beside_the_activating_pane() {
+    let mut h = HostHarness::new();
+    let root = h.workspace_root();
+    std::fs::write(root.join("plan.md"), "# plan").expect("seed doc");
+    let doc = root.join("plan.md").canonicalize().expect("canonical doc");
+    // Two real panes, split by the production placement path.
+    for _ in 0..2 {
+        h.app.open_builtin_view_pane(
+            Box::new(crate::file_browser::FileBrowserView::new(root.clone())),
+            crate::app::permissions::PluginPermissions::builtin(),
+            root.clone(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        h.run_frames(1);
+    }
+    let (left, right) = match h.state().open_panes[..] {
+        [left, right] => (left, right),
+        ref panes => panic!("expected two panes, got {panes:?}"),
+    };
+    h.focus_pane(right);
+    h.run_frames(2);
+
+    h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    h.run_frames(1);
+    frame_with_events(&mut h, vec![egui::Event::Text("plan".into())]);
+
+    let want = format!("files:{}", doc.display());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.app.palette_selected_key().as_deref() != Some(want.as_str()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "plan.md never selected"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run_frames(1);
+    }
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(!h.app.command_palette_open());
+    assert!(
+        crate::app::file_open::prepared_on::threads(&doc).is_empty(),
+        "the activating pass read the file"
+    );
+    assert!(h.app.find_open_text_editor_pane_any_window(&doc).is_none());
+    // Focus moves before the read lands; the open keeps its anchor.
+    h.focus_pane(left);
+    let editor = wait_for_text_editor(&mut h, &doc);
+
+    let threads = crate::app::file_open::prepared_on::threads(&doc);
+    assert_eq!(threads.len(), 1, "prepared once: {threads:?}");
+    assert_ne!(
+        threads[0],
+        std::thread::current().id(),
+        "read on the UI thread"
+    );
+    let tree = &h.app.windows[0].tree;
+    // A pane sits in its own tab group; the split holds the groups.
+    let in_split = |pane: PaneId| {
+        let tile = tree.tiles.find_pane(&pane).expect("pane tile");
+        match tree.tiles.parent_of(tile).map(|p| (p, tree.tiles.get(p))) {
+            Some((group, Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_))))) => {
+                group
+            }
+            _ => tile,
+        }
+    };
+    let editor_tile = in_split(editor);
+    let right_tile = in_split(right);
+    let parent = tree.tiles.parent_of(editor_tile).expect("editor parent");
+    let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) =
+        tree.tiles.get(parent)
+    else {
+        panic!("the editor is not in a split");
+    };
+    let at = linear
+        .children
+        .iter()
+        .position(|tile| *tile == editor_tile)
+        .expect("editor in its parent");
+    assert_eq!(
+        (linear.dir, at.checked_sub(1).map(|i| linear.children[i])),
+        (egui_tiles::LinearDir::Horizontal, Some(right_tile)),
+        "the editor lands right of the pane focused at activation"
+    );
 }

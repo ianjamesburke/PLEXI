@@ -743,35 +743,38 @@ fn unsupported_rows_say_why_without_loading() {
 }
 
 #[test]
-fn oversized_source_answer_is_refused() {
+fn oversized_source_answer_is_truncated() {
+    // Files: the best MAX_SOURCE_ROWS by usage order, newest first here.
     let (mut state, _) = opened(FILES_STOP);
-    let rows: Vec<PickerRow> = (0..=MAX_SOURCE_ROWS)
-        .map(|i| file(&format!("f{i}"), None, None, 1))
+    let rows: Vec<PickerRow> = (0..MAX_SOURCE_ROWS as u64 + 5)
+        .map(|i| file(&format!("f{i}"), None, None, i))
         .collect();
-    state.apply(PickerCommand::Accept);
-    let generation = state.generation();
-    let effects = state.apply(PickerCommand::Rows {
-        generation,
-        rows,
-        done: true,
-    });
-    assert!(
-        effects.is_empty(),
-        "a pending Enter never runs on a refused answer"
-    );
-    assert!(state.rows().is_empty());
-    assert!(!state.is_loading());
+    answer(&mut state, rows);
+    assert_eq!(state.rows().len(), MAX_SOURCE_ROWS);
+    let newest = format!("f{}", MAX_SOURCE_ROWS + 4);
+    assert_eq!(state.rows()[0].key.stable_id(), newest);
     assert_eq!(
-        state.failure(),
-        Some(&SourceFailure::TooManyRows {
-            source: "files",
-            count: MAX_SOURCE_ROWS + 1,
-            max: MAX_SOURCE_ROWS
-        })
+        state.selected().map(RowKey::stable_id),
+        Some(newest.as_str())
     );
-    // A new query clears the notice.
-    state.apply(PickerCommand::QueryEdited("f1".into()));
-    assert_eq!(state.failure(), None);
+
+    // Commands: an over-cap default list still shows its first rows.
+    let (mut state, _) = opened(THREE_STOPS);
+    let rows: Vec<PickerRow> = (0..MAX_SOURCE_ROWS + 5)
+        .map(|i| row("commands", &format!("c{i}"), 0, None))
+        .collect();
+    answer(&mut state, rows);
+    assert_eq!(state.rows().len(), MAX_SOURCE_ROWS);
+    assert_eq!(state.rows()[0].key.stable_id(), "c0");
+    assert_eq!(
+        state.rows()[MAX_SOURCE_ROWS - 1].key.stable_id(),
+        format!("c{}", MAX_SOURCE_ROWS - 1)
+    );
+    let effects = state.apply(PickerCommand::Accept);
+    assert!(
+        matches!(&effects[..], [PickerEffect::Activate { row, .. }, PickerEffect::Closed] if row.stable_id() == "c0"),
+        "{effects:?}"
+    );
 }
 
 #[test]

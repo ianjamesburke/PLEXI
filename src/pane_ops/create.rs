@@ -206,9 +206,35 @@ struct WasmViewInstanceSpec<'a> {
 /// The text editor on `path`, its workspace resolved from `cwd`. Shared by
 /// the string-argument factory and typed launches that own a native path.
 fn text_editor_view(path: PathBuf, cwd: &Path) -> Box<dyn View> {
-    let ws_root =
-        crate::cli::resolve_commands_workspace_root(cwd).or_else(|| Some(cwd.to_path_buf()));
-    Box::new(crate::app::text_editor_view::TextEditorView::new_with_workspace(path, ws_root))
+    let read = TextEditorRead::read(&path, cwd);
+    text_editor_from_read(path, read)
+}
+
+/// What a text editor reads from disk before it opens: the file, and the
+/// workspace its `commands.toml` resolves against. Gathered in one call so a
+/// caller can run it off the UI thread (`app::file_open::prepare_open`).
+pub(crate) struct TextEditorRead {
+    pub(crate) read: std::io::Result<String>,
+    pub(crate) workspace_root: Option<PathBuf>,
+}
+
+impl TextEditorRead {
+    pub(crate) fn read(path: &Path, cwd: &Path) -> Self {
+        Self {
+            read: std::fs::read_to_string(path),
+            workspace_root: crate::cli::resolve_commands_workspace_root(cwd)
+                .or_else(|| Some(cwd.to_path_buf())),
+        }
+    }
+}
+
+/// The text editor built from a read already made. Touches no disk.
+pub(crate) fn text_editor_from_read(path: PathBuf, read: TextEditorRead) -> Box<dyn View> {
+    Box::new(crate::app::text_editor_view::TextEditorView::from_read(
+        path,
+        read.workspace_root,
+        read.read,
+    ))
 }
 
 /// Instantiate a builtin `App` by id, checked before the process registry.
@@ -3104,7 +3130,7 @@ impl PlexiApp {
     }
 
     /// The working directory a launch in `context_id` uses.
-    fn launch_cwd(&self, context_id: u64, cwd_override: Option<PathBuf>) -> PathBuf {
+    pub(crate) fn launch_cwd(&self, context_id: u64, cwd_override: Option<PathBuf>) -> PathBuf {
         cwd_override
             .or_else(|| self.context_root_for(context_id))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
@@ -3136,6 +3162,20 @@ impl PlexiApp {
     /// Open the text editor on a native `path` in the active window, through
     /// the builtin launch gate, placement and workspace resolution. The path
     /// is never spelled as a string, so a non-UTF-8 note keeps its bytes.
+    /// Place a text editor already built (`text_editor_from_read`) in
+    /// `target_win` with `layout`, through the builtin gate and placement.
+    pub(crate) fn open_built_text_editor(
+        &mut self,
+        target_win: usize,
+        layout: Option<String>,
+        app: Box<dyn View>,
+        cwd: PathBuf,
+    ) -> Result<PaneId, String> {
+        self.require_plugin("text-editor")?;
+        let group = builtin_default_group(app.type_id());
+        self.open_launched_builtin(target_win, layout, app, cwd, group)
+    }
+
     pub(crate) fn open_text_editor_at_path(&mut self, path: PathBuf) -> Result<(), String> {
         const ID: &str = "text-editor";
         self.require_plugin(ID)?;
@@ -3148,8 +3188,7 @@ impl PlexiApp {
         let cwd = self.launch_cwd(context_id, None);
         log::info!("open_text_editor_at_path: typed note launch context_id={context_id}");
         let app = text_editor_view(path, &cwd);
-        let group = builtin_default_group(app.type_id());
-        self.open_launched_builtin(target_win, layout, app, cwd, group)?;
+        self.open_built_text_editor(target_win, layout, app, cwd)?;
         Ok(())
     }
 

@@ -197,13 +197,6 @@ pub(crate) fn results(
     colors: &Colors,
 ) -> RowsResponse {
     let mut out = RowsResponse::default();
-    if let Some(failure) = state.failure() {
-        ui.scope(|ui| {
-            ui.set_max_width(ui.available_width());
-            crate::ui::labels::description_label(ui, &failure.to_string(), colors);
-        });
-        return out;
-    }
     if state.rows().is_empty() {
         if state.is_loading() {
             // The first answer arrives on the next logic pass: hold the
