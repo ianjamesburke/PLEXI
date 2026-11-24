@@ -2071,16 +2071,15 @@ pub(super) fn queue_spawn_and_wait(
         serde_json::Value::String(response_file.clone()),
     );
     let queue_file = queue_spawn(payload, intent, summary)?;
-    queued_spawn::wait(
-        &queue_file,
-        &mut receipt,
-        std::time::Duration::from_secs(10),
-    )
-    .map_err(|error| {
-        log::warn!("queued spawn: {error}");
-        eprintln!("error: {error}");
-        1
-    })
+    match queued_spawn::wait(&queue_file, &mut receipt, std::time::Duration::from_secs(10)) {
+        queued_spawn::SpawnOutcome::Answered(reply) => Ok(Some(reply)),
+        queued_spawn::SpawnOutcome::Pending => Ok(None),
+        queued_spawn::SpawnOutcome::Cancelled(error) => {
+            log::warn!("queued spawn: {error}");
+            eprintln!("error: {error}");
+            Err(1)
+        }
+    }
 }
 
 /// Decode the definitive reply to an outside-pane queued spawn.

@@ -36,52 +36,68 @@ pub(super) fn open_receipt(token: &str) -> Result<IpcStream, String> {
     Ok(stream)
 }
 
-/// `None` means the host claimed the request but has not returned a pane id.
-/// Claiming is enough to prevent a retry; it is not proof of a completed launch.
-pub(super) fn wait(
-    queue_file: &Path,
-    receipt: &mut IpcStream,
-    timeout: Duration,
-) -> Result<Option<String>, String> {
-    let mut reply = Vec::new();
-    match read_reply(receipt, &mut reply, timeout) {
-        Ok(Some(reply)) => Ok(Some(reply)),
-        Ok(None) => reconcile_timeout(queue_file, receipt, reply),
-        Err(error) if error == CLOSED_UNANSWERED => reconcile_closed(queue_file),
-        Err(error) => Err(error),
-    }
+/// How a queued outside spawn ended, as alpha reported it (Codex 3290 r4).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SpawnOutcome {
+    /// The host answered: its reply (a pane id or the launch error).
+    Answered(String),
+    /// The request was removed before any host took it: nothing launches.
+    Cancelled(String),
+    /// A host took the request but no answer arrived, or its cancellation
+    /// could not be proved. It may have launched; do not retry blindly.
+    Pending,
 }
 
-const CLOSED_UNANSWERED: &str = "the host closed the connection before answering the queued spawn";
+/// What reading the receipt produced.
+enum ReceiptRead {
+    Reply(String),
+    TimedOut,
+    Closed,
+    Failed(String),
+}
 
-/// The host closed the receipt without answering. Remove the request if no
-/// host has taken it, so a later host cannot launch what this CLI reports as
-/// failed; otherwise say it may have been launched.
-fn reconcile_closed(queue_file: &Path) -> Result<Option<String>, String> {
+/// Wait for the host's answer. Every way the wait ends without one (the
+/// deadline, the host closing the receipt, a read error) goes through the
+/// one reconciliation of the queue file.
+pub(super) fn wait(queue_file: &Path, receipt: &mut IpcStream, timeout: Duration) -> SpawnOutcome {
+    let mut reply = Vec::new();
+    let read = read_reply(receipt, &mut reply, timeout);
+    let why = match read {
+        ReceiptRead::Reply(reply) => return SpawnOutcome::Answered(reply),
+        ReceiptRead::TimedOut => timeout_message(),
+        ReceiptRead::Closed => "the host closed the connection before answering the queued spawn".to_string(),
+        ReceiptRead::Failed(error) => format!("could not read queued spawn response: {error}"),
+    };
+    reconcile(queue_file, receipt, reply, why)
+}
+
+/// Both host and client must win the unlink of the queue file before
+/// claiming or cancelling it. Removed here: cancelled, proved. Already gone:
+/// a host took it, so a late answer is read, else it is pending. Not
+/// removable: cancellation is not proved, so it is pending too.
+fn reconcile(queue_file: &Path, receipt: &mut IpcStream, mut reply: Vec<u8>, why: String) -> SpawnOutcome {
     match std::fs::remove_file(queue_file) {
         Ok(()) => {
-            log::info!("queued spawn: host closed unanswered; cancelled {queue_file:?}");
-            Err(format!("{CLOSED_UNANSWERED}; the request was cancelled and nothing was launched"))
+            log::info!("queued spawn: cancelled unclaimed request {queue_file:?}: {why}");
+            SpawnOutcome::Cancelled(format!("{why}; the request was cancelled and nothing was launched"))
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            log::info!("queued spawn: host closed after claiming {queue_file:?}");
-            Err(format!("{CLOSED_UNANSWERED} after taking it; check `pane list` before retrying"))
+            log::info!("queued spawn: host claimed request {queue_file:?}; {why}");
+            match read_reply(receipt, &mut reply, Duration::from_millis(50)) {
+                ReceiptRead::Reply(reply) => SpawnOutcome::Answered(reply),
+                ReceiptRead::TimedOut | ReceiptRead::Closed | ReceiptRead::Failed(_) => SpawnOutcome::Pending,
+            }
         }
         Err(error) => {
             log::warn!("queued spawn: cancellation unavailable for {queue_file:?}: {error}");
-            Err(format!(
-                "{CLOSED_UNANSWERED}; cancellation failed ({error}). Do not retry; check host status"
-            ))
+            eprintln!("queued pane is still pending; cancellation failed: {error}. Do not retry; check host status.");
+            SpawnOutcome::Pending
         }
     }
 }
 
-/// The host's whole reply, or `None` if it has not finished by `timeout`.
-fn read_reply(
-    receipt: &mut IpcStream,
-    reply: &mut Vec<u8>,
-    timeout: Duration,
-) -> Result<Option<String>, String> {
+/// The host's whole reply, or why none arrived.
+fn read_reply(receipt: &mut IpcStream, reply: &mut Vec<u8>, timeout: Duration) -> ReceiptRead {
     let deadline = Instant::now() + timeout;
     let mut chunk = [0; 4096];
     loop {
@@ -94,47 +110,19 @@ fn read_reply(
         match receipt.set_read_timeout(Some(remaining)) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::InvalidInput => {}
-            Err(error) => return Err(format!("could not set the spawn reply deadline: {error}")),
+            Err(error) => return ReceiptRead::Failed(format!("could not set the spawn reply deadline: {error}")),
         }
         match receipt.read(&mut chunk) {
-            // The host went away without answering: the caller reconciles the
-            // queue file before reporting (Codex 3290 r3).
-            Ok(0) if reply.is_empty() => return Err(CLOSED_UNANSWERED.to_string()),
-            Ok(0) => return Ok(Some(String::from_utf8_lossy(reply).into_owned())),
+            Ok(0) if reply.is_empty() => return ReceiptRead::Closed,
+            Ok(0) => return ReceiptRead::Reply(String::from_utf8_lossy(reply).into_owned()),
             Ok(read) => reply.extend_from_slice(&chunk[..read]),
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 if Instant::now() >= deadline {
-                    return Ok(None);
+                    return ReceiptRead::TimedOut;
                 }
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
-            Err(error) => return Err(format!("could not read queued spawn response: {error}")),
-        }
-    }
-}
-
-fn reconcile_timeout(
-    queue_file: &Path,
-    receipt: &mut IpcStream,
-    mut reply: Vec<u8>,
-) -> Result<Option<String>, String> {
-    // Both host and client must win this unlink before claiming/cancelling.
-    // The host reads first, but cannot launch if this client removes the file.
-    match std::fs::remove_file(queue_file) {
-        Ok(()) => {
-            log::info!("queued spawn: cancelled unclaimed request {queue_file:?}");
-            Err(timeout_message())
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            log::info!("queued spawn: host claimed request before timeout {queue_file:?}");
-            read_reply(receipt, &mut reply, Duration::from_millis(50))
-        }
-        Err(error) => {
-            // Cancellation is not proven. Do not report a failed launch that
-            // callers might retry while the host can still consume this file.
-            log::warn!("queued spawn: cancellation unavailable for {queue_file:?}: {error}");
-            eprintln!("queued pane is still pending; cancellation failed: {error}. Do not retry; check host status.");
-            Ok(None)
+            Err(error) => return ReceiptRead::Failed(error.to_string()),
         }
     }
 }
@@ -169,8 +157,8 @@ mod tests {
         host.write_all(br#"{"pane_id":42}"#).unwrap();
         drop(host);
         assert_eq!(
-            reconcile_timeout(&queue, &mut receipt, Vec::new()).unwrap(),
-            Some(r#"{"pane_id":42}"#.into())
+            reconcile(&queue, &mut receipt, Vec::new(), "timed out".into()),
+            SpawnOutcome::Answered(r#"{"pane_id":42}"#.into())
         );
     }
 
@@ -181,7 +169,9 @@ mod tests {
         let queue = dir.path().join("request.json");
         std::fs::write(&queue, "{}").unwrap();
         let (mut receipt, _host) = UnixStream::pair().unwrap();
-        let error = wait(&queue, &mut receipt, Duration::ZERO).unwrap_err();
+        let SpawnOutcome::Cancelled(error) = wait(&queue, &mut receipt, Duration::ZERO) else {
+            panic!("expected a cancelled request");
+        };
         assert!(error.contains("host did not pick up the queued pane within 10s"));
         assert!(error.contains("host status"));
         assert!(!queue.exists());
@@ -201,9 +191,43 @@ mod tests {
         std::fs::write(&queue, "{}").unwrap();
         let (mut receipt, host) = UnixStream::pair().unwrap();
         drop(host);
-        let error = wait(&queue, &mut receipt, Duration::from_secs(1)).unwrap_err();
+        let SpawnOutcome::Cancelled(error) = wait(&queue, &mut receipt, Duration::from_secs(1)) else {
+            panic!("expected a cancelled request");
+        };
         assert!(error.contains("nothing was launched"), "{error}");
         assert!(!queue.exists(), "the unclaimed request survived the closed receipt");
+    }
+
+    /// Codex 3290 r4 S3: a host that took the request and closed the receipt
+    /// before answering may have launched it: pending, as alpha said, never
+    /// a failure an automated caller would retry.
+    #[test]
+    fn a_claimed_request_closed_unanswered_is_pending_not_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut receipt, host) = UnixStream::pair().unwrap();
+        drop(host);
+        assert_eq!(
+            wait(&dir.path().join("claimed.json"), &mut receipt, Duration::from_secs(1)),
+            SpawnOutcome::Pending
+        );
+    }
+
+    /// Codex 3290 r4 S3: when the request cannot be removed, its cancellation
+    /// is not proved; it is pending and the file is left for no retry.
+    #[test]
+    fn an_unremovable_request_is_pending_not_failed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let queue = locked.join("request.json");
+        std::fs::write(&queue, "{}").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let (mut receipt, host) = UnixStream::pair().unwrap();
+        drop(host);
+        let outcome = wait(&queue, &mut receipt, Duration::from_secs(1));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(outcome, SpawnOutcome::Pending);
     }
 
     #[test]
@@ -211,8 +235,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut receipt, _host) = UnixStream::pair().unwrap();
         assert_eq!(
-            wait(&dir.path().join("consumed.json"), &mut receipt, Duration::ZERO).unwrap(),
-            None
+            wait(&dir.path().join("consumed.json"), &mut receipt, Duration::ZERO),
+            SpawnOutcome::Pending
         );
     }
 
@@ -222,9 +246,11 @@ mod tests {
         let (mut receipt, mut host) = UnixStream::pair().unwrap();
         host.write_all(br#"{"error":"launch rejected"}"#).unwrap();
         drop(host);
-        let content = wait(&dir.path().join("consumed.json"), &mut receipt, Duration::from_secs(1))
-            .unwrap()
-            .unwrap();
+        let SpawnOutcome::Answered(content) =
+            wait(&dir.path().join("consumed.json"), &mut receipt, Duration::from_secs(1))
+        else {
+            panic!("expected the host's answer");
+        };
         assert_eq!(
             super::super::queued_spawn_pane_id(&content),
             Err("launch rejected".into())
