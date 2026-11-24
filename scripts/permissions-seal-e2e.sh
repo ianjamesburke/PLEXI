@@ -10,31 +10,24 @@
 # login keychain: on macOS it sets PLEXI_KEYCHAIN_PATH to a throwaway file.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="${PLEXI_BIN:-$ROOT/target/release/plexi}"
+BIN="$(python3 "$ROOT/scripts/require_test_hook_binary.py" --installed -- "$BIN")"
+
 # A fresh session bus so the seal key never lands in the user's keyring.
 # Phase A clears this bus for its host. Phase B restores it.
 if [[ "$(uname -s)" == "Linux" && -z "${SEAL_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
   exec dbus-run-session -- env SEAL_E2E_INNER=1 "$0" "$@"
 fi
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${PLEXI_BIN:-$ROOT/target/release/plexi}"
-if [[ ! -x "$BIN" ]]; then
-  echo "error: missing binary $BIN (run just build first)" >&2
-  exit 1
-fi
 export BIN
 # shellcheck disable=SC1091
 source "$ROOT/scripts/e2e/human.sh"
 
-# A channel-named binary (`plexi-pr-2718`, `plexi-alpha`) ignores PLEXI_CHANNEL.
-# A bare `plexi` adopts it. The profile dir has to match whichever one is running.
 bin_base="$(basename "$BIN")"
 bin_base="${bin_base%.exe}"
-if [[ "$bin_base" == plexi-* ]]; then
-  export PLEXI_CHANNEL="${bin_base#plexi-}"
-else
-  export PLEXI_CHANNEL="${PLEXI_CHANNEL:-seal-e2e}"
-fi
+bin_base="${bin_base%.EXE}"
+export PLEXI_CHANNEL="${bin_base#plexi-}"
 
 WORK="$(mktemp -d)"
 trap 'if [[ -n "${HOST_PID:-}" ]]; then kill -- "-$HOST_PID" 2>/dev/null || kill "$HOST_PID" 2>/dev/null || true; wait "$HOST_PID" 2>/dev/null || true; fi; if [[ -n "${MOCK_PID:-}" ]]; then kill "$MOCK_PID" 2>/dev/null || true; fi; if [[ -n "${XVFB_PID:-}" ]]; then kill "$XVFB_PID" 2>/dev/null || true; fi; "$BIN" host stop >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
@@ -137,11 +130,11 @@ assert_secret_get_refuses() {
 
 assert_direct_read_fails() {
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    if security find-generic-password -s plexi -a 'plexi:host:permission-mac' -w >"$WORK/keychain.txt" 2>"$WORK/keychain.err"; then
+    if security find-generic-password -s plexi -a 'plexi:host:permission-mac' -w "$PLEXI_KEYCHAIN_PATH" >"$WORK/keychain.txt" 2>"$WORK/keychain.err"; then
       echo "error: user keychain service returned the seal account" >&2
       exit 1
     fi
-    if security find-generic-password -s plexi-host-seal -a permission-mac -w >"$WORK/keychain-host.txt" 2>>"$WORK/keychain.err"; then
+    if security find-generic-password -s plexi-host-seal -a permission-mac -w "$PLEXI_KEYCHAIN_PATH" >"$WORK/keychain-host.txt" 2>>"$WORK/keychain.err"; then
       echo "error: security printed the host seal item" >&2
       exit 1
     fi

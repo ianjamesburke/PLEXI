@@ -8,9 +8,11 @@ Pass --restart to also validate saved-workspace restoration in a scratch host.
 No command prints a generated secret value or touches the login keychain.
 """
 import json, os, pathlib, subprocess, sys, tempfile, uuid
+from require_test_hook_binary import require_test_hook_binary
+
+binary = str(require_test_hook_binary(sys.argv[1], installed=True))
 if sys.platform != "darwin":
     raise SystemExit("This check uses the macOS throwaway-keychain backend.")
-binary = str(pathlib.Path(sys.argv[1]).absolute())
 # Help and usage errors name the invoked binary; runtime refusals say `plexi`.
 enable_hint = f'{pathlib.Path(binary).name} experiments enable folder_secrets'
 def keychain_snapshot():

@@ -10,8 +10,8 @@
 # The editor Accept button is a pointer click through the same driver. The
 # script does not resolve a permission or accept a change set from the CLI.
 #
-# Channel binary: PLEXI_BIN or the first argument, any `plexi-*` name
-# (plexi-alpha, plexi-pr-N). The profile follows that binary. A PR number
+# Channel binary: PLEXI_BIN or the first argument, a matching plexi-pr-N
+# test build. The profile follows that binary. A PR number
 # alone is not an address.
 #
 # Linux host startup reads the seal key from Secret Service before the notify
@@ -19,6 +19,10 @@
 # handshake makes `host start` sit until its 90s deadline. A private session
 # bus is the same arrangement the needs-you and folder-secret checks use.
 set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="${PLEXI_BIN:-${1:-$ROOT/target/release/plexi}}"
+BIN="$(python3 "$ROOT/scripts/require_test_hook_binary.py" --installed -- "$BIN")"
 
 if [[ "$(uname -s)" == "Linux" && -z "${CHANGE_SETS_E2E_INNER:-}" ]] && command -v dbus-run-session >/dev/null 2>&1; then
   # Drop the caller's bus before the daemon starts, including a socket at
@@ -31,13 +35,6 @@ if [[ "$(uname -s)" == "Linux" && -z "${CHANGE_SETS_E2E_INNER:-}" ]] && command 
 fi
 if [[ -z "${CHANGE_SETS_E2E_INNER:-}" ]]; then
   unset DBUS_SESSION_BUS_ADDRESS || true
-fi
-
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${PLEXI_BIN:-${1:-$ROOT/target/release/plexi}}"
-if [[ ! -x "$BIN" ]]; then
-  echo "FAIL missing binary $BIN" >&2
-  exit 1
 fi
 
 WORK="$(mktemp -d)"
@@ -54,17 +51,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# current_exe() follows symlinks. A symlink named plexi-alpha would report the
-# bare binary and open ~/.plexi. Copy to a real file that keeps the channel name.
 BIN_NAME="$(basename "$BIN")"
 BIN_NAME="${BIN_NAME%.exe}"
 BIN_NAME="${BIN_NAME%.EXE}"
-if [[ -L "$BIN" && "$BIN_NAME" == plexi-* ]]; then
-  mkdir -p "$WORK/bin"
-  cp -f "$(readlink -f "$BIN")" "$WORK/bin/$BIN_NAME"
-  chmod +x "$WORK/bin/$BIN_NAME"
-  BIN="$WORK/bin/$BIN_NAME"
-fi
 
 export HOME="$WORK/home"
 mkdir -p "$HOME"

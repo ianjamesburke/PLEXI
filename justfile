@@ -138,6 +138,10 @@ check-ui-layout:
 check-release-hook-names $binary:
     bash scripts/check-release-hook-names.sh "$binary"
 
+# Exercise keychain entry-point preflights with inert fixture binaries.
+check-keychain-binary-guard:
+    bash scripts/test-keychain-binary-guard.sh
+
 build:
     bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release
 

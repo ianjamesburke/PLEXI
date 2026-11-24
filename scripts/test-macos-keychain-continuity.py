@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove two separately packaged Alpha bundles retain one private Keychain seal."""
+"""Prove two signed builds of one PR channel retain one private Keychain seal."""
 import argparse
 import ctypes
 import hashlib
@@ -14,6 +14,7 @@ import tempfile
 import time
 
 from package import macos_signature
+from require_test_hook_binary import require_package_binary, require_receipt_binary
 
 
 def run(command, env, expected=0, timeout=120):
@@ -23,17 +24,11 @@ def run(command, env, expected=0, timeout=120):
     return result
 
 
-def executable(package):
-    manifest = json.loads((package / "package.json").read_text())
-    return package / manifest["executable"], manifest
-
-
-def install(package, root, env):
-    run([package / "plexi-installer", "--package", package, "--channel", "alpha",
+def install(package, channel, root, env):
+    run([package / "plexi-installer", "--package", package, "--channel", channel,
          "--install-dir", root / "install", "--bin-dir", root / "bin",
          "--applications-dir", root / "applications", "--install-only"], env)
-    receipt = json.loads((root / "install/alpha/installation.json").read_text())
-    return Path(receipt["active"]["path"]) / receipt["active"]["executable"]
+    return require_receipt_binary(root / "install", channel)
 
 
 def create_private_keychain(path, password):
@@ -111,12 +106,13 @@ def run_host(binary, env, until):
 
 
 def main(args):
+    package_a, manifest_a = require_package_binary(args.package_a.resolve())
+    package_b, manifest_b = require_package_binary(args.package_b.resolve())
     if sys.platform != "darwin":
         raise SystemExit("This check requires the macOS Keychain.")
-    package_a, manifest_a = executable(args.package_a.resolve())
-    package_b, manifest_b = executable(args.package_b.resolve())
-    if manifest_a["channel"] != "alpha" or manifest_b["channel"] != "alpha":
-        raise AssertionError("continuity acceptance is only defined for public Alpha packages")
+    channel = manifest_a["channel"]
+    if channel != manifest_b["channel"]:
+        raise AssertionError("A and B must belong to the same PR channel")
     if manifest_a.get("macos_signing") != manifest_b.get("macos_signing"):
         raise AssertionError("A and B do not carry one identical public signing identity")
     for package, manifest in ((args.package_a.resolve(), manifest_a), (args.package_b.resolve(), manifest_b)):
@@ -143,14 +139,14 @@ def main(args):
             PLEXI_KEYCHAIN_PASSWORD=password.decode(),
         )
         Path(env["HOME"]).mkdir()
-        installed_a = install(args.package_a.resolve(), root, env)
+        installed_a = install(args.package_a.resolve(), channel, root, env)
         original = run_host(installed_a, env, asked)
-        profile = Path(env["HOME"]) / ".plexi-alpha"
+        profile = Path(env["HOME"]) / f".plexi-{channel}"
         first_log = profile / "plexi.log"
         if not first_log.is_file() or "created host permission mac key" not in first_log.read_text(errors="replace"):
             raise AssertionError("package A did not create its host seal in the isolated private Keychain")
         before = first_log.stat().st_size
-        installed_b = install(args.package_b.resolve(), root, env)
+        installed_b = install(args.package_b.resolve(), channel, root, env)
         if installed_a == installed_b:
             raise AssertionError("installer did not activate a different generation")
         # B's pane is a new incarnation and may not read A's question. It asks
@@ -164,7 +160,7 @@ def main(args):
             raise AssertionError(f"package B did not retain the host seal: {second_log[-4000:]}")
         if "macOS host keychain" not in second_log:
             raise AssertionError("package B did not use the isolated private Keychain")
-        print("PASS: distinct Alpha builds retained the sealed Needs-you question without Keychain rotation")
+        print(f"PASS: distinct {channel} builds retained the sealed Needs-you question without Keychain rotation")
     after = [subprocess.check_output(["security", operation], text=True) for operation in ("default-keychain", "list-keychains")]
     if after != keychain_state:
         raise AssertionError("private-Keychain test changed the user's default or search list")
