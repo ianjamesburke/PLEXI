@@ -26271,10 +26271,47 @@ fn wait_for_text_editor(h: &mut HostHarness, doc: &std::path::Path) -> PaneId {
 /// by the time the read finishes.
 #[test]
 fn palette_file_open_reads_off_the_ui_pass_beside_the_activating_pane() {
+    palette_open_lands_beside_the_activating_pane("plan.md", b"# plan");
+}
+
+/// Stint 1392 review round 2: an image opens beside the pane focused at
+/// activation too, not beside whatever is focused when its read lands.
+#[test]
+fn palette_image_open_lands_beside_the_activating_pane() {
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::new(4, 3)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("encode png");
+    palette_open_lands_beside_the_activating_pane("plan.png", &png.into_inner());
+}
+
+/// Stint 1392 review round 2: reopening a file a text editor already holds
+/// only focuses that editor, so its body is never read.
+#[test]
+fn reopening_an_open_text_file_reads_no_body() {
+    let dir = tempfile::tempdir().expect("dir");
+    let doc = dir.path().join("big.md");
+    std::fs::write(&doc, "# big").expect("seed doc");
+    let prepare = |editor_open| {
+        crate::app::file_open::prepare_open(crate::app::file_open::OpenRequest {
+            target: doc.clone(),
+            associations: Default::default(),
+            cwd: dir.path().to_path_buf(),
+            editor_open,
+        })
+    };
+    assert!(prepare(false).text.is_some(), "a new editor needs the body");
+    assert!(
+        prepare(true).text.is_none(),
+        "an open editor is only focused"
+    );
+}
+
+fn palette_open_lands_beside_the_activating_pane(name: &str, contents: &[u8]) {
     let mut h = HostHarness::new();
     let root = h.workspace_root();
-    std::fs::write(root.join("plan.md"), "# plan").expect("seed doc");
-    let doc = root.join("plan.md").canonicalize().expect("canonical doc");
+    std::fs::write(root.join(name), contents).expect("seed file");
+    let doc = root.join(name).canonicalize().expect("canonical file");
     // Two real panes, split by the production placement path.
     for _ in 0..2 {
         h.app.open_builtin_view_pane(
@@ -26305,7 +26342,7 @@ fn palette_file_open_reads_off_the_ui_pass_beside_the_activating_pane() {
     while h.app.palette_selected_key().as_deref() != Some(want.as_str()) {
         assert!(
             std::time::Instant::now() < deadline,
-            "plan.md never selected"
+            "{name} never selected"
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
         h.run_frames(1);
@@ -26317,10 +26354,27 @@ fn palette_file_open_reads_off_the_ui_pass_beside_the_activating_pane() {
         crate::app::file_open::prepared_on::threads(&doc).is_empty(),
         "the activating pass read the file"
     );
-    assert!(h.app.find_open_text_editor_pane_any_window(&doc).is_none());
+    assert_eq!(
+        h.state().open_panes.len(),
+        2,
+        "nothing opened on the activating pass"
+    );
     // Focus moves before the read lands; the open keeps its anchor.
     h.focus_pane(left);
-    let editor = wait_for_text_editor(&mut h, &doc);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let opened = loop {
+        let new = h.app.windows[0]
+            .panes
+            .keys()
+            .copied()
+            .find(|pane| *pane != left && *pane != right);
+        if let Some(pane) = new {
+            break pane;
+        }
+        assert!(std::time::Instant::now() < deadline, "{name} never opened");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run_frames(1);
+    };
 
     let threads = crate::app::file_open::prepared_on::threads(&doc);
     assert_eq!(threads.len(), 1, "prepared once: {threads:?}");
@@ -26340,7 +26394,7 @@ fn palette_file_open_reads_off_the_ui_pass_beside_the_activating_pane() {
             _ => tile,
         }
     };
-    let editor_tile = in_split(editor);
+    let editor_tile = in_split(opened);
     let right_tile = in_split(right);
     let parent = tree.tiles.parent_of(editor_tile).expect("editor parent");
     let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) =

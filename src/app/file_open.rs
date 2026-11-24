@@ -315,6 +315,9 @@ pub(crate) struct OpenRequest {
     pub(crate) target: std::path::PathBuf,
     pub(crate) associations: OpenAssociations,
     pub(crate) cwd: std::path::PathBuf,
+    /// A text editor already holds the target: opening focuses it, so its
+    /// body is not read.
+    pub(crate) editor_open: bool,
 }
 
 /// Everything opening a target reads from disk, gathered by
@@ -326,7 +329,8 @@ pub(crate) struct PreparedOpen {
     /// The classification without the manifest handler, for when that
     /// handler fails to launch. `None` when no manifest handler applied.
     pub(crate) fallback: Option<Result<Classified, FileOpenError>>,
-    /// The text editor's read, when either classification picked it.
+    /// The text editor's read, when either classification picked it and no
+    /// editor already held the target.
     pub(crate) text: Option<crate::pane_ops::create::TextEditorRead>,
 }
 
@@ -337,6 +341,7 @@ pub(crate) fn prepare_open(request: OpenRequest) -> PreparedOpen {
         target,
         mut associations,
         cwd,
+        editor_open,
     } = request;
     let classified = classify_open_target(&target, &associations);
     // The cascade without the manifest handler, read now so a failed
@@ -354,7 +359,7 @@ pub(crate) fn prepare_open(request: OpenRequest) -> PreparedOpen {
             })
         )
     };
-    let text = (edits(&classified) || fallback.as_ref().is_some_and(edits))
+    let text = (!editor_open && (edits(&classified) || fallback.as_ref().is_some_and(edits)))
         .then(|| crate::pane_ops::create::TextEditorRead::read(&target, &cwd));
     #[cfg(test)]
     prepared_on::record(&target);

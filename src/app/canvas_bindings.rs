@@ -427,6 +427,7 @@ impl PlexiApp {
             target: target.to_path_buf(),
             associations: self.open_associations(context_id, target),
             cwd: self.launch_cwd(context_id, None),
+            editor_open: self.find_open_text_editor_pane_any_window(target).is_some(),
         })
     }
 
@@ -479,21 +480,16 @@ impl PlexiApp {
                     let Some(path) = arg("text-editor") else {
                         return;
                     };
-                    let Some(read) = text.take() else {
-                        log::warn!("open: '{path}' has no text-editor read; OS fallback");
-                        let _logged = shell_open(target, false);
-                        return;
-                    };
                     log::info!(
                         "open: '{path}' → builtin text-editor ({matched_by}, split right of pane {sender_pane_id})"
                     );
-                    self.open_text_file_in_split(sender_pane_id, &path, read, cwd);
+                    self.open_text_file_in_split(sender_pane_id, &path, text.take(), cwd);
                 }
                 OpenHandler::View(id) => {
                     let Some(path) = arg(&id) else {
                         return;
                     };
-                    if self.launch_view_with_path(&id, &path) {
+                    if self.at_anchor(sender_pane_id, |app| app.launch_view_with_path(&id, &path)) {
                         log::info!("open: '{path}' → plugin '{id}' ({matched_by})");
                     } else if chosen.matched_by == MatchedBy::Manifest {
                         if let Some(next) = fallback.take() {
@@ -529,7 +525,7 @@ impl PlexiApp {
         &mut self,
         anchor_pane_id: PaneId,
         path: &str,
-        read: crate::pane_ops::create::TextEditorRead,
+        read: Option<crate::pane_ops::create::TextEditorRead>,
         cwd: std::path::PathBuf,
     ) {
         if let Some(existing_pane_id) =
@@ -541,6 +537,29 @@ impl PlexiApp {
             self.pane_navigate(existing_pane_id);
             return;
         }
+        let read = read.unwrap_or_else(|| {
+            // The editor that held it when the open was prepared has closed
+            // since; read now rather than open an empty document.
+            log::info!("open: '{path}' lost its editor while opening; reading it now");
+            crate::pane_ops::create::TextEditorRead::read(std::path::Path::new(path), &cwd)
+        });
+        // Built directly, so no `on_launch` dedup can swap in an editor on
+        // another file: opening a specific file must always load THAT file.
+        let app = crate::pane_ops::create::text_editor_from_read(path.into(), read);
+        let placed = self.at_anchor(anchor_pane_id, |host| {
+            host.open_built_text_editor(host.active_window, Some("split_h".to_string()), app, cwd)
+        });
+        if let Err(e) = placed {
+            log::warn!("open: text-editor launch for '{path}' failed — {e}; OS fallback");
+            let _logged = shell_open(std::path::Path::new(path), false);
+        }
+    }
+
+    /// Run a launch from `anchor_pane_id`: its window becomes the launch
+    /// target and its tile the split point, whatever is focused now; the
+    /// active window is restored afterwards. A missing anchor launches in
+    /// the active window.
+    fn at_anchor<R>(&mut self, anchor_pane_id: PaneId, launch: impl FnOnce(&mut Self) -> R) -> R {
         let original_active_window = self.active_window;
         match self.find_pane_in_any_window(anchor_pane_id) {
             Some((win_idx, tile)) => {
@@ -548,23 +567,12 @@ impl PlexiApp {
                 self.set_window_focused_pane(win_idx, tile);
             }
             None => {
-                log::warn!(
-                    "open: text-editor anchor pane {anchor_pane_id} not found — using active window"
-                );
+                log::warn!("open: anchor pane {anchor_pane_id} not found — using active window")
             }
         }
-        // Built directly, so no `on_launch` dedup can swap in an editor on
-        // another file: opening a specific file must always load THAT file.
-        let app = crate::pane_ops::create::text_editor_from_read(path.into(), read);
-        if let Err(e) =
-            self.open_built_text_editor(self.active_window, Some("split_h".to_string()), app, cwd)
-        {
-            log::warn!("open: text-editor launch for '{path}' failed — {e}; OS fallback");
-            self.active_window = original_active_window;
-            let _logged = shell_open(std::path::Path::new(path), false);
-            return;
-        }
+        let launched = launch(self);
         self.active_window = original_active_window;
+        launched
     }
 
     /// Launch plugin `id` with `path` as its sole arg, using the plugin's natural
