@@ -44,13 +44,28 @@ pub use std::os::unix::net::{UnixListener as IpcListener, UnixStream as IpcStrea
 /// Check whether a retained reply stream still has a peer without consuming data.
 #[cfg(unix)]
 pub(crate) fn peer_connected(stream: &IpcStream) -> bool {
+    use std::io::ErrorKind;
     use std::os::fd::AsRawFd;
     let mut byte = 0u8;
-    // SAFETY: the buffer is valid for one byte and the fd is owned by stream.
-    let n = unsafe { libc::recv(stream.as_raw_fd(), &mut byte as *mut u8 as *mut _, 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) };
-    if n > 0 { return true; }
-    if n == 0 { return false; }
-    matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
+    loop {
+        // SAFETY: the buffer is valid for one byte and the fd is owned by stream.
+        let n = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                &mut byte as *mut u8 as *mut _,
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
+        };
+        if n >= 0 {
+            return n > 0;
+        }
+        match std::io::Error::last_os_error().kind() {
+            ErrorKind::Interrupted => continue,
+            ErrorKind::WouldBlock => return true,
+            _ => return false,
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -486,6 +501,28 @@ mod windows_impl {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+
+    /// A forked child holds inherited descriptors until exec, so the peer can
+    /// still look connected after the original client closes.
+    #[cfg(unix)]
+    #[test]
+    fn peer_stays_connected_until_the_last_client_descriptor_closes() {
+        use std::time::{Duration, Instant};
+        let (server, client) = IpcStream::pair().unwrap();
+        let duplicate = client.try_clone().unwrap();
+        drop(client);
+        assert!(peer_connected(&server));
+
+        drop(duplicate);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while peer_connected(&server) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the peer to disconnect"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 
     /// A client's line reaches the listener on whichever transport this
     /// platform uses — the one property every call site depends on.

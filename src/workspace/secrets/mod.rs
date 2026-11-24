@@ -56,14 +56,10 @@ pub use store::{DeleteOutcome, NonDestructiveStore, SecretStore};
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) use store::keychain_path_override;
 pub(crate) use store::parse_keychain_path;
+pub(crate) use store::SecretError;
 
-// Only test code outside this module names these. `SecretError` is named from
-// the macOS keychain-counting tests; every platform's tests name the in-memory
-// store. In-module callers reach both through their defining submodule.
 #[cfg(test)]
 pub use store::{take_test_store_calls, DeleteOnlyStore, InMemoryKeychain};
-#[cfg(all(test, target_os = "macos"))]
-pub use store::SecretError;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub use reconcile::reconcile_index_with_keychain;

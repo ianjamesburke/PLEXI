@@ -1475,6 +1475,14 @@ fn connect_unix_deadline(
             ));
         }
         let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw_fd) };
+        let fd_flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
+        if fd_flags < 0
+            || unsafe { libc::fcntl(raw_fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC) } < 0
+        {
+            return Err(SocketTransportError::Connect(
+                std::io::Error::last_os_error(),
+            ));
+        }
         let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };
         if flags < 0 || unsafe { libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
         {
@@ -1824,6 +1832,25 @@ mod transport_deadline_tests {
     /// these tests prove deadlines by event order and use this bound only to
     /// turn a hang into a failure.
     const HANG_GUARD: Duration = Duration::from_secs(30);
+
+    #[test]
+    fn connected_socket_is_closed_on_exec() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("notify.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let fd = connect_unix_deadline(&socket, Instant::now() + HANG_GUARD).unwrap();
+        let raw_fd = fd.as_raw_fd();
+
+        let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFD) };
+        assert!(flags >= 0, "F_GETFD: {}", std::io::Error::last_os_error());
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        let status = std::process::Command::new("/bin/sh")
+            .args(["-c", "test -e /dev/fd/$0"])
+            .arg(raw_fd.to_string())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(1), "child tested fd {raw_fd}: {status}");
+    }
 
     #[test]
     fn stalled_write_returns_with_phase_and_partial_byte_count() {
