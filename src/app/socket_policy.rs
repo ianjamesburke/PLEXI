@@ -17,7 +17,9 @@ pub(crate) enum VerbPolicy {
     /// it. Not a boundary between same-user processes until v1.1.
     Operator,
     /// Reaches secrets, grants, tools or another principal's state. The
-    /// handler admits it through the broker as the caller's own principal.
+    /// handler admits it through the broker as the caller's own principal;
+    /// an outside `pane send` is attributed to the external caller and
+    /// dispatched, like `pane new` (ruling 192).
     Protected,
     /// Widens authority. The handler files a Needs-you request (or finds
     /// the pending one) and returns its id; only a desktop click applies it.
@@ -27,9 +29,6 @@ pub(crate) enum VerbPolicy {
     /// Reports for the caller's own pane: the caller must be a pane, and
     /// the handler checks the target is that pane.
     OwnPane,
-    /// Acts from the caller's pane under its own grant (pane send): the
-    /// caller must be a pane.
-    PaneOnly,
     /// A plugin-plane request with no socket handler.
     NotOnSocket,
 }
@@ -43,7 +42,6 @@ impl VerbPolicy {
             Self::Widening => "widening",
             Self::Decision => "decision",
             Self::OwnPane => "own_pane",
-            Self::PaneOnly => "pane_only",
             Self::NotOnSocket => "not_on_socket",
         }
     }
@@ -341,7 +339,8 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
         | HostRequest::SubmitAssistantTurn { .. }
         | HostRequest::ListPermissions { .. }
         | HostRequest::ListPermissionRequests { .. }
-        | HostRequest::ShowPermissionRequest { .. } => Protected,
+        | HostRequest::ShowPermissionRequest { .. }
+        | HostRequest::SendToPane { .. } => Protected,
 
         HostRequest::AssistantHostTool { name, .. } => ASSISTANT_TOOLS
             .iter()
@@ -386,8 +385,6 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
         HostRequest::SetAgentState { .. }
         | HostRequest::AgentDone { .. }
         | HostRequest::AgentAsk { .. } => OwnPane,
-
-        HostRequest::SendToPane { .. } => PaneOnly,
 
         HostRequest::CapabilityRequest { .. }
         | HostRequest::SecretGet { .. }
@@ -469,16 +466,13 @@ pub(crate) fn admit(caller: &SocketCaller, policy: VerbPolicy) -> Result<(), Ref
             VerbPolicy::Operator | VerbPolicy::Protected | VerbPolicy::Widening,
             SocketCaller::Pane(_) | SocketCaller::External(_),
         ) => Ok(()),
-        (VerbPolicy::OwnPane | VerbPolicy::PaneOnly, SocketCaller::Pane(_)) => Ok(()),
-        (VerbPolicy::OwnPane | VerbPolicy::PaneOnly, SocketCaller::External(_)) => Err(Refusal {
+        (VerbPolicy::OwnPane, SocketCaller::Pane(_)) => Ok(()),
+        (VerbPolicy::OwnPane, SocketCaller::External(_)) => Err(Refusal {
             code: "permission_denied",
             message: "only a process running in a Plexi pane can make this request".to_string(),
         }),
         (
-            VerbPolicy::Protected
-            | VerbPolicy::Widening
-            | VerbPolicy::OwnPane
-            | VerbPolicy::PaneOnly,
+            VerbPolicy::Protected | VerbPolicy::Widening | VerbPolicy::OwnPane,
             SocketCaller::Unidentified(reason),
         ) => Err(unidentified(reason.to_string())),
     }
