@@ -56,6 +56,26 @@ fn check_test_hook_binary(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The channel compiled into `binary`, read from its own `--build-info` with
+/// every inherited `PLEXI_*` variable removed. Hooks are enabled only when
+/// this equals the executable's basename, so a copy of another PR's build
+/// named for this one is refused before any keychain step.
+fn check_compiled_channel(binary: &Path, channel: &str) -> Result<(), String> {
+    let output = Command::new(binary)
+        .arg("--build-info")
+        .env_clear()
+        .output()
+        .map_err(|error| format!("could not run --build-info: {error}"))?;
+    let info: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("could not read --build-info: {error}"))?;
+    match info["test_channel"].as_str() {
+        Some(compiled) if compiled == channel => Ok(()),
+        other => Err(format!(
+            "compiled test channel {other:?} does not match {channel}"
+        )),
+    }
+}
+
 fn verified_cargo_channel() -> &'static str {
     // The integration cases run in parallel against the same Cargo artifact.
     static CHECK: std::sync::OnceLock<Result<&str, String>> = std::sync::OnceLock::new();
@@ -67,6 +87,27 @@ fn verified_cargo_channel() -> &'static str {
     })
     .as_ref()
     .unwrap_or_else(|reason| panic!("Refused {CARGO_BINARY}: {reason}; {BUILD_HINT}."))
+}
+
+#[test]
+fn mismatched_channel_copy_is_refused_before_any_keychain_step() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let binary = temp.path().join("plexi-pr-1");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\necho '{\"test_channel\":\"pr-2\"}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let error = check_compiled_channel(&binary, "pr-1").unwrap_err();
+    assert!(error.contains("pr-2") && error.contains("pr-1"), "{error}");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\necho '{\"test_channel\":\"pr-1\"}'\n",
+    )
+    .unwrap();
+    assert_eq!(check_compiled_channel(&binary, "pr-1"), Ok(()));
 }
 
 #[test]
@@ -114,6 +155,10 @@ impl Sandbox {
         // under the matching compiled PR basename, even with --profile.
         let binary = root.path().join(format!("plexi-{channel}"));
         std::fs::copy(CARGO_BINARY, &binary).unwrap();
+        // Before any keychain step: judge the copy, not the test runner.
+        if let Err(reason) = check_compiled_channel(&binary, channel) {
+            panic!("Refused {}: {reason}; {BUILD_HINT}.", binary.display());
+        }
         interaction_off();
         let folder = root.path().join("folder");
         std::fs::create_dir_all(&folder).unwrap();

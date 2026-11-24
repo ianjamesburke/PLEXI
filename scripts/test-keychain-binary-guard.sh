@@ -95,6 +95,17 @@ cp "$valid" "$work/A/plexi-pr-43"
 refused "$work/A/plexi-pr-43" 1 'does not match' "${helper[@]}" --installed "$work/A/plexi-pr-43"
 ln -s "$valid" "$work/B/plexi-pr-43"
 refused "$work/B/plexi-pr-43" 1 'same basename' "${helper[@]}" --installed "$work/B/plexi-pr-43"
+# An installed `plexi-pr-<N>` on PATH is a generated launcher; the executable
+# its receipt names is what gets judged.
+/bin/mkdir -p "$work/L" "$work/R"
+printf '#!/bin/sh\nexec %s launch --receipt %s -- "$@"\n' "'/x/plexi-installer'" "'$work/R'" >"$work/L/plexi-pr-42"
+chmod +x "$work/L/plexi-pr-42"
+printf '{"active":{"path":"%s","executable":"plexi-pr-42"}}' "$work/A" >"$work/R/installation.json"
+[[ "$("${helper[@]}" --installed "$work/L/plexi-pr-42")" == "$work/A/plexi-pr-42" ]]
+/bin/mkdir -p "$work/C"
+cp "$clean" "$work/C/plexi-pr-42"
+printf '{"active":{"path":"%s","executable":"plexi-pr-42"}}' "$work/C" >"$work/R/installation.json"
+refused "$work/C/plexi-pr-42" 1 missing "${helper[@]}" --installed "$work/L/plexi-pr-42"
 if bash "$scripts/check-release-hook-names.sh" "$valid" >"$work/out" 2>&1; then
   echo 'FAIL: release scan accepted test hooks' >&2
   exit 1

@@ -35,8 +35,34 @@ def present_names(binary):
             return {name for name in HOOK_NAMES if data.find(name) >= 0}
 
 
+def launcher_receipt(binary):
+    """The receipt directory a generated shell launcher execs, else None."""
+    try:
+        with binary.open("rb") as source:
+            head = source.read(4096)
+    except OSError:
+        return None
+    if not head.startswith(b"#!") or len(head) >= 4096:
+        return None
+    match = re.search(rb"launch --receipt '([^']+)'", head)
+    return Path(match[1].decode()) if match else None
+
+
+def receipt_executable(receipt):
+    manifest = receipt / "installation.json"
+    try:
+        active = json.loads(manifest.read_text())["active"]
+        return Path(active["path"]) / active["executable"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        refuse(manifest, f"could not locate installed executable ({error})", 2)
+
+
 def require_test_hook_binary(binary, *, installed=False):
     binary = Path(binary)
+    if installed and (receipt := launcher_receipt(binary)):
+        # An installed `plexi-pr-<N>` on PATH is a launcher script. Judge the
+        # executable it launches, not the script.
+        binary = receipt_executable(receipt)
     try:
         present = present_names(binary)
     except OSError as error:
