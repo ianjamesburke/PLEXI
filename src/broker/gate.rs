@@ -1537,8 +1537,11 @@ impl PermissionMonitor {
                 });
                 let disclosure = disclosure.or(outside_secret.as_deref());
                 // A decision takes this lock first, so nobody can decide the
-                // request before its `ask` row is in the audit chain.
-                let _publishing = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
+                // request before its `ask` row is in the audit chain. Secret
+                // tools already hold it from `_filing`.
+                let _publishing = _filing.is_none().then(|| {
+                    self.decision_lock.lock().unwrap_or_else(|e| e.into_inner())
+                });
                 let id = self.persist_pending(&binding, req.tool, req.input_json, disclosure);
                 trace("ask", mechanism, &format!("pending={id}"));
                 let _ = self.audit_with(
