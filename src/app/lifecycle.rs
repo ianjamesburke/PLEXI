@@ -3014,16 +3014,32 @@ impl PlexiApp {
                         }
                     })
                 });
-                // Every socket caller is a pane (the entry refused the rest)
-                // and is admitted by the broker under its own ceiling; a
-                // baseline pane enters with no posture, so `pane.send` falls
-                // back to Ask. A pane the person opened is no exception
-                // (stint 1285). Host input (the palette) is not brokered.
+                // A pane caller is admitted by the broker under its own
+                // ceiling; a baseline pane enters with no posture, so
+                // `pane.send` falls back to Ask. A pane the person opened is
+                // no exception (stint 1285). An outside process drives the
+                // pane as itself, attributed and not brokered, like
+                // `pane new` (ruling 192). Host input (the palette) is not
+                // brokered. The entry refused every unidentified caller.
                 let peer = origin
                     .socket_caller()
                     .and_then(crate::broker::caller::SocketCaller::pane)
                     .map(|pane| pane.terminal_pane);
-                if matches!(origin, crate::broker::caller::RequestOrigin::Socket(_)) && peer.is_none() {
+                let outside = matches!(
+                    origin,
+                    crate::broker::caller::RequestOrigin::Socket(
+                        crate::broker::caller::SocketCaller::External(_)
+                    )
+                );
+                if outside {
+                    log::info!(
+                        "pane_ipc: send_to_pane: outside caller (principal=external) target pane_id={pane_id}"
+                    );
+                }
+                if matches!(origin, crate::broker::caller::RequestOrigin::Socket(_))
+                    && peer.is_none()
+                    && !outside
+                {
                     if let Some(rf) = response_file {
                         write_json_response(
                             rf,

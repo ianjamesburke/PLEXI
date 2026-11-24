@@ -227,16 +227,34 @@ fn a_team_run_claiming_a_caller_pane_is_refused_by_name() {
     assert!(h.app.team_runs.is_empty(), "nothing started");
 }
 
-/// Inventory 8: a pane the person opened is brokered like any pane, and an
-/// outside process cannot type into a pane at all.
+/// Inventory 8: an outside process types into a pane as itself, like
+/// `pane new` (ruling 192); a pane the person opened is brokered like any
+/// pane; a caller with no identity sends nothing.
 #[test]
-fn pane_send_needs_a_pane_caller_and_the_broker() {
+fn pane_send_from_outside_reaches_the_pane_and_from_a_pane_needs_the_broker() {
     let mut h = HostHarness::new();
     let caller = h.add_focused_terminal();
     let target = h.add_focused_terminal();
-    let send_to = serde_json::json!({"type": "send_to_pane", "pane_id": target, "text": "echo hi"});
+    h.terminal_backend(target).enable_input_tap();
+    let send_to = serde_json::json!({"type": "send_to_pane", "pane_id": target, "text": "echo hi",
+        "submit": false, "paste": false, "operation_id": "pane-send-outside",
+        "generated_operation_id": true});
+    let nobody_reply = send(&mut h, send_to.clone(), None);
+    assert_eq!(nobody_reply["error_code"], "permission_denied", "{nobody_reply}");
+    assert!(
+        !h.terminal_backend(target).take_input_tap().ends_with(b"echo hi"),
+        "an unidentified caller typed into the target"
+    );
     let outside_reply = send(&mut h, send_to.clone(), Some(outside()));
-    assert_eq!(outside_reply["error_code"], "permission_denied", "{outside_reply}");
+    assert_eq!(outside_reply["ok"], true, "{outside_reply}");
+    assert!(
+        h.terminal_backend(target).take_input_tap().ends_with(b"echo hi"),
+        "an outside pane send must reach the target"
+    );
+    assert!(
+        h.app.pending_send_approvals.is_empty(),
+        "an outside pane send is attributed, not brokered"
+    );
     // From the person's own pane: the broker asks; nothing is typed until a
     // desktop click approves.
     let mut request: crate::protocol::HostRequest = serde_json::from_value(send_to).unwrap();
@@ -658,7 +676,7 @@ const SOCKET_OPERATIONS: &[(Op, VerbPolicy)] = {
         (Request("set_agent_state"), OwnPane),
         (Request("agent_done"), OwnPane),
         (Request("agent_ask"), OwnPane),
-        (Request("send_to_pane"), PaneOnly),
+        (Request("send_to_pane"), Protected),
         (Request("capability_request"), NotOnSocket),
         (Request("secret_get"), NotOnSocket),
         (Request("file_read"), NotOnSocket),
@@ -747,8 +765,8 @@ fn expected_admission(policy: VerbPolicy, caller: Caller) -> Option<&'static str
         (Protected | Widening, PaneSelf | PaneOther | External) => None,
         (Protected | Widening, Unidentified) => Some("permission_denied"),
         (Decision, _) => Some("approval_required"),
-        (OwnPane | PaneOnly, PaneSelf | PaneOther) => None,
-        (OwnPane | PaneOnly, External | Unidentified) => Some("permission_denied"),
+        (OwnPane, PaneSelf | PaneOther) => None,
+        (OwnPane, External | Unidentified) => Some("permission_denied"),
         (NotOnSocket, _) => Some("not_on_socket"),
     }
 }
