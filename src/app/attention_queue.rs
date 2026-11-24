@@ -764,7 +764,9 @@ impl PlexiApp {
                     )
                 },
                 command_text: cmd_text,
-                options: if is_secret {
+                options: if is_secret || pending.owner.pane().is_some() {
+                    // A pane lifetime ends with the pane or a host restart, so
+                    // no standing grant is offered to it (stint 1743).
                     default_ask_options()
                         .into_iter()
                         .filter(|o| o.key != "allow_always")
@@ -3222,8 +3224,9 @@ mod tests {
             let store = InMemoryKeychain::new();
             store.set("plexi:ws:CANARY", PROTECTED_VALUE).unwrap();
             let actor = SecretActor {
-                kind: crate::broker::ActorType::Pane,
-                id: h.app.pane_principal(pane_id).unwrap().actor_id().to_owned(),
+                // A named agent: a pane is offered no standing choices.
+                kind: crate::broker::ActorType::Agent,
+                id: "agent:decision-fixture".to_owned(),
             };
             let scope = SecretScope::Workspace {
                 id: "ws".into(),

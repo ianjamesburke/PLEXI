@@ -272,6 +272,10 @@ fn parse_harness_cli_name(field: &str, raw: &str) -> Result<String, String> {
 
 fn check_named_agent_id(id: &str, file: &std::path::Path) -> Result<(), String> {
     if id.starts_with("pane:") {
+        log::warn!(
+            "agent: {} refused: id '{id}' uses the reserved pane: prefix",
+            file.display()
+        );
         return Err(format!(
             "{}: agent id '{id}' uses the reserved pane: prefix. Please rename the agent.",
             file.display()

@@ -2003,6 +2003,25 @@ impl PermissionMonitor {
             );
             return Err("an outside process can be decided once or for this session".to_string());
         }
+        // A pane lifetime ends with the pane or a host restart, so a standing
+        // grant could never match again. Hold it for the session, in memory.
+        let choice = match choice {
+            ApprovalChoice::Always | ApprovalChoice::AllowTool
+                if pending.binding.actor.kind() == ActorType::Pane =>
+            {
+                log::info!(
+                    "permission_monitor: {choice:?} on {pending_id} held for the session: a pane lifetime is not remembered"
+                );
+                ApprovalChoice::Session
+            }
+            ApprovalChoice::DenyAlways if pending.binding.actor.kind() == ActorType::Pane => {
+                log::info!(
+                    "permission_monitor: DenyAlways on {pending_id} held as a denial for this request: a pane lifetime is not remembered"
+                );
+                ApprovalChoice::Deny
+            }
+            other => other,
+        };
         // Plugin code is allowed for one exact copy or folder, or not at all
         // (stint 1398); a once or session load has no meaning for a scan.
         if pending.binding.target_type == TargetType::Package
@@ -7861,6 +7880,12 @@ mod tests {
         monitor
             .approve_pending(&pending_request_id, ApprovalChoice::Always)
             .unwrap();
+        assert!(
+            monitor.store().records().iter().all(|record| record.duration
+                == GrantDuration::Once
+                || record.duration == GrantDuration::Session),
+            "an Always for a pane lifetime is held for the session and never persisted"
+        );
         assert!(matches!(
             admit_of(&monitor, &base, args),
             Admission::Proceed { .. }
