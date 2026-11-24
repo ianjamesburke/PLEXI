@@ -1445,6 +1445,7 @@ fn main() -> eframe::Result {
                             display_timeout_secs: timeout,
                             wait_timeout_secs: wait_timeout,
                             scope: parsed_scope,
+                            json,
                         }));
                     }
                     Commands::Pane { cmd } => match cmd {

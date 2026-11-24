@@ -27,6 +27,37 @@ pub struct NotifyCliArgs<'a> {
     pub display_timeout_secs: u64,
     pub wait_timeout_secs: u64,
     pub scope: Option<crate::protocol::NotifyScope>,
+    /// `--json`: a refusal's body is the command's stdout.
+    pub json: bool,
+}
+
+/// What a waiting `plexi notify` writes for the host's reply.
+#[derive(Debug, PartialEq, Eq)]
+struct ChoiceOutput {
+    stdout: Option<String>,
+    stderr: Option<String>,
+    code: i32,
+}
+
+/// The chosen key on stdout, or a refusal: its reason on stderr, nonzero, and
+/// nothing on stdout unless the caller asked for `--json`, so
+/// `key=$(plexi notify ...)` never captures a refusal as a key.
+fn choice_output(reply: &str, json: bool) -> ChoiceOutput {
+    match super::reply::HostReply::decode(reply) {
+        super::reply::HostReply::Payload(key) => ChoiceOutput {
+            stdout: Some(key.trim().to_string()),
+            stderr: None,
+            code: 0,
+        },
+        super::reply::HostReply::Refused { reason, code, body } => {
+            log::info!("notify:cli: host refused code={code:?}");
+            ChoiceOutput {
+                stdout: json.then_some(body),
+                stderr: Some(format!("error: {reason}")),
+                code: 1,
+            }
+        }
+    }
 }
 
 pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
@@ -38,6 +69,7 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         display_timeout_secs,
         wait_timeout_secs,
         scope,
+        json,
     } = args;
     // The host attaches the notification to the caller's own context from
     // the kernel's account of this process; nothing here names a pane
@@ -185,14 +217,17 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     let timeout =
         (wait_timeout_secs > 0).then(|| std::time::Duration::from_secs(wait_timeout_secs));
     match crate::rpc::poll_string(&response_file, timeout) {
-        Ok(reply) => match super::reply::HostReply::decode(&reply).payload_or_report() {
-            Ok(key) => {
-                log::info!("notify:cli: response received chars={}", key.trim().chars().count());
-                print!("{}", key.trim());
-                0
+        Ok(reply) => {
+            let output = choice_output(&reply, json);
+            log::info!("notify:cli: response received code={}", output.code);
+            if let Some(line) = &output.stderr {
+                eprintln!("{line}");
             }
-            Err(code) => code,
-        },
+            if let Some(out) = &output.stdout {
+                print!("{out}");
+            }
+            output.code
+        }
         Err(crate::rpc::PollError::TimedOut) => {
             log::info!("notify:cli: choice wait timed out after {wait_timeout_secs}s");
             2
@@ -483,6 +518,17 @@ mod notify_tests {
         });
         handle.join().unwrap();
         assert_eq!(code, 1, "a refusal exits nonzero");
+        // What that waiter writes for this reply: nothing on stdout, so a
+        // captured key is empty; the body only for `--json`.
+        let refusal = r#"{"ok":false,"error_code":"scope_unresolvable","error":"no context"}"#;
+        let plain = super::choice_output(refusal, false);
+        assert_eq!(plain.stdout, None, "a refusal reached stdout");
+        assert_eq!(plain.stderr.as_deref(), Some("error: no context"));
+        assert_eq!(plain.code, 1);
+        let json = super::choice_output(refusal, true);
+        assert_eq!(json.stdout.as_deref(), Some(refusal));
+        assert_eq!(json.code, 1);
+        assert_eq!(super::choice_output("talk\n", false).stdout.as_deref(), Some("talk"));
     }
 
     /// Codex 3290 r4 S1: a garbled pane variable is refused before anything
