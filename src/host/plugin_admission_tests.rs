@@ -306,46 +306,6 @@ fn strip_bytecode(dir: &Path) {
     }
 }
 
-/// A fresh alpha profile holds every maintained plugin, copied without
-/// bytecode. None of them may ask on first open, even when the binary was
-/// built from a checkout whose plugin folders hold `__pycache__`.
-#[test]
-fn a_fresh_alpha_profile_opens_every_maintained_plugin_without_asking() {
-    let rig = Rig::new();
-    let repo_plugins = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
-    let mut ids = Vec::new();
-    for entry in std::fs::read_dir(&repo_plugins).unwrap().flatten() {
-        if entry.path().join("manifest.toml").is_file() {
-            let id = entry.file_name().to_string_lossy().into_owned();
-            strip_bytecode(&extract_bundled(&id, &rig.plugins()));
-            ids.push(id);
-        }
-    }
-    assert!(!ids.is_empty());
-    let registry = rig.load();
-    for id in &ids {
-        assert!(
-            registry.get(id).is_some(),
-            "{id} asks on a fresh profile: {:?}",
-            registry.skipped_reason(id)
-        );
-    }
-    assert!(rig.monitor().list_pending().is_empty());
-}
-
-/// Bytecode the binary does not embed is not bundled: a planted `.pyc` in a
-/// bundled plugin's folder makes it an ordinary copy that must be allowed.
-#[test]
-fn a_planted_pyc_in_a_bundled_plugin_asks() {
-    let rig = Rig::new();
-    let todo = extract_bundled("todo", &rig.plugins());
-    let cache = todo.join("__pycache__");
-    std::fs::create_dir_all(&cache).unwrap();
-    std::fs::write(cache.join("planted.cpython-312.pyc"), b"not bundled").unwrap();
-    let refusal = rig.refusal(&rig.load(), "todo");
-    assert!(matches!(refusal, Refusal::NotAllowed { .. }), "{refusal:?}");
-}
-
 /// Stint 1497: an unsigned update rotates the seal key and resets grants.
 /// Every plugin allow and folder trust goes with them, and the plugins are
 /// refused and asked again; nothing loads silently.
@@ -478,53 +438,6 @@ fn an_explicit_path_launch_of_a_bundled_id_needs_only_folder_trust() {
         admission.decide("todo", &checkout, Launch::Discovery),
         Err(Refusal::ShadowsBundled { .. })
     ));
-}
-
-/// (h) The packager copies each maintained plugin from the checkout without
-/// bytecode (`scripts/package.py` ignore patterns). That copy must count as
-/// bundled whether or not the checkout held `__pycache__` when the binary was
-/// built.
-#[test]
-fn a_profile_seeded_from_the_checkout_like_the_packager_asks_nothing() {
-    fn copy_like_packager(src: &Path, dst: &Path) {
-        std::fs::create_dir_all(dst).unwrap();
-        for entry in std::fs::read_dir(src).unwrap().flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str == "__pycache__"
-                || name_str == ".venv"
-                || name_str == ".DS_Store"
-                || name_str.ends_with(".pyc")
-            {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                copy_like_packager(&path, &dst.join(&name));
-            } else {
-                std::fs::copy(&path, dst.join(&name)).unwrap();
-            }
-        }
-    }
-    let rig = Rig::new();
-    let repo_plugins = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
-    let mut ids = Vec::new();
-    for entry in std::fs::read_dir(&repo_plugins).unwrap().flatten() {
-        if entry.path().join("manifest.toml").is_file() {
-            let id = entry.file_name().to_string_lossy().into_owned();
-            copy_like_packager(&entry.path(), &rig.plugins().join(&id));
-            ids.push(id);
-        }
-    }
-    let registry = rig.load();
-    for id in &ids {
-        assert!(
-            registry.get(id).is_some(),
-            "{id} asks on a packaged profile: {:?}",
-            registry.skipped_reason(id)
-        );
-    }
-    assert!(rig.monitor().list_pending().is_empty());
 }
 
 /// The plugin tree a Python pane runs, canonical.
@@ -701,4 +614,145 @@ fn python_restore_refuses_an_entry_outside_the_plugin_folder() {
             "{name}: {error}"
         );
     }
+}
+
+/// (h) Finder metadata and a venv are not plugin files on either side of the
+/// bundled comparison: a stray `.DS_Store` (root or nested) in an installed
+/// bundled plugin does not make it ask.
+#[test]
+fn stray_finder_metadata_does_not_unbundle_a_plugin() {
+    let rig = Rig::new();
+    let todo = extract_bundled("todo", &rig.plugins());
+    std::fs::write(todo.join(".DS_Store"), b"finder").unwrap();
+    let nested = todo.join("tests");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join(".DS_Store"), b"finder").unwrap();
+    std::fs::create_dir_all(nested.join(".venv/bin")).unwrap();
+    assert!(
+        rig.load().get("todo").is_some(),
+        "{:?}",
+        rig.load().skipped_reason("todo")
+    );
+    assert!(rig.monitor().list_pending().is_empty());
+}
+
+/// (h) The comparison skips exactly what `scripts/package.py` leaves out, so a
+/// packaged copy and the embedded copy are compared on the same files.
+#[test]
+fn the_bundled_comparison_uses_the_packager_file_selection() {
+    let script =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/package.py"))
+            .unwrap();
+    let line = script
+        .lines()
+        .find(|line| line.contains("shutil.ignore_patterns("))
+        .expect("package.py ignore patterns");
+    let args = &line[line.find("ignore_patterns(").unwrap() + "ignore_patterns(".len()..];
+    let args = &args[..args.rfind(')').unwrap()];
+    let packager: Vec<&str> = args
+        .split(',')
+        .map(|item| item.trim().trim_matches('"'))
+        .collect();
+    assert_eq!(packager, crate::cli::install_host::PACKAGER_EXCLUDES);
+}
+
+/// Bytecode is code, so it is not treated like Finder metadata: a planted
+/// `.pyc` the binary does not embed makes a bundled plugin an ordinary copy.
+/// The Permissions bridge depends on this (`permission_ui_trust`).
+#[test]
+fn a_planted_pyc_in_a_bundled_plugin_asks() {
+    let rig = Rig::new();
+    let todo = extract_bundled("todo", &rig.plugins());
+    let cache = todo.join("__pycache__");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("planted.cpython-312.pyc"), b"not bundled").unwrap();
+    let refusal = rig.refusal(&rig.load(), "todo");
+    assert!(matches!(refusal, Refusal::NotAllowed { .. }), "{refusal:?}");
+}
+
+/// Copy `src` to `dst` as `scripts/package.py` does (its ignore patterns).
+fn copy_like_packager(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap().flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str == "__pycache__"
+            || name_str == ".venv"
+            || name_str == ".DS_Store"
+            || name_str.ends_with(".pyc")
+        {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            copy_like_packager(&path, &dst.join(&name));
+        } else {
+            std::fs::copy(&path, dst.join(&name)).unwrap();
+        }
+    }
+}
+
+/// Seed a harness profile with every maintained plugin using `seed`, then open
+/// each one by id as Cmd+P does. Every open must start that plugin's own pane
+/// with no admission ask (a plugin whose config is missing opens its
+/// launch-failed pane, which is past admission).
+fn open_every_maintained_plugin(seed: fn(&str, &Path)) {
+    let mut h = crate::testing::HostHarness::new();
+    let plugins = h.profile_dir().join("plugins");
+    let repo_plugins = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
+    let mut ids = Vec::new();
+    for entry in std::fs::read_dir(&repo_plugins).unwrap().flatten() {
+        if entry.path().join("manifest.toml").is_file() {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            seed(&id, &plugins);
+            ids.push(id);
+        }
+    }
+    assert!(ids.len() >= 10, "maintained plugins: {ids:?}");
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
+    let workspace = h.workspace_root();
+    for id in &ids {
+        let before = h.state().open_panes;
+        h.app
+            .launch_view_by_id_with_layout_forced(id, None, &[], Some(workspace.clone()))
+            .unwrap_or_else(|error| panic!("{id} did not open on a fresh profile: {error}"));
+        // An overlay placement replaces the focused pane, so look for the
+        // plugin's own pane; a launch-failed pane (missing config) is new.
+        assert!(
+            h.app.locate_view_instance(id, None).is_some()
+                || h.state()
+                    .open_panes
+                    .iter()
+                    .any(|pane| !before.contains(pane)),
+            "{id} opened no pane"
+        );
+    }
+    let asks: Vec<_> = PermissionMonitor::for_profile(h.profile_dir())
+        .unwrap()
+        .list_pending()
+        .into_iter()
+        .filter(|pending| pending.tool == LOAD_INSTALLED_TOOL || pending.tool == TRUST_FOLDER_TOOL)
+        .collect();
+    assert!(asks.is_empty(), "a fresh profile asks: {asks:?}");
+}
+
+/// (h) A profile seeded from the checkout the way the packager does opens
+/// every maintained plugin without asking, whatever `__pycache__` the build
+/// checkout held.
+#[test]
+fn a_packaged_profile_opens_every_maintained_plugin_without_asking() {
+    open_every_maintained_plugin(|id, plugins| {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins")
+            .join(id);
+        copy_like_packager(&src, &plugins.join(id));
+    });
+}
+
+/// (h) A profile seeded from the binary's own embedded copies with bytecode
+/// stripped (a binary built from a checkout holding `__pycache__`) opens every
+/// maintained plugin without asking.
+#[test]
+fn an_embedded_seed_without_bytecode_opens_every_maintained_plugin_without_asking() {
+    open_every_maintained_plugin(|id, plugins| strip_bytecode(&extract_bundled(id, plugins)));
 }

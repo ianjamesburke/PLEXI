@@ -1058,6 +1058,37 @@ fn is_installer_written_root_entry(name: &str) -> bool {
     name == ".venv" || crate::app::package::HOST_METADATA_FILES.contains(&name)
 }
 
+/// What `scripts/package.py` leaves out of a packaged plugin, in its
+/// `shutil.ignore_patterns` order. Both sides of the bundled comparison skip
+/// exactly these, at any depth (stint 1398).
+pub(crate) const PACKAGER_EXCLUDES: [&str; 4] = ["__pycache__", "*.pyc", ".venv", ".DS_Store"];
+
+/// True when the packager keeps an entry named `name` (see [`PACKAGER_EXCLUDES`]).
+fn packaged(name: &str) -> bool {
+    PACKAGER_EXCLUDES
+        .iter()
+        .all(|pattern| match pattern.strip_prefix('*') {
+            Some(suffix) => !name.ends_with(suffix),
+            None => name != *pattern,
+        })
+}
+
+/// Python bytecode: a `.pyc` file or anything under `__pycache__`. The
+/// packager drops it, but unlike Finder metadata or a venv it is code the
+/// guest's importer runs, so the comparison treats it apart.
+fn is_bytecode(rel: &Path) -> bool {
+    rel.extension().is_some_and(|ext| ext == "pyc")
+        || rel
+            .components()
+            .any(|part| part.as_os_str() == "__pycache__")
+}
+
+/// An excluded entry that is not code (Finder metadata, a venv): skipped on
+/// both sides of the comparison.
+fn non_code_exclude(name: &str) -> bool {
+    !packaged(name) && !is_bytecode(Path::new(name))
+}
+
 /// True when this binary embeds a plugin named `id` (a top-level folder of
 /// `plugins/` with a manifest), so `local:<id>` installs it. Such ids are
 /// reserved: no workspace or folder plugin may take one (stint 1398).
@@ -1071,16 +1102,14 @@ pub(crate) fn is_bundled_plugin_id(id: &str) -> bool {
 
 /// Host-derived provenance: true when `plugin_dir` holds exactly the plugin
 /// this binary embeds as `local:<name>`. Same files, identical bytes, nothing
-/// extra, no symlinks. Package content identity is not enough here because it
-/// skips `.pyc` files and caches, which the guest's importer would still load.
-/// A manifest id or package claim cannot satisfy this. It covers the plugin
-/// folder only, not the SDK or stdlib a guest also imports. The walk stops at
-/// the first difference, so its cost is bounded by the embedded tree.
-///
-/// Compiled bytecode the binary happens to embed (a checkout's `__pycache__`)
-/// may be absent on disk: the packager leaves it out, and a missing `.pyc`
-/// loads nothing (stint 1398). A `.pyc` that is present must still be one the
-/// binary embeds, byte for byte.
+/// extra, no symlinks. The selection follows the packager's
+/// [`PACKAGER_EXCLUDES`] (stint 1398): Finder metadata and venvs are skipped on
+/// both sides. Bytecode is code the importer runs, so it is never skipped on
+/// disk: an embedded `.pyc` may be absent (the packager drops it), but a `.pyc`
+/// present must be one the binary embeds, byte for byte. A manifest id or package
+/// claim cannot satisfy this. It covers the plugin folder only, not the SDK or
+/// stdlib a guest also imports, and it is a scan-time answer only. The walk
+/// stops at the first difference, so its cost is bounded by the embedded tree.
 pub(crate) fn matches_bundled_plugin(name: &str, plugin_dir: &Path) -> bool {
     let Some(bundled) = EMBEDDED_APPS.get_dir(name) else {
         log::warn!("bundled_check: no embedded plugin '{name}'");
@@ -1123,6 +1152,13 @@ fn collect_embedded<'a>(
         let Ok(rel) = entry.path().strip_prefix(root) else {
             continue;
         };
+        if rel
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(non_code_exclude)
+        {
+            continue;
+        }
         match entry {
             include_dir::DirEntry::Dir(child) => {
                 dirs.insert(rel.to_path_buf());
@@ -1135,16 +1171,8 @@ fn collect_embedded<'a>(
     }
 }
 
-/// Python bytecode: a `.pyc` file or anything under `__pycache__`.
-fn is_bytecode(rel: &Path) -> bool {
-    rel.extension().is_some_and(|ext| ext == "pyc")
-        || rel
-            .components()
-            .any(|part| part.as_os_str() == "__pycache__")
-}
-
-/// Count the bundled non-bytecode files found under `rel`, or name the first
-/// difference.
+/// Count the bundled files found under `rel`, or name the first difference.
+/// Entries the packager leaves out are skipped here as in `collect_embedded`.
 fn compare_with_embedded(
     root: &Path,
     rel: &Path,
@@ -1158,7 +1186,9 @@ fn compare_with_embedded(
         let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
         let name = entry.file_name();
         let child = rel.join(&name);
-        if rel.as_os_str().is_empty() && name.to_str().is_some_and(is_installer_written_root_entry)
+        if name.to_str().is_some_and(non_code_exclude)
+            || (rel.as_os_str().is_empty()
+                && name.to_str().is_some_and(is_installer_written_root_entry))
         {
             continue;
         }
