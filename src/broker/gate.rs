@@ -1257,13 +1257,18 @@ impl PermissionMonitor {
                 }
             }
             Decision::Allow => {
-                let grant_id = self
-                    .store()
+                let store = self.store();
+                let grant_id = store
                     .records()
                     .iter()
-                    .find(|record| record.matches(&request, now) && record.duration_admissible())
+                    .find(|record| {
+                        record.matches(&request, now)
+                            && record.duration_admissible()
+                            && store.ancestry_live(record, now)
+                    })
                     .map(|record| record.grant_id.clone())
                     .unwrap_or_default();
+                drop(store);
                 trace("allow", mechanism, &format!("grant={grant_id}"));
                 Admission::Proceed {
                     grant_id,
@@ -3906,15 +3911,31 @@ impl PermissionMonitor {
         if epoch == 0 {
             return Err("permission monitor epoch is unset".to_string());
         }
-        let alive = self
-            .store()
-            .records()
-            .iter()
-            .any(|record| record.grant_id == grant_id && record.decision == Decision::Allow);
-        if grant_id.is_empty() || !alive {
-            return Err("grant revoked".to_string());
-        }
-        self.audit_locked(&AuditFact {
+        // A one-use grant is claimed here, under the admission lock, before
+        // its effect runs: of two calls admitted together only one proceeds
+        // (stint 1716). A use that is never audited releases its claim.
+        let claimed_once = {
+            let mut store = self.store();
+            let Some(record) = store
+                .records_mut()
+                .iter_mut()
+                .find(|record| record.grant_id == grant_id && record.decision == Decision::Allow)
+                .filter(|_| !grant_id.is_empty())
+            else {
+                return Err("grant revoked".to_string());
+            };
+            if record.duration == GrantDuration::Once {
+                if record.consumed {
+                    log::info!("permission_monitor: once-grant {grant_id} already used");
+                    return Err("grant already used".to_string());
+                }
+                record.consumed = true;
+                true
+            } else {
+                false
+            }
+        };
+        let audited = self.audit_locked(&AuditFact {
             kind: "use".to_string(),
             actor: actor.to_string(),
             call_id: call_id.to_string(),
@@ -3925,7 +3946,21 @@ impl PermissionMonitor {
             decision: "use".to_string(),
             revision_before: String::new(),
             revision_after: String::new(),
-        })
+        });
+        if audited.is_err() && claimed_once {
+            if let Some(record) = self
+                .store()
+                .records_mut()
+                .iter_mut()
+                .find(|record| record.grant_id == grant_id)
+            {
+                record.consumed = false;
+            }
+        }
+        if claimed_once && audited.is_ok() {
+            log::info!("permission_monitor: claimed once-grant {grant_id} for call {call_id}");
+        }
+        audited
     }
 
     #[allow(clippy::too_many_arguments)]

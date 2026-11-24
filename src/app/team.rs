@@ -12,6 +12,7 @@ mod tests {
             duration: crate::broker::GrantDuration::Always,
             expires_at: None,
             bound_run: None,
+            grant_ids: Vec::new(),
         };
         crate::agent::runs::AgentsCaller::Host {
             ceiling: vec![row("agents.review"), row("agents.ping"), row("agents.admin")],

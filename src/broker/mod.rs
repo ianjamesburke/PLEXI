@@ -308,6 +308,11 @@ pub struct GrantRecord {
     /// `tool_scoped`.
     #[serde(default)]
     pub args_unbound: bool,
+    /// The grants that justified this delegated row (stint 1716): every row
+    /// on both sides of a caller/parent intersection. Checked at use, so
+    /// revoking any of them disables this row and its descendants at once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub justified_by: Vec<String>,
 }
 
 impl GrantRecord {
@@ -398,6 +403,7 @@ impl GrantRecord {
             run_requester_pane: None,
             tool_scoped: false,
             args_unbound: false,
+            justified_by: Vec::new(),
         }
     }
 
@@ -440,6 +446,7 @@ impl GrantRecord {
             run_requester_pane: None,
             tool_scoped: false,
             args_unbound: false,
+            justified_by: Vec::new(),
         }
     }
 
@@ -1274,6 +1281,38 @@ impl GrantStore {
         &self.file.data.records
     }
 
+    /// Whether every grant that justified `record`, and every grant that
+    /// justified those, still stands: present, an unused allow, unexpired.
+    /// A row with no recorded justification stands on its own.
+    pub fn ancestry_live(&self, record: &GrantRecord, now: i64) -> bool {
+        let mut pending: Vec<&str> = record.justified_by.iter().map(String::as_str).collect();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(parent) = self.records().iter().find(|row| row.grant_id == id) else {
+                log::info!(
+                    "grant_store: {} unusable: justifying grant {id} is gone",
+                    record.grant_id
+                );
+                return false;
+            };
+            if parent.decision != Decision::Allow
+                || parent.consumed
+                || parent.expires_at.is_some_and(|exp| now >= exp)
+            {
+                log::info!(
+                    "grant_store: {} unusable: justifying grant {id} no longer allows",
+                    record.grant_id
+                );
+                return false;
+            }
+            pending.extend(parent.justified_by.iter().map(String::as_str));
+        }
+        true
+    }
+
     /// Mutable records. Callers that revoke or consume a one-shot hold the
     /// monitor admission lock first.
     pub fn records_mut(&mut self) -> &mut Vec<GrantRecord> {
@@ -1343,7 +1382,7 @@ impl GrantStore {
             .data
             .records
             .iter()
-            .filter(|r| r.matches(req, now))
+            .filter(|r| r.matches(req, now) && self.ancestry_live(r, now))
             .filter(|r| {
                 let admissible = r.duration_admissible();
                 if !admissible {

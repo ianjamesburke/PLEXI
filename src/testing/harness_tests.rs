@@ -20456,6 +20456,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
                         duration: crate::broker::GrantDuration::Always,
                         expires_at: None,
                         bound_run: None,
+                        grant_ids: Vec::new(),
                     })
                     .collect(),
             },

@@ -278,6 +278,9 @@ pub(crate) struct CeilingRow {
     /// The run the delegator's row is bound to; a delegated row is bound to
     /// it too, so finishing that run revokes both.
     pub(crate) bound_run: Option<String>,
+    /// The grant-store rows behind this ceiling row: one for a held row,
+    /// both sides for an intersection. Host-supplied rows have none.
+    pub(crate) grant_ids: Vec<String>,
 }
 
 /// The earlier of two expiries, `None` meaning never.
@@ -330,6 +333,7 @@ fn record_scope_allow(
     expires_at: Option<i64>,
     duration: GrantDuration,
     bound_run: Option<&str>,
+    justified_by: &[String],
 ) {
     let binding = crate::broker::ExactBinding {
         actor_type: ActorType::Agent,
@@ -369,6 +373,7 @@ fn record_scope_allow(
     record.kind = kind;
     record.expires_at = expires_at;
     record.bound_operation_id = bound_run.map(str::to_string);
+    record.justified_by = justified_by.to_vec();
     {
         let mut store = gate.store();
         store.records_mut().retain(|existing| {
@@ -773,6 +778,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
             earlier(grant.expires_at, parent.and_then(|row| row.expires_at)),
             duration,
             parent.and_then(|row| row.bound_run.as_deref()),
+            parent.map_or(&[][..], |row| &row.grant_ids),
         );
     }
     log::info!(
@@ -1060,6 +1066,22 @@ fn sealed_ceiling(
     principal: &Principal,
     run: Option<&str>,
 ) -> Vec<CeilingRow> {
+    grant_rows(workspace, principal, run, false)
+}
+
+/// What a run of `principal` could execute (stint 1716): the delegable
+/// rows plus its unused one-use rows. A launch is checked against this, so
+/// a one-use row is never executed by a run its starter could not start.
+fn executable_rows(workspace: &Path, principal: &Principal) -> Vec<CeilingRow> {
+    grant_rows(workspace, principal, None, true)
+}
+
+fn grant_rows(
+    workspace: &Path,
+    principal: &Principal,
+    run: Option<&str>,
+    once: bool,
+) -> Vec<CeilingRow> {
     let gate = host_gate!(Vec::new());
     let session_id = gate.session_id().to_string();
     let now = gate.now_secs();
@@ -1074,8 +1096,11 @@ fn sealed_ceiling(
         .records()
         .iter()
         .filter(|rec| {
+            if !store.ancestry_live(rec, now) {
+                return false;
+            }
             if rec.consumed
-                || rec.duration == GrantDuration::Once
+                || (!once && rec.duration == GrantDuration::Once)
                 || rec.target_id.is_empty()
                 || !rec.duration_admissible()
             {
@@ -1114,6 +1139,7 @@ fn sealed_ceiling(
             duration: rec.duration,
             expires_at: rec.expires_at,
             bound_run: rec.bound_run().map(str::to_string),
+            grant_ids: vec![rec.grant_id.clone()],
         })
         .collect()
 }
@@ -1140,6 +1166,12 @@ fn meet_ceilings(a: &[CeilingRow], b: &[CeilingRow]) -> Vec<CeilingRow> {
                 },
                 expires_at: earlier(left.expires_at, right.expires_at),
                 bound_run: left.bound_run.clone().or_else(|| right.bound_run.clone()),
+                grant_ids: left
+                    .grant_ids
+                    .iter()
+                    .chain(&right.grant_ids)
+                    .cloned()
+                    .collect(),
             })
         })
         .collect()
@@ -1352,11 +1384,8 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
             let start = if retry {
                 None
             } else {
-                let agent_rows: Vec<ToolGrant> = sealed_ceiling(
-                    &workspace,
-                    &Principal::agent(actor_of(&agent.id)),
-                    None,
-                )
+                let agent_rows: Vec<ToolGrant> =
+                    executable_rows(&workspace, &Principal::agent(actor_of(&agent.id)))
                 .into_iter()
                 .filter(|row| row.decision == Decision::Allow)
                 .map(|row| ToolGrant {
@@ -2157,6 +2186,7 @@ mod tests {
                     duration: GrantDuration::Always,
                     expires_at: None,
                     bound_run: None,
+                    grant_ids: Vec::new(),
                 })
                 .collect(),
         }
@@ -2199,6 +2229,7 @@ mod tests {
                     duration: GrantDuration::Always,
                     expires_at: None,
                     bound_run: None,
+                    grant_ids: Vec::new(),
                 })
                 .collect::<Vec<_>>(),
             denial_actor: "fixture",
@@ -3125,6 +3156,206 @@ mod tests {
         );
         assert_eq!(forged["error_code"], "permission_denied", "{forged}");
         assert!(forged.get("run_token").is_none(), "{forged}");
+    }
+
+    /// Approve one ask from `run` once and return that one-use row's id.
+    fn approve_once(fix: &Fixture, run: &str, tool: &str) -> String {
+        let asked = handle_request(
+            "call",
+            &json!({"workspace": fix.ws(), "run_id": run, "tool": tool, "input_json": "{}"}),
+            &test_host(),
+        );
+        assert_eq!(asked["error_code"], "permission_required", "{asked}");
+        monitor()
+            .unwrap()
+            .approve_pending(asked["pending_request_id"].as_str().unwrap(), ApprovalChoice::Once)
+            .unwrap();
+        monitor()
+            .unwrap()
+            .store()
+            .records()
+            .iter()
+            .find(|rec| rec.target_id == tool && rec.duration == GrantDuration::Once && !rec.consumed)
+            .expect("a one-use row")
+            .grant_id
+            .clone()
+    }
+
+    /// Stint 1716: a one-use row is claimed once, under the admission lock,
+    /// before its effect: a second use of the same admission is refused.
+    #[test]
+    fn a_once_grant_is_claimed_atomically_at_use() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.review=ask"]);
+        let spawned = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-claim"}),
+            &test_host(),
+        );
+        let run = spawned["run"]["id"].as_str().unwrap().to_string();
+        let grant = approve_once(&fix, &run, "agents.review");
+        let gate = monitor().unwrap();
+        let first = gate.note_use("agent:worker", "c1", &grant, "fp", "", "agents-api");
+        let second = gate.note_use("agent:worker", "c2", &grant, "fp", "", "agents-api");
+        assert!(first.is_ok(), "{first:?}");
+        assert_eq!(second, Err("grant already used".to_string()));
+    }
+
+    /// Stint 1716: a launch is checked against what the run could execute,
+    /// unused one-use rows included. A pane holding nothing cannot start an
+    /// agent that would spend a person's one-use approval.
+    #[test]
+    fn a_launch_inventories_the_agents_one_use_rows() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.review=ask"]);
+        let spawned = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-first"}),
+            &test_host(),
+        );
+        let run = spawned["run"]["id"].as_str().unwrap().to_string();
+        let grant = approve_once(&fix, &run, "agents.review");
+        {
+            let gate = monitor().unwrap();
+            let mut store = gate.store();
+            let row = store
+                .records_mut()
+                .iter_mut()
+                .find(|rec| rec.grant_id == grant)
+                .unwrap();
+            // An approval not bound to one run.
+            row.bound_operation_id = None;
+        }
+        handle_request("finish_run", &json!({"workspace": fix.ws(), "id": run}), &test_host());
+        assert!(sealed_ceiling(fix.ws(), &Principal::agent("agent:worker"), None).is_empty());
+        let launched = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-pane"}),
+            &pane_caller(42, None),
+        );
+        assert_eq!(launched["ok"], false, "{launched}");
+        assert!(launched.get("run_token").is_none(), "{launched}");
+    }
+
+    /// Stint 1716: a delegated row records both sides of the intersection
+    /// that justified it. Revoking either disables the child immediately.
+    #[test]
+    fn revoking_either_side_of_a_delegation_disables_the_child() {
+        for revoke_parent_side in [true, false] {
+            let fix = Fixture::new();
+            create(&fix, "lead", &["agents.ping=allow"]);
+            let spawned = handle_request(
+                "spawn_run",
+                &json!({"workspace": fix.ws(), "agent": "lead", "admission": "adm-lead"}),
+                &test_host(),
+            );
+            let parent_run = spawned["run"]["id"].as_str().unwrap().to_string();
+            let workspace = crate::platform::path::canonical_or_self(fix.ws());
+            record_scope_allow(
+                &workspace,
+                "pane:42",
+                "agents.ping",
+                GrantKind::Hard,
+                None,
+                GrantDuration::Always,
+                None,
+                &[],
+            );
+            let row_of = |actor: &str| {
+                monitor()
+                    .unwrap()
+                    .store()
+                    .records()
+                    .iter()
+                    .find(|rec| rec.actor_id == actor && rec.target_id == "agents.ping")
+                    .unwrap()
+                    .grant_id
+                    .clone()
+            };
+            let (lead_row, pane_row) = (row_of("agent:lead"), row_of("pane:42"));
+            let child = handle_request(
+                "delegate",
+                &json!({"workspace": fix.ws(), "parent_run": parent_run, "name": "scout",
+                    "grants": ["agents.ping=allow"]}),
+                &pane_caller(42, None),
+            );
+            assert_eq!(child["ok"], true, "{child}");
+            let child_run = child["run"]["id"].as_str().unwrap().to_string();
+            let child_row = monitor()
+                .unwrap()
+                .store()
+                .records()
+                .iter()
+                .find(|rec| rec.actor_id == "agent:scout")
+                .unwrap()
+                .clone();
+            assert_eq!(
+                child_row.justified_by.iter().collect::<BTreeSet<_>>(),
+                [&lead_row, &pane_row].into_iter().collect(),
+            );
+            let ping = || {
+                handle_request(
+                    "call",
+                    &json!({"workspace": fix.ws(), "run_id": child_run, "tool": "agents.ping",
+                        "input_json": "{}"}),
+                    &test_host(),
+                )
+            };
+            assert_eq!(ping()["ok"], true, "{}", ping());
+            let revoked = if revoke_parent_side { &lead_row } else { &pane_row };
+            assert!(monitor().unwrap().revoke_grant_id(revoked).unwrap());
+            let after = ping();
+            assert_ne!(after["ok"], true, "revoked {revoked}: {after}");
+        }
+    }
+
+    /// Stint 1716: a run permit carries the admitted pane incarnation. A
+    /// pane closed between admission and the effect finishes nothing and
+    /// calls nothing.
+    #[test]
+    fn a_pane_revoked_between_admission_and_effect_reaches_no_run_sink() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow"]);
+        let live = crate::broker::pane_authority::LivePaneAuthority::admitted(
+            crate::broker::pane_authority::PaneAuthority::for_test(
+                42,
+                crate::broker::pane_authority::Ceiling::Baseline,
+                1,
+                fix.ws().to_path_buf(),
+            ),
+        );
+        let subject = PermitSubject::principal("pane:42", Some(&live));
+        let spawned = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-live"}),
+            &test_host(),
+        );
+        let run_id = spawned["run"]["id"].as_str().unwrap().to_string();
+        // A run this pane owns.
+        let workspace = crate::platform::path::canonical_or_self(fix.ws());
+        let mut run = find_run(&workspace, &run_id).unwrap();
+        let start = permit::mint_start(
+            &subject,
+            &workspace,
+            &run.agent_id,
+            &run.admission_id,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        run.owner_seal =
+            Some(permit::seal_run_owner(&monitor().unwrap(), &start, binding_of(&workspace, &run)).unwrap());
+        append_run_record(&workspace, &run).unwrap();
+
+        let finish: RunPermit<Finish> = permit_for(&workspace, &run, &subject).unwrap();
+        let call: RunPermit<Invoke> = permit_for(&workspace, &run, &subject).unwrap();
+        live.revoke();
+        let finished = finish_run(&finish);
+        assert_eq!(finished["error_code"], "permission_denied", "{finished}");
+        assert!(find_run(&workspace, &run_id).unwrap().active, "a revoked pane finished the run");
+        let called = invoke(&call, "agents.ping", "{}", Some(42));
+        assert_ne!(called["ok"], true, "a revoked pane called a tool: {called}");
+        assert!(permit_for::<Finish>(&workspace, &run, &subject).is_err());
     }
 
     /// Design 1285 section 4, condition 3: the dashboard projection of one
