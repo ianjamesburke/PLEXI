@@ -5868,8 +5868,10 @@ impl PlexiApp {
                 write_json_response(response_file, payload);
             }
             crate::protocol::HostRequest::SpawnReceipt { response_file } => {
-                // The reply stream is registered; the queue drain answers it.
+                // The reply stream is registered; the queue drain answers it,
+                // or releases it once its client has gone.
                 log::info!("spawn-queue: receipt connection held token={response_file:?}");
+                self.spawn_receipts.insert(response_file.clone());
             }
             crate::protocol::HostRequest::Wake => {
                 // A wake may arrive just after the throttled idle poll. Drain
@@ -6689,6 +6691,10 @@ impl PlexiApp {
 
     pub(super) fn drain_spawn_queue(&mut self) {
         const STALE_SPAWN_WARN_SECS: u64 = 60;
+        // A CLI that opened a spawn receipt and then failed to queue its
+        // request has gone; its receipt stream is released here.
+        self.spawn_receipts
+            .retain(|token| !crate::rpc::ReplyRegistry::release_if_disconnected(token));
         let queue_dir = crate::config::config_dir().join("spawn-queue");
         let Ok(entries) = std::fs::read_dir(&queue_dir) else {
             return;

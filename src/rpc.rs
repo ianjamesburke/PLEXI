@@ -89,6 +89,23 @@ impl ReplyRegistry {
         guard.remove(response_file).map(|(_, stream)| stream)
     }
 
+    /// Drop the stream registered for `response_file` if its client has
+    /// gone; `true` when it was dropped or is no longer registered.
+    pub(crate) fn release_if_disconnected(response_file: &str) -> bool {
+        let mut guard = host_reply_streams()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match guard.get(response_file) {
+            None => true,
+            Some((_, stream)) if crate::platform::ipc::peer_connected(stream) => false,
+            Some(_) => {
+                guard.remove(response_file);
+                log::info!("rpc: dropped reply stream {response_file:?}: client gone");
+                true
+            }
+        }
+    }
+
     /// Drop any registered stream for `response_file` without writing.
     pub(crate) fn remove(response_file: &str) {
         let mut guard = host_reply_streams()

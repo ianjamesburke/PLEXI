@@ -44,10 +44,36 @@ pub(super) fn wait(
     timeout: Duration,
 ) -> Result<Option<String>, String> {
     let mut reply = Vec::new();
-    if let Some(reply) = read_reply(receipt, &mut reply, timeout)? {
-        return Ok(Some(reply));
+    match read_reply(receipt, &mut reply, timeout) {
+        Ok(Some(reply)) => Ok(Some(reply)),
+        Ok(None) => reconcile_timeout(queue_file, receipt, reply),
+        Err(error) if error == CLOSED_UNANSWERED => reconcile_closed(queue_file),
+        Err(error) => Err(error),
     }
-    reconcile_timeout(queue_file, receipt, reply)
+}
+
+const CLOSED_UNANSWERED: &str = "the host closed the connection before answering the queued spawn";
+
+/// The host closed the receipt without answering. Remove the request if no
+/// host has taken it, so a later host cannot launch what this CLI reports as
+/// failed; otherwise say it may have been launched.
+fn reconcile_closed(queue_file: &Path) -> Result<Option<String>, String> {
+    match std::fs::remove_file(queue_file) {
+        Ok(()) => {
+            log::info!("queued spawn: host closed unanswered; cancelled {queue_file:?}");
+            Err(format!("{CLOSED_UNANSWERED}; the request was cancelled and nothing was launched"))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            log::info!("queued spawn: host closed after claiming {queue_file:?}");
+            Err(format!("{CLOSED_UNANSWERED} after taking it; check `pane list` before retrying"))
+        }
+        Err(error) => {
+            log::warn!("queued spawn: cancellation unavailable for {queue_file:?}: {error}");
+            Err(format!(
+                "{CLOSED_UNANSWERED}; cancellation failed ({error}). Do not retry; check host status"
+            ))
+        }
+    }
 }
 
 /// The host's whole reply, or `None` if it has not finished by `timeout`.
@@ -71,9 +97,9 @@ fn read_reply(
             Err(error) => return Err(format!("could not set the spawn reply deadline: {error}")),
         }
         match receipt.read(&mut chunk) {
-            Ok(0) if reply.is_empty() => {
-                return Err("the host closed the connection before answering the queued spawn; check `pane list` before retrying".to_string());
-            }
+            // The host went away without answering: the caller reconciles the
+            // queue file before reporting (Codex 3290 r3).
+            Ok(0) if reply.is_empty() => return Err(CLOSED_UNANSWERED.to_string()),
             Ok(0) => return Ok(Some(String::from_utf8_lossy(reply).into_owned())),
             Ok(read) => reply.extend_from_slice(&chunk[..read]),
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
@@ -166,6 +192,20 @@ mod tests {
         );
     }
 
+    /// Codex 3290 r3 B3: a host that closes the receipt without answering
+    /// leaves no unclaimed request behind for a later host to launch.
+    #[test]
+    fn a_receipt_closed_unanswered_cancels_the_unclaimed_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = dir.path().join("request.json");
+        std::fs::write(&queue, "{}").unwrap();
+        let (mut receipt, host) = UnixStream::pair().unwrap();
+        drop(host);
+        let error = wait(&queue, &mut receipt, Duration::from_secs(1)).unwrap_err();
+        assert!(error.contains("nothing was launched"), "{error}");
+        assert!(!queue.exists(), "the unclaimed request survived the closed receipt");
+    }
+
     #[test]
     fn queued_spawn_consumed_request_does_not_report_failure() {
         let dir = tempfile::tempdir().unwrap();
@@ -216,5 +256,37 @@ mod tests {
         receipt.read_to_string(&mut body).unwrap();
         assert!(body.contains("\"pane_id\":7"), "{body}");
         assert!(!Path::new(&token).exists(), "no reply file");
+    }
+
+    /// Codex 3290 r3 B3: a CLI that opened its receipt and then failed to
+    /// queue the request goes away; the host releases the receipt stream at
+    /// its next queue drain instead of holding it until pruning.
+    #[test]
+    fn a_receipt_whose_client_left_is_released_at_the_next_drain() {
+        let mut h = crate::testing::HostHarness::new();
+        let token = crate::rpc::response_file("queued-spawn-response", "json");
+        let (mut receipt, mut server) = UnixStream::pair().unwrap();
+        let line = serde_json::json!({"type": "spawn_receipt", "response_file": token}).to_string();
+        crate::app::handle_socket_line_in(
+            &crate::config::config_dir(),
+            &line,
+            &h.ipc_tx,
+            Some(&crate::broker::caller::PeerWitness::capture(std::process::id())),
+            &mut server,
+        );
+        let mut ack = vec![0; crate::app::PEER_IDENTITY_ACK.len()];
+        receipt.read_exact(&mut ack).unwrap();
+        h.hidden_frame();
+        assert_eq!(crate::rpc::ReplyRegistry::connected(&token), Some(true));
+        // The queue write failed; the CLI exits.
+        drop(receipt);
+        drop(server);
+        h.inject_ipc(crate::protocol::HostRequest::Wake);
+        h.hidden_frame();
+        assert_eq!(
+            crate::rpc::ReplyRegistry::connected(&token),
+            None,
+            "the host still holds a receipt nobody will read"
+        );
     }
 }
