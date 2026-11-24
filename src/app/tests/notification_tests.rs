@@ -1353,8 +1353,8 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
 
 /// 0636: a socket peer that resolves to no live pane (outside-pane caller,
 /// or an already-closed pane) must not fall back to trusting the client's
-/// claimed identity — Notify escalates to Global and Dismiss is rejected,
-/// exactly like an absent identity.
+/// claimed identity — an unscoped Notify escalates to Global and Dismiss is
+/// rejected, exactly like an absent identity.
 #[test]
 fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
     let mut h = HostHarness::new();
@@ -1379,7 +1379,9 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
         timeout_secs: None,
         on_dismiss: None,
         response_file: None,
-        scope: Some(crate::protocol::NotifyScope::Context),
+        // Unscoped: an explicit context scope from such a caller is refused
+        // outright (Codex 3290 r3), tested in socket_policy_tests.
+        scope: None,
     }, Some(crate::broker::caller::PeerWitness::capture(unresolvable_peer)));
     h.run_frames(2);
 

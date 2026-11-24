@@ -4956,6 +4956,31 @@ impl PlexiApp {
                 // narrow separately; the pre-fix `source_context_id`-only
                 // fallback that produced that case is exactly the forgeable
                 // input this stint removes.
+                // An explicit context or window scope the host cannot resolve
+                // is refused, never widened: the sender limited its audience
+                // (Codex 3290 r3). Only an unscoped notify falls back below.
+                let explicit_unresolvable = match scope {
+                    Some(crate::protocol::NotifyScope::Context) => caller_context_id.is_none(),
+                    Some(crate::protocol::NotifyScope::Window) => caller_window_id.is_none(),
+                    _ => false,
+                };
+                if explicit_unresolvable {
+                    log::info!(
+                        "pane_ipc: notify refused: explicit scope {scope:?} from a {} caller has no context",
+                        origin.class()
+                    );
+                    if let Some(file) = response_file {
+                        write_json_response(
+                            file,
+                            serde_json::json!({
+                                "ok": false,
+                                "error_code": "scope_unresolvable",
+                                "error": "--scope context or window needs a caller in a Plexi pane; use --scope global",
+                            }),
+                        );
+                    }
+                    return;
+                }
                 let effective_scope = match scope.unwrap_or_default() {
                     crate::protocol::NotifyScope::Global => crate::protocol::NotifyScope::Global,
                     crate::protocol::NotifyScope::Context if caller_context_id.is_some() => {

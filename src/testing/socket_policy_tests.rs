@@ -1708,3 +1708,36 @@ fn the_dashboard_experiment_gates_both_raw_host_entries() {
     assert_eq!(listed["ok"], true, "{listed}");
     assert!(h.app.admit_dashboard_workspace(&caller, &root.to_string_lossy()).is_ok());
 }
+
+/// Codex 3290 r3 B1: an explicit context or window scope the host cannot
+/// resolve (an outside caller) is refused and posts nothing; it is never
+/// widened to global. An unscoped notify from outside still posts.
+#[test]
+fn an_explicit_notify_scope_the_host_cannot_resolve_is_refused_not_widened() {
+    let mut h = HostHarness::new();
+    h.app.notifications_enabled = true;
+    let before = h.app.pending_notifications.len();
+    for scope in ["context", "window"] {
+        let reply = send(
+            &mut h,
+            serde_json::json!({"type": "notify", "notify_id": format!("n-{scope}"),
+                "title": "private", "body": "", "kind": "message", "options": [],
+                "scope": scope}),
+            Some(outside()),
+        );
+        assert_eq!(reply["error_code"], "scope_unresolvable", "{scope}: {reply}");
+    }
+    assert_eq!(h.app.pending_notifications.len(), before, "a refused notify was posted");
+    let mut ack = Vec::new();
+    crate::app::handle_socket_line_in(
+        &crate::config::config_dir(),
+        &serde_json::json!({"type": "notify", "notify_id": "n-unscoped", "title": "t",
+            "body": "", "kind": "message", "options": []})
+        .to_string(),
+        &h.ipc_tx,
+        Some(&outside()),
+        &mut ack,
+    );
+    h.run_frames(2);
+    assert_eq!(h.app.pending_notifications.len(), before + 1, "an unscoped notify posts");
+}

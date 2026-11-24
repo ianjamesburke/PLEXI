@@ -41,7 +41,24 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     } = args;
     // The host attaches the notification to the caller's own context from
     // the kernel's account of this process; nothing here names a pane
-    // (stint 1285). A caller outside every pane gets a global notification.
+    // (stint 1285). An explicit context or window scope needs a caller in a
+    // pane: outside one, say so before sending (the host refuses it too).
+    if matches!(
+        scope,
+        Some(crate::protocol::NotifyScope::Window | crate::protocol::NotifyScope::Context)
+    ) && std::env::var_os("PLEXI_CONTEXT_ID").is_none()
+    {
+        let scope_name = if scope == Some(crate::protocol::NotifyScope::Window) {
+            "window"
+        } else {
+            "context"
+        };
+        eprintln!(
+            "error: --scope {scope_name} requires a caller context — PLEXI_CONTEXT_ID is not set; \
+             run this inside a Plexi pane or use --scope global"
+        );
+        return 1;
+    }
 
     let socket_path = match super::resolve_command_socket() {
         Some(path) => path,
@@ -481,8 +498,18 @@ mod notify_tests {
     /// for the host to attach the notification to.
     #[test]
     fn notify_cli_explicit_context_scope_without_identity_errors() {
+        // With a host reachable (a channel selected outside any pane), the
+        // CLI still refuses before sending anything (Codex 3290 r3).
         let env = socket_env_guard();
-        env.unset();
+        assert!(
+            std::env::var_os("PLEXI_CONTEXT_ID").is_none(),
+            "the test environment is scrubbed of pane identity"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("notify.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        env.set(&socket_path);
         for scope in [
             crate::protocol::NotifyScope::Context,
             crate::protocol::NotifyScope::Window,
@@ -494,6 +521,7 @@ mod notify_tests {
                 ..Default::default()
             });
             assert_eq!(code, 1, "{scope:?} without a caller context must error");
+            assert!(listener.accept().is_err(), "{scope:?} reached the host");
         }
     }
 
