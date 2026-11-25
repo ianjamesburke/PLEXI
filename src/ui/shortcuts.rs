@@ -5,6 +5,31 @@ use crate::ui::theme::Colors;
 
 const INTER_COMBO_GAP: f32 = 10.0;
 
+/// Convert a resolved host chord to the same tokens view hints use.
+pub(crate) fn egui_chord_tokens(
+    (modifiers, key): (egui::Modifiers, egui::Key),
+) -> Vec<&'static str> {
+    let mut keys = Vec::with_capacity(5);
+    if modifiers.command || modifiers.mac_cmd {
+        keys.push("cmd");
+    }
+    if modifiers.ctrl {
+        keys.push("ctrl");
+    }
+    if modifiers.alt {
+        keys.push("alt");
+    }
+    if modifiers.shift {
+        keys.push("shift");
+    }
+    keys.push(key.symbol_or_name());
+    keys
+}
+
+pub(crate) fn egui_chord_label(chord: (egui::Modifiers, egui::Key)) -> String {
+    chord_text(&egui_chord_tokens(chord), cfg!(target_os = "macos"))
+}
+
 // ── Key token convention ───────────────────────────────────────────────────
 // The ONE place that decides how a key is spelled and ordered on screen.
 // Every hint surface (HintBar, key_combo*, dialogs, palette, attention queue,

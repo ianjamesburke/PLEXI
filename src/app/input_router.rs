@@ -165,11 +165,21 @@ impl PlexiInput {
     /// exactly so a more specific chord (Cmd+Shift+0) is not swallowed by a
     /// less specific one (Cmd+0).
     pub(crate) fn consume_key_exact(&mut self, modifiers: egui::Modifiers, key: egui::Key) -> bool {
+        self.consume_key_exact_with_repeat(modifiers, key, true)
+    }
+
+    pub(crate) fn consume_key_exact_with_repeat(
+        &mut self,
+        modifiers: egui::Modifiers,
+        key: egui::Key,
+        allow_repeat: bool,
+    ) -> bool {
         if let Some(pos) = self.events.iter().position(|e| {
             matches!(
                 e,
-                egui::Event::Key { key: k, pressed: true, modifiers: m, .. }
+                egui::Event::Key { key: k, pressed: true, repeat, modifiers: m, .. }
                     if *k == key
+                        && (allow_repeat || !repeat)
                         && crate::host::keys::modifiers_match_exact_for_os(
                             m,
                             &modifiers,

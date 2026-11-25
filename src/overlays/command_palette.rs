@@ -1,5 +1,8 @@
 use super::user_command_run::{spawn_shell_step, HostStepOutcome, UserCommandRun};
 use crate::app::PlexiApp;
+use crate::host::keys::{
+    palette_commands, Action as PaletteCommand, CommandArguments, CommandRequirement, CommandTarget,
+};
 use crate::host::model::{HostAction, HostEffect};
 use crate::host::picker::{
     files::{FileHit, FileIndex},
@@ -13,6 +16,7 @@ use crate::ui::{
     list::ListRowPips,
     overlay::ModalShell,
     picker::{is_field_input, picker_key},
+    shortcuts::egui_chord_label as shortcut_label,
     style,
 };
 
@@ -40,13 +44,6 @@ enum PaletteEntry {
         description: String,
         running_in_background: bool,
         is_workspace_local: bool,
-        search_text: String,
-    },
-    /// Host-native builtin plugin (no registry manifest), launched by id.
-    Builtin {
-        id: &'static str,
-        name: &'static str,
-        description: &'static str,
         search_text: String,
     },
     Note {
@@ -84,7 +81,6 @@ enum CommandRowId {
     Focus(PaletteFocusTarget),
     Unavailable(String),
     View(String),
-    Builtin(&'static str),
     Note(std::path::PathBuf),
     UserCommand {
         name: String,
@@ -97,11 +93,7 @@ impl CommandRowId {
     fn stable_id(&self) -> String {
         match self {
             CommandRowId::Command(command) => {
-                let name = PALETTE_COMMANDS
-                    .iter()
-                    .find(|entry| entry.command == *command)
-                    .map_or("", |entry| entry.name);
-                format!("cmd/{name}")
+                format!("cmd/{}", command.command_id())
             }
             CommandRowId::Focus(target) => format!(
                 "focus/{}/{}/{}",
@@ -113,7 +105,6 @@ impl CommandRowId {
             ),
             CommandRowId::Unavailable(name) => format!("parked/{name}"),
             CommandRowId::View(id) => format!("view/{id}"),
-            CommandRowId::Builtin(id) => format!("builtin/{id}"),
             CommandRowId::Note(path) => format!("note/{}", native_path_key(path)),
             CommandRowId::UserCommand { name, scope } => {
                 format!("run/{}/{name}", user_command_scope_id(*scope))
@@ -129,9 +120,15 @@ impl CommandRowId {
     /// The row's one action: what Enter and a click run.
     fn action(&self) -> RowAction {
         match self {
-            CommandRowId::Command(_)
-            | CommandRowId::UserCommand { .. }
-            | CommandRowId::UpdateReady(_) => RowAction {
+            CommandRowId::Command(command) => RowAction {
+                id: "run",
+                label: match command.palette_entry().map(|entry| entry.arguments) {
+                    Some(CommandArguments::Text(_) | CommandArguments::Picker(_)) => "Open form",
+                    _ => "Run",
+                },
+                chord: Some("Enter"),
+            },
+            CommandRowId::UserCommand { .. } | CommandRowId::UpdateReady(_) => RowAction {
                 id: "run",
                 label: "run",
                 chord: Some("Enter"),
@@ -141,11 +138,19 @@ impl CommandRowId {
                 label: "focus",
                 chord: Some("Enter"),
             },
-            CommandRowId::View(_) | CommandRowId::Builtin(_) | CommandRowId::Note(_) => RowAction {
+            CommandRowId::View(_) | CommandRowId::Note(_) => RowAction {
                 id: "open",
                 label: "open",
                 chord: Some("Enter"),
             },
+        }
+    }
+
+    fn assignable_command(&self) -> Option<&PaletteCommand> {
+        match self {
+            Self::Command(command) => Some(command),
+            Self::UpdateReady(_) => Some(&PaletteCommand::RestartToUpdate),
+            _ => None,
         }
     }
 }
@@ -179,6 +184,7 @@ fn native_path_key(path: &std::path::Path) -> String {
 #[derive(Clone, Debug, PartialEq)]
 enum PaletteTarget {
     Command(CommandRowId),
+    AssignShortcut(PaletteCommand),
     File(std::path::PathBuf),
 }
 
@@ -191,6 +197,12 @@ const OPEN_FILE: RowAction = RowAction {
 const RESET_RANKING: RowAction = RowAction {
     id: "reset_ranking",
     label: "Reset ranking",
+    chord: None,
+};
+
+const ASSIGN_SHORTCUT: RowAction = RowAction {
+    id: "assign_shortcut",
+    label: "Assign shortcut in config",
     chord: None,
 };
 
@@ -219,6 +231,8 @@ pub(crate) struct PaletteAnswer {
 /// the next open answers from the cached index while a fresh walk runs.
 #[derive(Default)]
 pub(crate) struct PaletteSources {
+    invocation: Option<PaletteInvocation>,
+    queued_binding_edit: Option<(PaletteCommand, PaletteInvocation)>,
     files: Option<FileIndex>,
     /// The context root this session's Files stop lists, fixed at its first
     /// Files query.
@@ -229,12 +243,12 @@ pub(crate) struct PaletteSources {
     /// The uploaded image of the selected row's preview.
     texture: Option<(RowKey, egui::TextureHandle)>,
     usage: PaletteUsage,
-    /// Files activated this pass, with the pane focused at activation:
+    /// Files activated this pass, with the target captured on palette open:
     /// opened from `App::logic`, never from the pass that activated them.
-    queued_opens: Vec<(std::path::PathBuf, crate::spatial::tiling::PaneId)>,
+    queued_opens: Vec<(std::path::PathBuf, PaletteInvocation)>,
     /// Opens whose disk reads run on a worker, with their anchor pane.
     preparing: Vec<(
-        crate::spatial::tiling::PaneId,
+        PaletteInvocation,
         std::sync::mpsc::Receiver<crate::app::file_open::PreparedOpen>,
     )>,
 }
@@ -283,7 +297,6 @@ impl PaletteEntry {
                 CommandRowId::Unavailable(name.clone())
             }
             PaletteEntry::View { id, .. } => CommandRowId::View(id.clone()),
-            PaletteEntry::Builtin { id, .. } => CommandRowId::Builtin(id),
             PaletteEntry::Note { path, .. } => CommandRowId::Note(path.clone()),
             PaletteEntry::UserCommand { name, scope, .. } => CommandRowId::UserCommand {
                 name: name.clone(),
@@ -301,7 +314,7 @@ impl PaletteEntry {
                 ("CONTEXTS", 0)
             }
             PaletteEntry::Note { .. } => ("NOTES", 2),
-            PaletteEntry::View { .. } | PaletteEntry::Builtin { .. } => ("Plugins", 3),
+            PaletteEntry::View { .. } => ("Plugins", 3),
             PaletteEntry::Command { .. } => ("COMMANDS", 4),
             PaletteEntry::UserCommand { .. } => ("RUN", 5),
         }
@@ -309,7 +322,7 @@ impl PaletteEntry {
 
     fn primary_label(&self) -> &str {
         match self {
-            PaletteEntry::Command { name, .. } | PaletteEntry::Builtin { name, .. } => name,
+            PaletteEntry::Command { name, .. } => name,
             PaletteEntry::Context { name, .. }
             | PaletteEntry::UnavailableContext { name, .. }
             | PaletteEntry::View { name, .. }
@@ -325,7 +338,6 @@ impl PaletteEntry {
             PaletteEntry::Context { search_text, .. }
             | PaletteEntry::UnavailableContext { search_text, .. }
             | PaletteEntry::View { search_text, .. }
-            | PaletteEntry::Builtin { search_text, .. }
             | PaletteEntry::Note { search_text, .. }
             | PaletteEntry::UpdateReady { search_text, .. }
             | PaletteEntry::UserCommand { search_text, .. } => search_text.as_str(),
@@ -398,17 +410,15 @@ impl PaletteEntry {
                 description,
                 plugin_metadata_chips(running_in_background, is_workspace_local).to_vec(),
             ),
-            PaletteEntry::Builtin {
-                name, description, ..
-            } => (
-                name.to_string(),
-                description.to_string(),
-                vec!["view", "Bundled"],
-            ),
             PaletteEntry::Note { title, preview, .. } => (title, preview, vec!["text"]),
             PaletteEntry::UpdateReady { version, .. } => (
                 format!("Update ready: v{version}"),
-                "Restart to update · asks before closing running panes".to_string(),
+                match shortcut {
+                    Some(shortcut) => format!(
+                        "Restart to update · asks before closing running panes · {shortcut}"
+                    ),
+                    None => "Restart to update · asks before closing running panes".to_string(),
+                },
                 vec!["update"],
             ),
             PaletteEntry::UserCommand {
@@ -418,6 +428,10 @@ impl PaletteEntry {
                 ..
             } => (name, secondary, vec!["run", user_command_scope_id(scope)]),
         };
+        let mut actions = vec![id.action()];
+        if id.assignable_command().is_some() {
+            actions.push(ASSIGN_SHORTCUT);
+        }
         let row = PickerRow {
             key: id.key(),
             title,
@@ -431,7 +445,7 @@ impl PaletteEntry {
             unavailable,
             attention: None,
             inline_preview: None,
-            actions: vec![id.action()],
+            actions,
             usage: None,
             modified: None,
             preview: None,
@@ -450,255 +464,11 @@ struct PaletteFocusTarget {
     pane_id: Option<u64>,
 }
 
-/// Palette commands either dispatch the canonical host key action or perform
-/// the palette-only scoped config handoffs.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum PaletteCommand {
-    Host(crate::host::keys::Action),
-    OpenGlobalConfig,
-    OpenWorkspaceConfig,
-    StatePreset(&'static str),
-    /// Open the effective `commands.toml` (workspace if in a workspace, else
-    /// global) in a `text-editor` split, creating it from a template if absent.
-    EditCommands,
-    /// Switch the focused `commands.toml` editor between workspace and global scope.
-    SwitchCommandsScope,
-    /// Open the Attention Queue list (`plugin::attention_queue`).
-    OpenAttention,
-    /// Install the CLI launcher, completions, and PATH registration for external terminals.
-    SetupCli,
-    UiUpcycle(&'static str),
-    /// Check for a newer build now, skipping the update cache.
-    CheckForUpdates,
-    /// Restart into the downloaded build. Listed only while one is ready.
-    RestartToUpdate,
-    /// Close every pane in the active window's selection. Listed only while
-    /// a selection exists; shares the close-pane shortcut.
-    CloseSelectedPanes,
+struct PaletteInvocation {
+    focus: PaletteFocusTarget,
+    selection: Option<crate::host::model::PaneSelection>,
 }
-
-struct PaletteCommandEntry {
-    command: PaletteCommand,
-    name: &'static str,
-    description: &'static str,
-    search_text: &'static str,
-}
-
-const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
-    PaletteCommandEntry {
-        command: PaletteCommand::StatePreset("default"),
-        name: "Settings: agent states — default",
-        description: "Apply agent state colors; shapes always identify the state",
-        search_text: "settings preferences theme state preset default colorblind contrast",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::StatePreset("okabe-ito"),
-        name: "Settings: agent states — okabe-ito",
-        description: "Apply agent state colors; shapes always identify the state",
-        search_text: "settings preferences theme state preset okabe-ito colorblind contrast",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::StatePreset("high-contrast"),
-        name: "Settings: agent states — high-contrast",
-        description: "Apply agent state colors; shapes always identify the state",
-        search_text: "settings preferences theme state preset high-contrast colorblind contrast",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::StatePreset("mono"),
-        name: "Settings: agent states — mono",
-        description: "Apply agent state colors; shapes always identify the state",
-        search_text: "settings preferences theme state preset mono colorblind contrast",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::UiUpcycle("git"),
-        name: "UI upcycle: git",
-        description: "Open git's curated command list and forms",
-        search_text: "ui upcycle git cli visualizer commands forms",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::UiUpcycle("cargo"),
-        name: "UI upcycle: cargo",
-        description: "Open cargo's curated command list and forms",
-        search_text: "ui upcycle cargo cli visualizer commands forms",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::UiUpcycle("gh"),
-        name: "UI upcycle: gh",
-        description: "Open gh's curated command list and forms",
-        search_text: "ui upcycle gh cli visualizer commands forms",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::SplitRight),
-        name: "Split right",
-        description: "Split right: a new terminal, or a new copy of the focused view",
-        search_text: "split right new terminal shell console pane vsplit vertical",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::SplitDown),
-        name: "Split down",
-        description: "Split down: a new terminal, or a new copy of the focused view",
-        search_text: "split down below new terminal shell console pane hsplit horizontal",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::OpenGlobalConfig,
-        name: "Open config: everywhere",
-        description: "Edit the channel-wide Plexi config file",
-        search_text: "open config: everywhere global settings preferences config.toml configuration channel",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::OpenWorkspaceConfig,
-        name: "Open config: this repo",
-        description: "Edit config for the active workspace scope",
-        search_text: "open config: this repo workspace settings preferences config.toml configuration scoped project local",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::EditCommands,
-        name: "Edit commands",
-        description: "Edit commands.toml for the active workspace or global profile",
-        search_text: "edit commands commands.toml alias aliases hub scripts run workspace global",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::SwitchCommandsScope,
-        name: "Switch commands scope",
-        description: "Switch commands editor between workspace and global scope",
-        search_text: "switch commands scope toggle global workspace",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::OpenChangelog),
-        name: "Changelog",
-        description: "Show what changed in this version",
-        search_text: "changelog release notes what's new version",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::CheckForUpdates,
-        name: "Check for updates",
-        description: "Look for a newer Plexi build on this channel now",
-        search_text: "check for updates update upgrade new version release download",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::ToggleShortcuts),
-        name: "Keyboard shortcuts",
-        description: "Show keyboard shortcuts reference",
-        search_text: "keyboard shortcuts keybindings help reference cheatsheet",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::ReloadConfig),
-        name: "Reload configuration",
-        description: "Reload global and active-workspace configuration",
-        search_text: "reload config configuration settings global workspace scoped refresh",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::OpenNotesPicker),
-        name: "Browse notes",
-        description: "Open the notes picker for global and context notes",
-        search_text: "browse notes note picker open find global context",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::OpenFileBrowser),
-        name: "File Explorer",
-        description: "Browse files and directories in the focused context",
-        search_text: "file explorer file browser browse directory folder tree open files",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::FocusApproval),
-        name: "Focus oldest approval",
-        description: "Focus the permission banner for a keyboard decision",
-        search_text: "attention approval permission keyboard allow deny",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::OpenAgents),
-        name: "Open Agents pane",
-        description: "Review tasks, workers and blocking reasons",
-        search_text: "agents fleet team task workers blocked status",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::OpenSecretsManager),
-        name: "Open Secrets",
-        description: "Manage scoped credentials, usage and grants",
-        search_text: "open secrets credentials keys global workspace folder import env",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::ToggleAttentionQueue),
-        name: "Review notifications",
-        description: "Open or close the attention queue list",
-        search_text: "review notifications notification attention queue alerts inbox pending",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::OpenAttention,
-        name: "Review issues needing attention",
-        description: "Open the attention queue for approvals, questions and host notices",
-        search_text: "needs attention review issues errors problems keychain integrity approvals recovery diagnostics",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::SetupCli,
-        name: "Install 'plexi' CLI in PATH",
-        description: "Install the ~/.local/bin launcher, completions, and PATH registration",
-        search_text: "install plexi cli path completions setup terminal command",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote),
-        name: "Quick Note",
-        description: "Capture a note in the current context",
-        search_text: "quick note capture inbox memo",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::IncreasePaneFontSize),
-        name: "Increase text size",
-        description: "Make the focused pane's text larger",
-        search_text: "text size font larger bigger increase pane terminal",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::DecreasePaneFontSize),
-        name: "Decrease text size",
-        description: "Make the focused pane's text smaller",
-        search_text: "text size font smaller decrease pane terminal",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::ResetPaneFontSize),
-        name: "Reset text size",
-        description: "Restore the focused pane's text size to default",
-        search_text: "text size font reset default pane terminal",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::UiScaleUp),
-        name: "Increase UI scale",
-        description: "Make the whole interface larger",
-        search_text: "ui scale zoom larger bigger increase interface",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::UiScaleDown),
-        name: "Decrease UI scale",
-        description: "Make the whole interface smaller",
-        search_text: "ui scale zoom smaller decrease interface",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::UiScaleReset),
-        name: "Reset UI scale",
-        description: "Restore the interface to 100%",
-        search_text: "ui scale zoom reset default actual size",
-    },
-    PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::OpenScratchpad),
-        name: "Scratch Pad",
-        description: "Open a fresh scratch note editor",
-        search_text: "scratch pad scratchpad note editor inbox memo",
-    },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewContext), name: "New context", description: "Create a new context", search_text: "new create open context workspace" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenameContext), name: "Rename context", description: "Rename the selected context", search_text: "rename context workspace" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::CloseContext), name: "Close context", description: "Close the selected context (confirmation required)", search_text: "close delete context workspace" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ParkContext), name: "Park or unpark context", description: "Park or restore the selected context", search_text: "park unpark restore context workspace" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ContextZoomOut), name: "Go to parent context", description: "Close the open overlay, else return to the parent context", search_text: "parent context zoom out back" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewTab), name: "New tab", description: "Create a new tab in the selected context", search_text: "new tab pane terminal" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewPageRight), name: "New window", description: "Create a new window in the current context", search_text: "new pane page window right" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenamePane), name: "Rename pane", description: "Rename the selected pane", search_text: "rename pane tab" },
-    PaletteCommandEntry { command: PaletteCommand::CloseSelectedPanes, name: "Close selected panes", description: "Close every selected pane, asking about unsaved work one pane at a time", search_text: "close selected panes selection all multiple" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the focused pane (dismisses overlays and view back-stacks first)", search_text: "close pane tab" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ToggleZoom), name: "Zoom pane", description: "Zoom or restore the selected pane (dives into an agent's children first)", search_text: "zoom restore pane fullscreen" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ZoomIn), name: "Wrap selection or enter pane", description: "Wrap selected panes, enter a portal, or toggle pane zoom", search_text: "wrap selection group subcontext zoom enter" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NextTab), name: "Next tab", description: "Focus the next tab", search_text: "next tab forward" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::PrevTab), name: "Previous tab", description: "Focus the previous tab", search_text: "previous tab back" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NavBackView), name: "Back", description: "Go back in pane navigation or focus history", search_text: "back previous history pane" },
-];
 
 /// The pinned "Update ready" row, when a build is ready and the query matches.
 fn update_ready_entry(ready: Option<&str>, query: &str) -> Option<PaletteEntry> {
@@ -719,42 +489,6 @@ fn searchable_text(parts: &[&str]) -> String {
 
 fn normalized_palette_query(query: &str) -> String {
     query.trim().to_lowercase()
-}
-
-fn shortcut_label((modifiers, key): (egui::Modifiers, egui::Key)) -> String {
-    let mut parts = Vec::new();
-    if modifiers.command {
-        parts.push(if cfg!(target_os = "macos") {
-            "⌘"
-        } else {
-            "Ctrl"
-        });
-    }
-    if modifiers.ctrl && !modifiers.command {
-        parts.push(if cfg!(target_os = "macos") {
-            "⌃"
-        } else {
-            "Ctrl"
-        });
-    }
-    if modifiers.alt {
-        parts.push(if cfg!(target_os = "macos") {
-            "⌥"
-        } else {
-            "Alt"
-        });
-    }
-    if modifiers.shift {
-        parts.push(if cfg!(target_os = "macos") {
-            "⇧"
-        } else {
-            "Shift"
-        });
-    }
-    let separator = if cfg!(target_os = "macos") { "" } else { "+" };
-    let prefix = parts.join(separator);
-    let key_separator = (!prefix.is_empty() && !cfg!(target_os = "macos")).then_some("+");
-    format!("{prefix}{}{}", key_separator.unwrap_or(""), key.name())
 }
 
 fn inactive_pane_matches_query(pane_name: &str, query: &str) -> bool {
@@ -784,27 +518,13 @@ pub(crate) struct PendingUserCommand {
 
 #[cfg(test)]
 fn palette_command_matches(query: &str) -> Vec<PaletteCommand> {
-    PALETTE_COMMANDS
-        .iter()
+    palette_commands()
+        .filter(|entry| entry.command != PaletteCommand::RestartToUpdate)
         .filter(|entry| query.is_empty() || entry.search_text.contains(query))
         .map(|entry| entry.command.clone())
         .collect()
 }
 
-struct BuiltinPaletteView {
-    id: &'static str,
-    name: &'static str,
-    description: &'static str,
-    gate: crate::release::ReleaseFeature,
-}
-
-/// Builtin host plugins surfaced in the palette alongside registry plugins.
-const BUILTIN_VIEWS: &[BuiltinPaletteView] = &[BuiltinPaletteView {
-    id: "assistant",
-    name: "Assistant",
-    description: "Host-native AI chat for this workspace",
-    gate: crate::release::ReleaseFeature::Assistant,
-}];
 
 pub(crate) fn plugin_metadata_chips(
     running_in_background: bool,
@@ -1058,98 +778,68 @@ fn pane_row_identity(
     }
 }
 
-/// Key chord shown next to a palette command, if the host binds one.
+#[cfg(test)]
 fn palette_host_binding(
     bindings: &crate::host::keys::KeyBindings,
     command: &PaletteCommand,
 ) -> Option<(egui::Modifiers, egui::Key)> {
-    use crate::host::keys::Action;
-    let binding = match command {
-        PaletteCommand::Host(Action::NextBlockedAgent) => bindings.next_blocked_agent,
-        PaletteCommand::Host(Action::FocusApproval) => bindings.focus_approval,
-        PaletteCommand::Host(Action::OpenAgents) => bindings.open_agents,
-        PaletteCommand::Host(Action::OpenSecretsManager) => bindings.open_secrets_manager,
-        // Cmd+, opens the chooser rather than this global-only action.
-        PaletteCommand::Host(Action::OpenConfig) => return None,
-        PaletteCommand::Host(Action::ReloadConfig) => bindings.reload_config,
-        PaletteCommand::Host(Action::OpenNotesPicker) => bindings.open_notes_picker,
-        PaletteCommand::Host(Action::OpenFileBrowser) => bindings.open_file_browser,
-        PaletteCommand::Host(Action::ToggleAttentionQueue) => bindings.toggle_attention_queue,
-        PaletteCommand::Host(Action::ZoomIn) => bindings.zoom_in,
-        PaletteCommand::Host(Action::SplitRight) => bindings.split_right,
-        PaletteCommand::Host(Action::SplitDown) => bindings.split_down,
-        PaletteCommand::Host(Action::OpenQuickNote) => bindings.open_quick_note,
-        PaletteCommand::Host(Action::OpenScratchpad) => bindings.open_scratchpad,
-        PaletteCommand::Host(Action::NewContext) => bindings.new_context,
-        PaletteCommand::Host(Action::RenameContext) => bindings.rename_context,
-        PaletteCommand::Host(Action::CloseContext) => bindings.close_context,
-        PaletteCommand::Host(Action::ParkContext) => bindings.park_context,
-        PaletteCommand::Host(Action::ContextZoomOut) => bindings.context_zoom_out,
-        PaletteCommand::Host(Action::NewTab) => bindings.new_tab,
-        PaletteCommand::Host(Action::NextTab) => bindings.next_tab,
-        PaletteCommand::Host(Action::PrevTab) => bindings.prev_tab,
-        PaletteCommand::Host(Action::NewPageRight) => bindings.new_page_right,
-        PaletteCommand::Host(Action::RenamePane) => bindings.rename_pane,
-        PaletteCommand::Host(Action::ClosePane) | PaletteCommand::CloseSelectedPanes => {
-            bindings.close_pane
-        }
-        PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
-        PaletteCommand::Host(Action::NavBackView) => return bindings.nav_back,
-        PaletteCommand::Host(Action::ToggleShortcuts) => bindings.toggle_shortcuts,
-        PaletteCommand::Host(Action::IncreasePaneFontSize) => bindings.increase_font_size,
-        PaletteCommand::Host(Action::DecreasePaneFontSize) => bindings.decrease_font_size,
-        PaletteCommand::Host(Action::ResetPaneFontSize) => bindings.reset_font_size,
-        PaletteCommand::Host(Action::UiScaleUp) => bindings.ui_scale_up,
-        PaletteCommand::Host(Action::UiScaleDown) => bindings.ui_scale_down,
-        PaletteCommand::Host(Action::UiScaleReset) => bindings.ui_scale_reset,
-        PaletteCommand::OpenGlobalConfig
-        | PaletteCommand::OpenWorkspaceConfig
-        | PaletteCommand::EditCommands
-        | PaletteCommand::SwitchCommandsScope
-        | PaletteCommand::OpenAttention
-        | PaletteCommand::SetupCli
-        | PaletteCommand::StatePreset(_)
-        | PaletteCommand::UiUpcycle(_)
-        | PaletteCommand::CheckForUpdates
-        | PaletteCommand::RestartToUpdate => return None,
-        PaletteCommand::Host(other) => {
-            log_missing_palette_shortcut_once(other);
-            return None;
-        }
-    };
-    Some(binding)
-}
-
-/// Bindings with no palette label are logged once per action per process.
-/// Repeating the line on every Cmd+P open (the palette paints each command
-/// on every frame) drowned the host log.
-fn log_missing_palette_shortcut_once(action: &crate::host::keys::Action) {
-    use std::sync::Mutex;
-    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    let key = format!("{action:?}");
-    let mut seen = SEEN.lock().unwrap_or_else(|err| err.into_inner());
-    if seen.iter().any(|seen| seen == &key) {
-        return;
-    }
-    seen.push(key);
-    log::debug!("palette: no shortcut label for host binding {action:?}");
+    bindings.chord_for_action(command)
 }
 
 impl PlexiApp {
     fn palette_shortcut(&self, command: &PaletteCommand) -> Option<String> {
-        palette_host_binding(&self.key_bindings, command).map(shortcut_label)
+        self.key_bindings
+            .chord_for_action(command)
+            .map(shortcut_label)
     }
 
-    /// Commands that only apply in some states are listed only then.
-    fn palette_command_listed(&self, command: &PaletteCommand) -> bool {
-        match command {
-            PaletteCommand::OpenWorkspaceConfig => self.palette_config_workspace_root.is_some(),
-            // A selection of one is just the focused pane: "Close pane" covers it.
-            PaletteCommand::CloseSelectedPanes => self
-                .host
-                .pane_selection(self.windows[self.active_window].window_id)
-                .is_some_and(|selection| selection.panes.len() >= 2),
-            _ => true,
+    pub(crate) fn registered_command_unavailable(
+        &self,
+        command: &PaletteCommand,
+    ) -> Option<&'static str> {
+        match command.palette_entry()?.requirement {
+            CommandRequirement::Workspace if self.active_config_workspace_root().is_none() => {
+                Some("Open a workspace first")
+            }
+            CommandRequirement::Selection
+                if self
+                    .host
+                    .pane_selection(self.windows[self.active_window].window_id)
+                    .is_none_or(|selection| selection.panes.len() < 2) =>
+            {
+                Some("Select at least two panes")
+            }
+            CommandRequirement::Update if self.update_status.ready().is_none() => {
+                Some("No update is ready to install")
+            }
+            CommandRequirement::Assistant if self.config.core_only.unwrap_or(false) => {
+                Some("Assistant is unavailable in core-only mode")
+            }
+            CommandRequirement::Assistant
+                if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) =>
+            {
+                Some("Enable the Assistant experiment first")
+            }
+            _ => None,
+        }
+    }
+
+    fn palette_command_listed(&self, command: &PaletteCommand, query: &str) -> bool {
+        // A ready build has a pinned, versioned row. An explicit search can
+        // still explain why the restart command is unavailable before then.
+        *command != PaletteCommand::RestartToUpdate
+            || (!query.is_empty() && self.update_status.ready().is_none())
+    }
+
+    fn palette_invocation(&self) -> PaletteInvocation {
+        let window = &self.windows[self.active_window];
+        PaletteInvocation {
+            focus: PaletteFocusTarget {
+                context_id: window.context_id,
+                window_id: window.window_id,
+                pane_id: self.focused_pane_id(),
+            },
+            selection: self.host.pane_selection(window.window_id).cloned(),
         }
     }
 
@@ -1445,24 +1135,6 @@ impl PlexiApp {
             })
             .collect();
 
-        for app in BUILTIN_VIEWS {
-            if self.config.core_only.unwrap_or(false) {
-                continue;
-            }
-            if !crate::release::feature_enabled(app.gate) {
-                continue;
-            }
-            let search_text = searchable_text(&[app.name, app.id, app.description]);
-            if query.is_empty() || search_text.contains(&query) {
-                entries.push(PaletteEntry::Builtin {
-                    id: app.id,
-                    name: app.name,
-                    description: app.description,
-                    search_text,
-                });
-            }
-        }
-
         for (id, name, description, is_workspace_local, search_text) in plugin_entries {
             let running_in_background = self.background_apps.contains_key(&id);
             entries.push(PaletteEntry::View {
@@ -1476,12 +1148,12 @@ impl PlexiApp {
         }
 
         entries.extend(
-            PALETTE_COMMANDS
-                .iter()
-                .filter(|entry| self.palette_command_listed(&entry.command))
+            palette_commands()
+                .filter(|entry| self.palette_command_listed(&entry.command, &query))
                 .map(|entry| PaletteEntry::Command {
                     command: entry.command.clone(),
                     name: if entry.command == PaletteCommand::OpenWorkspaceConfig
+                        && self.palette_config_workspace_root.is_some()
                         && !self.palette_workspace_config_exists
                     {
                         "Open config: this repo (not created yet)"
@@ -1526,13 +1198,41 @@ impl PlexiApp {
         let mut rows = Vec::with_capacity(entries.len());
         let mut pips = std::collections::HashMap::new();
         let mut targets = std::collections::HashMap::new();
+        let invocation = self.palette_sources.invocation.as_ref();
+        let invoking_pane_label = invocation.and_then(|invocation| {
+            let pane = invocation.focus.pane_id?;
+            let window = self
+                .windows
+                .iter()
+                .find(|window| window.window_id == invocation.focus.window_id)?;
+            window
+                .panes
+                .get(&pane)
+                .map(|pane| pane_row_identity(pane, &context_names).0)
+        });
+        let selection_label = invocation.and_then(|invocation| {
+            let selection = invocation.selection.as_ref()?;
+            Some(format!("{} selected panes", selection.panes.len()))
+        });
         for entry in entries {
-            let shortcut = match &entry {
-                PaletteEntry::Command { command, .. } => self.palette_shortcut(command),
-                _ => None,
-            };
             let target = entry.row_id();
-            let (row, row_pips) = entry.into_row(&query, shortcut);
+            let shortcut = target
+                .assignable_command()
+                .and_then(|command| self.palette_shortcut(command));
+            let (mut row, row_pips) = entry.into_row(&query, shortcut);
+            if let CommandRowId::Command(command) = &target {
+                row.unavailable = self.registered_command_unavailable(command);
+                if let Some(entry) = command.palette_entry() {
+                    let target_label = match entry.target {
+                        CommandTarget::Pane => invoking_pane_label.as_deref(),
+                        CommandTarget::Selection => selection_label.as_deref(),
+                        _ => None,
+                    };
+                    if let Some(label) = target_label {
+                        row.secondary = format!("{label} · {}", row.secondary);
+                    }
+                }
+            }
             if let Some(row_pips) = row_pips {
                 pips.insert(row.key.clone(), row_pips);
             }
@@ -1552,6 +1252,7 @@ impl PlexiApp {
     /// the open-time caches (`palette_workspace_root`, notes, user commands)
     /// first.
     pub(crate) fn open_command_palette(&mut self, query: &str) {
+        self.palette_sources.invocation = Some(self.palette_invocation());
         // Usage history loads in the background on the first open.
         self.palette_sources
             .usage
@@ -1592,6 +1293,7 @@ impl PlexiApp {
         if effects.is_empty() {
             return;
         }
+        let mut invocation = None;
         let mut activation = None;
         for HostEffect::Picker(id, effect) in effects {
             match effect {
@@ -1628,6 +1330,9 @@ impl PlexiApp {
                             self.palette_sources.usage.record(row.as_str());
                             activation = Some(PaletteTarget::Command(id));
                         }
+                        Some(PaletteTarget::Command(id)) if ASSIGN_SHORTCUT.id == action => {
+                            activation = id.assignable_command().cloned().map(PaletteTarget::AssignShortcut);
+                        }
                         Some(PaletteTarget::File(path)) if OPEN_FILE.id == action => {
                             self.palette_sources.usage.record(row.as_str());
                             activation = Some(PaletteTarget::File(path));
@@ -1645,6 +1350,7 @@ impl PlexiApp {
                     self.palette_answer = None;
                     let sources = &mut self.palette_sources;
                     sources.root = None;
+                    invocation = sources.invocation.take();
                     sources.asked = None;
                     sources.texture = None;
                     self.palette_agents = Default::default();
@@ -1653,15 +1359,20 @@ impl PlexiApp {
         }
         self.sync_command_palette_focus();
         if let Some(target) = activation {
-            self.run_palette_target(target);
+            self.run_palette_target(target, invocation.as_ref());
         }
     }
 
     /// Open the files the palette activated: resolve each against host state
     /// here, read it on a worker, and finish the open once the read is in.
     fn drain_palette_opens(&mut self) {
-        for (path, anchor) in std::mem::take(&mut self.palette_sources.queued_opens) {
-            let Some(request) = self.open_request(anchor, &path) else {
+        for (path, invocation) in std::mem::take(&mut self.palette_sources.queued_opens) {
+            if !self.revalidate_palette_invocation("file.open", &invocation) {
+                continue;
+            }
+            let Some(request) =
+                self.open_request(invocation.focus.pane_id.unwrap_or_default(), &path)
+            else {
                 continue;
             };
             let (done, prepared) = std::sync::mpsc::channel();
@@ -1674,15 +1385,19 @@ impl PlexiApp {
                     wake.wake("palette_open");
                 });
             match spawned {
-                Ok(_) => self.palette_sources.preparing.push((anchor, prepared)),
+                Ok(_) => self.palette_sources.preparing.push((invocation, prepared)),
                 Err(error) => log::warn!("palette: could not start opening a file: {error}"),
             }
         }
-        for (anchor, prepared) in std::mem::take(&mut self.palette_sources.preparing) {
+        for (invocation, prepared) in std::mem::take(&mut self.palette_sources.preparing) {
             match prepared.try_recv() {
-                Ok(prepared) => self.finish_open(anchor, prepared),
+                Ok(prepared) => {
+                    if self.revalidate_palette_invocation("file.open", &invocation) {
+                        self.finish_open(invocation.focus.pane_id.unwrap_or_default(), prepared);
+                    }
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.palette_sources.preparing.push((anchor, prepared));
+                    self.palette_sources.preparing.push((invocation, prepared));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     log::warn!("palette: a file open's reader exited without an answer");
@@ -1700,7 +1415,7 @@ impl PlexiApp {
             .and_then(|answer| answer.targets.get(&row))
             .and_then(|target| match target {
                 PaletteTarget::File(path) => Some(path.clone()),
-                PaletteTarget::Command(_) => None,
+                PaletteTarget::Command(_) | PaletteTarget::AssignShortcut(_) => None,
             });
         let Some(path) = path else {
             log::warn!("palette: a preview was asked for a row with no file");
@@ -1830,6 +1545,11 @@ impl PlexiApp {
     /// every later pass so live rows (pane state, context pips, update ready)
     /// stay current. Serviced from `App::logic`, never from drawing.
     pub(crate) fn refresh_command_palette(&mut self) {
+        if let Some((command, invocation)) = self.palette_sources.queued_binding_edit.take() {
+            if self.revalidate_palette_invocation(command.command_id(), &invocation) {
+                self.open_binding_config(&command);
+            }
+        }
         self.drain_palette_opens();
         self.palette_sources.usage.poll();
         self.drain_palette_previews();
@@ -2712,9 +2432,28 @@ impl PlexiApp {
 
     /// Run an activated row: a Commands row, or open a file through the
     /// host's one open resolver, anchored on the pane the palette serves.
-    fn run_palette_target(&mut self, target: PaletteTarget) {
+    fn run_palette_target(
+        &mut self,
+        target: PaletteTarget,
+        invocation: Option<&PaletteInvocation>,
+    ) {
         match target {
-            PaletteTarget::Command(id) => self.run_palette_selection(id),
+            PaletteTarget::Command(id) => {
+                if id.assignable_command().is_some_and(|command| {
+                    invocation.is_none_or(|invocation| {
+                        !self.revalidate_palette_invocation(command.command_id(), invocation)
+                    })
+                }) {
+                    return;
+                }
+                self.run_palette_selection(id);
+            }
+            PaletteTarget::AssignShortcut(command) => {
+                if let Some(invocation) = invocation {
+                    self.palette_sources.queued_binding_edit = Some((command, invocation.clone()));
+                    self.ctx.request_repaint();
+                }
+            }
             PaletteTarget::File(path) => {
                 #[cfg(test)]
                 if let Some(key) = crate::host::picker::files::file_key(&path) {
@@ -2722,12 +2461,55 @@ impl PlexiApp {
                 }
                 // Only queued here: the open reads the disk, so it is
                 // resolved in `App::logic` and read on a worker.
-                let anchor = self.focused_pane_id().unwrap_or_default();
-                log::info!("palette: queued a file result to open beside pane {anchor}");
-                self.palette_sources.queued_opens.push((path, anchor));
-                self.ctx.request_repaint();
+                if let Some(invocation) = invocation {
+                    log::info!("palette: queued file.open pane={:?}", invocation.focus.pane_id);
+                    self.palette_sources.queued_opens.push((path, invocation.clone()));
+                    self.ctx.request_repaint();
+                }
             }
         }
+    }
+
+    fn revalidate_palette_invocation(
+        &mut self,
+        id: &str,
+        invocation: &PaletteInvocation,
+    ) -> bool {
+        if *invocation == self.palette_invocation() {
+            return true;
+        }
+        let PaletteFocusTarget {
+            context_id,
+            window_id,
+            pane_id,
+        } = invocation.focus;
+        log::info!("command: rejected id={id} context={context_id} window={window_id} pane={pane_id:?} reason=invoking target changed");
+        self.attention_queue.transient_hint = Some((
+            "The pane, window, context or selection changed. Reopen the command palette to try again.".into(),
+            std::time::Instant::now(),
+        ));
+        false
+    }
+
+    fn open_binding_config(&mut self, command: &PaletteCommand) {
+        let Some(entry) = command.palette_entry() else {
+            return;
+        };
+        let id = entry.id;
+        let path = crate::config::ensure_config_file();
+        self.open_config_in_editor(path.clone());
+        if let Some(editor) = self
+            .focused_pane_id()
+            .and_then(|pane| self.windows[self.active_window].panes.get_mut(&pane))
+            .and_then(|pane| pane.as_view_mut())
+            .and_then(|view| match &mut view.runtime {
+                crate::host::pane::ViewRuntime::Builtin(editor) => Some(editor),
+                _ => None,
+            })
+        {
+            editor.show_binding_hint_for(&path, id);
+        }
+        log::info!("command: opened binding config id={id}");
     }
 
     /// Execute a Commands-stop row.
@@ -2740,7 +2522,6 @@ impl PlexiApp {
             CommandRowId::Focus(_) => "focus",
             CommandRowId::Unavailable(_) => "unavailable",
             CommandRowId::View(_) => "view",
-            CommandRowId::Builtin(_) => "builtin",
             CommandRowId::Note(_) => "note",
             CommandRowId::UserCommand { .. } => "user-command",
             CommandRowId::UpdateReady(_) => "update-ready",
@@ -2757,7 +2538,6 @@ impl PlexiApp {
                 log::warn!("palette: parked context '{name}' has no live window to restore");
             }
             CommandRowId::View(id) => self.launch_view_by_id(&id),
-            CommandRowId::Builtin(id) => self.launch_builtin_by_id(id),
             CommandRowId::Note(path) => {
                 if let Some(pane_id) = self.find_open_note_pane(&path) {
                     log::info!("palette: note already open in pane {pane_id}, navigating");
@@ -2769,30 +2549,13 @@ impl PlexiApp {
         }
     }
 
-    /// Launch a host-native builtin palette entry by its id.
-    pub(crate) fn launch_builtin_by_id(&mut self, id: &str) {
-        if self.plugin_blocked(id) {
-            return;
-        }
-        log::info!("palette: launching builtin plugin '{id}'");
-        match id {
-            "assistant" => {
-                if crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
-                    self.open_assistant_pane();
-                } else {
-                    log::info!(
-                        "assistant: palette launch blocked; the assistant experiment is off"
-                    );
-                }
-            }
-            other => log::warn!("palette: unknown builtin plugin id '{other}'"),
-        }
+    fn run_palette_command(&mut self, command: PaletteCommand) {
+        let ctx = self.ctx.clone();
+        self.dispatch_host_action(command, &ctx);
     }
 
-    /// Execute the subset of keyboard bindings intentionally surfaced by the
-    /// palette. The descriptor is the host binding `Action`, so labels/search
-    /// metadata cannot drift onto a private palette-only command enum.
-    fn run_palette_command(&mut self, command: PaletteCommand) {
+    /// Existing UI entry points shared by palette and keyboard dispatch.
+    pub(crate) fn run_registered_command_ui(&mut self, command: PaletteCommand) {
         if matches!(command, PaletteCommand::UiUpcycle(_)) && self.plugin_blocked("cli-renderer") {
             return;
         }
@@ -2820,7 +2583,6 @@ impl PlexiApp {
                     log::error!("palette: UI upcycle '{binary}' descriptor failed: {error}")
                 }
             },
-            PaletteCommand::Host(action) => self.run_palette_host_binding(action),
             PaletteCommand::OpenAttention => {
                 self.sync_attention_queue();
                 self.attention_queue.open = true;
@@ -2854,12 +2616,7 @@ impl PlexiApp {
                 self.open_config_in_editor(path);
             }
             PaletteCommand::OpenWorkspaceConfig => {
-                let Some(root) = self
-                    .palette_config_workspace_root
-                    .clone()
-                    .or_else(|| self.active_config_workspace_root())
-                else {
-                    log::warn!("palette: workspace config requested outside a workspace");
+                let Some(root) = self.active_config_workspace_root() else {
                     return;
                 };
                 log::info!("palette: opening workspace config at {}", root.display());
@@ -2867,7 +2624,7 @@ impl PlexiApp {
                 self.open_config_in_editor(path);
             }
             PaletteCommand::EditCommands => {
-                let ws_root = self.effective_commands_workspace_root();
+                let ws_root = self.commands_workspace_root_at_focus();
                 let path = crate::cli::ensure_commands_file(ws_root.as_deref());
                 log::info!(
                     "palette: opening commands.toml at {} (workspace_root={:?})",
@@ -2907,6 +2664,7 @@ impl PlexiApp {
                 }
                 Err(error) => log::error!("palette: SetupCli failed: {error}"),
             },
+            other => unreachable!("unsupported registered UI action: {}", other.command_id()),
         }
     }
 
@@ -2921,22 +2679,20 @@ impl PlexiApp {
     }
 
     pub(crate) fn effective_commands_workspace_root(&self) -> Option<std::path::PathBuf> {
-        self.palette_workspace_root.clone().or_else(|| {
-            let win = &self.windows[self.active_window];
-            let focused_tile = win
-                .focused_pane
-                .or_else(|| win.tree.root.and_then(|r| win.find_first_pane_in(r)));
-            focused_tile
-                .and_then(|tile_id| win.get_focused_pane_cwd(tile_id))
-                .and_then(|cwd| crate::cli::resolve_commands_workspace_root(&cwd))
-                .or_else(|| crate::cli::resolve_commands_workspace_root(&self.router.active().root))
-        })
+        self.palette_workspace_root
+            .clone()
+            .or_else(|| self.commands_workspace_root_at_focus())
     }
 
-    fn run_palette_host_binding(&mut self, action: crate::host::keys::Action) {
-        log::info!("palette: executing host binding {action:?}");
-        let ctx = self.ctx.clone();
-        self.dispatch_host_action(action, &ctx);
+    fn commands_workspace_root_at_focus(&self) -> Option<std::path::PathBuf> {
+        let win = &self.windows[self.active_window];
+        let focused_tile = win
+            .focused_pane
+            .or_else(|| win.tree.root.and_then(|r| win.find_first_pane_in(r)));
+        focused_tile
+            .and_then(|tile_id| win.get_focused_pane_cwd(tile_id))
+            .and_then(|cwd| crate::cli::resolve_commands_workspace_root(&cwd))
+            .or_else(|| crate::cli::resolve_commands_workspace_root(&self.router.active().root))
     }
 
     /// Execute a user-authored command. Stepped commands (`steps = [...]`) or
@@ -4275,52 +4031,45 @@ mod tests {
         assert_eq!(
             palette_command_matches("shell"),
             vec![
-                PaletteCommand::Host(crate::host::keys::Action::SplitRight),
-                PaletteCommand::Host(crate::host::keys::Action::SplitDown),
+                crate::host::keys::Action::SplitRight,
+                crate::host::keys::Action::SplitDown,
             ]
         );
         assert_eq!(
             palette_command_matches("console"),
             vec![
-                PaletteCommand::Host(crate::host::keys::Action::SplitRight),
-                PaletteCommand::Host(crate::host::keys::Action::SplitDown),
+                crate::host::keys::Action::SplitRight,
+                crate::host::keys::Action::SplitDown,
             ]
         );
         assert_eq!(
             palette_command_matches("hsplit"),
-            vec![PaletteCommand::Host(crate::host::keys::Action::SplitDown)]
+            vec![crate::host::keys::Action::SplitDown]
         );
-        assert_eq!(
-            palette_command_matches("config"),
-            vec![
-                PaletteCommand::OpenGlobalConfig,
-                PaletteCommand::OpenWorkspaceConfig,
-                PaletteCommand::Host(crate::host::keys::Action::ReloadConfig),
-            ]
-        );
+        let config = palette_command_matches("config");
+        for action in [
+            PaletteCommand::OpenGlobalConfig,
+            PaletteCommand::OpenWorkspaceConfig,
+            PaletteCommand::ReloadConfig,
+            PaletteCommand::OpenConfig,
+        ] {
+            assert!(config.contains(&action));
+        }
         assert_eq!(
             palette_command_matches("notification"),
-            vec![PaletteCommand::Host(
-                crate::host::keys::Action::ToggleAttentionQueue
-            )]
+            vec![crate::host::keys::Action::ToggleAttentionQueue]
         );
         assert_eq!(
             palette_command_matches("picker"),
-            vec![PaletteCommand::Host(
-                crate::host::keys::Action::OpenNotesPicker
-            )]
+            vec![crate::host::keys::Action::OpenNotesPicker]
         );
         assert_eq!(
             palette_command_matches("scratchpad"),
-            vec![PaletteCommand::Host(
-                crate::host::keys::Action::OpenScratchpad
-            )]
+            vec![crate::host::keys::Action::OpenScratchpad]
         );
         assert_eq!(
             palette_command_matches("scratch pad"),
-            vec![PaletteCommand::Host(
-                crate::host::keys::Action::OpenScratchpad
-            )]
+            vec![crate::host::keys::Action::OpenScratchpad]
         );
     }
 
@@ -4331,7 +4080,7 @@ mod tests {
     #[test]
     fn palette_registers_file_explorer_with_search_aliases_and_configured_shortcut() {
         use crate::host::keys::{Action, KeyBindings};
-        let command = PaletteCommand::Host(Action::OpenFileBrowser);
+        let command = Action::OpenFileBrowser;
 
         for query in [
             "file explorer",
@@ -4348,10 +4097,9 @@ mod tests {
             );
         }
 
-        let entry = PALETTE_COMMANDS
-            .iter()
+        let entry = palette_commands()
             .find(|entry| entry.command == command)
-            .expect("File Explorer must be registered in PALETTE_COMMANDS");
+            .expect("File Explorer must be registered");
         assert_eq!(entry.name, "File Explorer");
 
         let mut bindings = KeyBindings::default();
@@ -4501,7 +4249,7 @@ mod tests {
     #[test]
     fn palette_changelog_search_and_open_are_idempotent() {
         use crate::host::keys::Action;
-        let command = PaletteCommand::Host(Action::OpenChangelog);
+        let command = Action::OpenChangelog;
         for query in ["changelog", "release notes", "what's new", "version"] {
             assert!(
                 palette_command_matches(query).contains(&command),
@@ -4532,13 +4280,111 @@ mod tests {
             searchable_text(&["Open Config", "Settings", "CONFIG.toml"]),
             "open config settings config.toml"
         );
-        for entry in PALETTE_COMMANDS {
+        for entry in palette_commands() {
             assert_eq!(
                 entry.search_text,
                 entry.search_text.to_lowercase(),
                 "palette command search text must be pre-lowercased"
             );
         }
+    }
+
+    #[test]
+    fn palette_assignment_opens_config_and_reload_updates_invocation_and_label() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        h.app.open_command_palette("changelog");
+        h.run_frames(3);
+        h.app.apply_palette_command(PickerCommand::ShowActions);
+        let picker = h.app.host.picker(PickerId::Palette).unwrap();
+        assert_eq!(picker.selected_row().unwrap().title, "Changelog");
+        assert!(picker
+            .visible_actions()
+            .iter()
+            .any(|action| action.id == ASSIGN_SHORTCUT.id));
+        h.app
+            .apply_palette_command(PickerCommand::Accept(Some(ASSIGN_SHORTCUT.id)));
+        assert!(!h.app.command_palette_open());
+        h.run_frames(2);
+        let editor = h.app.focused_pane_id().unwrap();
+        assert_eq!(
+            h.app.windows[h.app.active_window].panes[&editor]
+                .as_view()
+                .unwrap()
+                .manifest_id,
+            "text-editor"
+        );
+
+        std::fs::write(
+            crate::config::config_path(),
+            "[keybindings]\nopen_changelog = 'cmd+alt+c'\n",
+        )
+        .unwrap();
+        h.app.reload_config();
+        let chord = egui::Modifiers::COMMAND | egui::Modifiers::ALT;
+        assert_eq!(
+            h.app.palette_shortcut(&PaletteCommand::OpenChangelog),
+            Some(shortcut_label((chord, egui::Key::C)))
+        );
+        // The newly mapped command uses the same action while focus sits
+        // in a regular host pane.
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        h.press_key(egui::Key::C, chord);
+        assert!(h.app.show_changelog);
+    }
+
+    #[test]
+    fn palette_rejects_a_disappeared_invoking_pane() {
+        let mut h = crate::testing::HostHarness::new();
+        let captured = h.add_test_pane();
+        let replacement = h.add_test_pane();
+        let context = h.app.router.active().context_id;
+        h.app
+            .set_context_columns(context, vec![vec![captured], vec![replacement]]);
+        h.focus_pane(captured).run_frames(2);
+        h.app.open_command_palette("rename pane");
+        let invocation = h.app.palette_sources.invocation.clone();
+        h.app.close_command_palette();
+        h.app.close_pane_by_id(captured);
+        h.focus_pane(replacement).run_frames(2);
+        crate::app::HOST_ACTION_PROBE.with(|probe| *probe.borrow_mut() = Some(Vec::new()));
+        h.app.run_palette_target(
+            PaletteTarget::Command(CommandRowId::Command(PaletteCommand::RenamePane)),
+            invocation.as_ref(),
+        );
+        let actions =
+            crate::app::HOST_ACTION_PROBE.with(|probe| probe.borrow_mut().take().unwrap());
+        assert!(
+            actions.is_empty(),
+            "stale row must not dispatch on the replacement pane"
+        );
+        assert!(h
+            .app
+            .attention_queue
+            .transient_hint
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("changed"));
+    }
+
+    #[test]
+    fn palette_reports_why_a_command_is_unavailable() {
+        let mut h = crate::testing::HostHarness::new();
+        h.app.open_command_palette("close selected panes");
+        h.run_frames(3);
+        let picker = h.app.host.picker(PickerId::Palette).unwrap();
+        let row = picker
+            .rows()
+            .iter()
+            .find(|row| row.title == "Close selected panes")
+            .unwrap();
+        assert_eq!(row.unavailable, Some("Select at least two panes"));
+        h.app.apply_palette_command(PickerCommand::Accept(None));
+        assert!(
+            h.app.command_palette_open(),
+            "disabled activation must leave the palette open"
+        );
     }
 
     #[test]
@@ -4555,79 +4401,11 @@ mod tests {
         assert_eq!(shortcut_label(configured), expected);
     }
 
-    /// Every host command the palette lists that has a key binding must show
-    /// that binding. The dogfood set (NewContext, ToggleZoom, NavBackView, …)
-    /// used to miss this match and warn once per row per Cmd+P open.
-    #[test]
-    fn palette_lists_a_shortcut_for_every_bound_host_command() {
-        use crate::host::keys::{Action, KeyBindings};
-        let bindings = KeyBindings::default();
-        for entry in PALETTE_COMMANDS {
-            match &entry.command {
-                PaletteCommand::OpenAttention => {
-                    assert!(
-                        palette_host_binding(&bindings, &entry.command).is_none(),
-                        "needs attention is a palette-only entry with no host chord"
-                    );
-                }
-                PaletteCommand::CloseSelectedPanes => {
-                    assert_eq!(
-                        palette_host_binding(&bindings, &entry.command),
-                        Some(bindings.close_pane),
-                        "close selected shares the close-pane chord, no second binding"
-                    );
-                }
-                PaletteCommand::OpenGlobalConfig
-                | PaletteCommand::OpenWorkspaceConfig
-                | PaletteCommand::EditCommands
-                | PaletteCommand::SwitchCommandsScope
-                | PaletteCommand::SetupCli
-                | PaletteCommand::StatePreset(_)
-                | PaletteCommand::UiUpcycle(_)
-                | PaletteCommand::CheckForUpdates
-                | PaletteCommand::RestartToUpdate => {
-                    assert!(
-                        palette_host_binding(&bindings, &entry.command).is_none(),
-                        "workspace config / edit commands are palette-only handoffs with no host chord"
-                    );
-                }
-                PaletteCommand::Host(
-                    Action::OpenConfig
-                    | Action::OpenChangelog
-                    | Action::NavBackView
-                    | Action::FocusHistoryForward
-                    | Action::NextContext
-                    | Action::PrevContext,
-                ) => {
-                    assert!(palette_host_binding(&bindings, &entry.command).is_none());
-                }
-                PaletteCommand::Host(action) => {
-                    let label = palette_host_binding(&bindings, &entry.command).map(shortcut_label);
-                    assert!(
-                        label.is_some(),
-                        "palette command {action:?} ({}) must show its shortcut, got None",
-                        entry.name
-                    );
-                }
-            }
-        }
-        // Actions the palette does not list stay quiet: one debug line, not a
-        // warn on every paint. Calling twice must not grow the seen-set twice
-        // in a way that changes the result — both calls return None.
-        let unlisted = PaletteCommand::Host(Action::CloseView);
-        assert!(
-            !PALETTE_COMMANDS.iter().any(|e| e.command == unlisted),
-            "CloseView must stay unlisted for this coverage"
-        );
-        assert!(palette_host_binding(&bindings, &unlisted).is_none());
-        assert!(palette_host_binding(&bindings, &unlisted).is_none());
-    }
-
     #[test]
     fn empty_palette_puts_commands_after_apps() {
         let entries = vec![
             PaletteEntry::Command {
-                command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
+                command: crate::host::keys::Action::OpenConfig,
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config",
@@ -4849,10 +4627,9 @@ mod tests {
     }
 
     fn registered_command_entry(command: PaletteCommand) -> PaletteEntry {
-        let entry = PALETTE_COMMANDS
-            .iter()
+        let entry = palette_commands()
             .find(|entry| entry.command == command)
-            .expect("palette command must be registered in PALETTE_COMMANDS");
+            .expect("palette command must be registered");
         PaletteEntry::Command {
             command: entry.command.clone(),
             name: entry.name,
@@ -4862,7 +4639,7 @@ mod tests {
     }
 
     fn file_explorer_command() -> PaletteCommand {
-        PaletteCommand::Host(crate::host::keys::Action::OpenFileBrowser)
+        crate::host::keys::Action::OpenFileBrowser
     }
 
     #[test]
@@ -4911,7 +4688,7 @@ mod tests {
             // Weak app: "open" only in its description text.
             view("viewer", "Viewer", "viewer demo open anything"),
             PaletteEntry::Command {
-                command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
+                command: crate::host::keys::Action::OpenConfig,
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config settings preferences",
@@ -4920,7 +4697,7 @@ mod tests {
             // command's title prefix but stronger than any description hit.
             view("reopen", "Reopen", "reopen demo"),
             PaletteEntry::Command {
-                command: PaletteCommand::Host(crate::host::keys::Action::OpenQuickNote),
+                command: crate::host::keys::Action::OpenQuickNote,
                 name: "Quick Note",
                 description: "Capture a note",
                 search_text: "quick note capture open inbox",
@@ -4943,7 +4720,7 @@ mod tests {
     fn typed_query_with_equal_relevance_keeps_default_group_order() {
         let entries = vec![
             PaletteEntry::Command {
-                command: PaletteCommand::Host(crate::host::keys::Action::OpenChangelog),
+                command: crate::host::keys::Action::OpenChangelog,
                 name: "Changelog",
                 description: "Show what changed",
                 search_text: "changelog",
@@ -4998,7 +4775,7 @@ mod tests {
                 search_text: "build cargo build run workspace ws".to_string(),
             },
             PaletteEntry::Command {
-                command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
+                command: crate::host::keys::Action::OpenConfig,
                 name: "Open config",
                 description: "Edit config",
                 search_text: "open config",
@@ -5065,9 +4842,7 @@ mod tests {
     fn palette_exposes_review_notifications() {
         assert_eq!(
             palette_command_matches("review notifications"),
-            vec![PaletteCommand::Host(
-                crate::host::keys::Action::ToggleAttentionQueue
-            )]
+            vec![crate::host::keys::Action::ToggleAttentionQueue]
         );
     }
 
@@ -5075,14 +4850,12 @@ mod tests {
     fn palette_exposes_open_secrets() {
         assert_eq!(
             palette_command_matches("open secrets"),
-            vec![PaletteCommand::Host(
-                crate::host::keys::Action::OpenSecretsManager
-            )]
+            vec![crate::host::keys::Action::OpenSecretsManager]
         );
         assert_eq!(
             palette_host_binding(
                 &crate::host::keys::KeyBindings::default(),
-                &PaletteCommand::Host(crate::host::keys::Action::OpenSecretsManager)
+                &crate::host::keys::Action::OpenSecretsManager
             ),
             Some(crate::host::keys::KeyBindings::default().open_secrets_manager)
         );
@@ -5107,7 +4880,7 @@ mod tests {
             }),
             CommandRowId::Unavailable("parked/work".into()),
             CommandRowId::View("todo".into()),
-            CommandRowId::Builtin("assistant"),
+            CommandRowId::Command(PaletteCommand::OpenAssistant),
             CommandRowId::Note(std::path::PathBuf::from("/tmp/notes/a:b.md")),
             CommandRowId::UserCommand {
                 name: "deploy/all".into(),
@@ -5434,10 +5207,10 @@ mod tests {
 
     #[test]
     fn palette_command_names_are_unique_row_ids() {
-        let mut names: Vec<_> = PALETTE_COMMANDS.iter().map(|entry| entry.name).collect();
+        let mut names: Vec<_> = palette_commands().map(|entry| entry.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), PALETTE_COMMANDS.len());
+        assert_eq!(names.len(), palette_commands().count());
     }
 
     #[test]
@@ -5727,21 +5500,13 @@ mod tests {
     #[test]
     fn every_registered_palette_host_command_reaches_shared_dispatcher() {
         let mut h = crate::testing::HostHarness::new();
-        let expected: Vec<_> = PALETTE_COMMANDS
-            .iter()
-            .filter_map(|entry| {
-                if let PaletteCommand::Host(action) = &entry.command {
-                    Some(action.clone())
-                } else {
-                    None
-                }
-            })
+        let expected: Vec<_> = palette_commands()
+            .map(|entry| entry.command.clone())
             .collect();
         assert!(!expected.is_empty());
         crate::app::HOST_ACTION_PROBE.with(|probe| *probe.borrow_mut() = Some(Vec::new()));
         for action in &expected {
-            h.app
-                .run_palette_command(PaletteCommand::Host(action.clone()));
+            h.app.run_palette_command(action.clone());
         }
         let actual = crate::app::HOST_ACTION_PROBE.with(|probe| probe.borrow_mut().take().unwrap());
         assert_eq!(actual, expected);
@@ -5752,7 +5517,7 @@ mod tests {
     }
 
     fn palette_action(h: &mut crate::testing::HostHarness, action: crate::host::keys::Action) {
-        h.app.run_palette_command(PaletteCommand::Host(action));
+        h.app.run_palette_command(action);
     }
 
     #[test]
@@ -5939,8 +5704,7 @@ mod tests {
         assert!(!h.app.attention_queue.open);
     }
 
-    /// Stint 1458: "Close selected panes" is listed only while a selection
-    /// exists and closes every selected pane.
+    /// "Close selected panes" requires two panes and closes that selection.
     #[test]
     fn palette_close_selected_panes_is_listed_with_a_selection_and_closes_it() {
         let mut h = crate::testing::HostHarness::new();
@@ -5953,9 +5717,10 @@ mod tests {
         h.focus_pane(a).run_frames(2);
         let listed = |h: &mut crate::testing::HostHarness| {
             h.app
-                .palette_command_listed(&PaletteCommand::CloseSelectedPanes)
+                .registered_command_unavailable(&PaletteCommand::CloseSelectedPanes)
+                .is_none()
         };
-        assert!(!listed(&mut h), "hidden without a selection");
+        assert!(!listed(&mut h), "unavailable without a selection");
         h.app
             .run_palette_command(PaletteCommand::CloseSelectedPanes);
         h.run_frames(2);
@@ -5968,7 +5733,7 @@ mod tests {
         h.app.host.extend_pane_selection(window, a, a);
         assert!(
             !listed(&mut h),
-            "a selection of one is the focused pane, not listed"
+            "a selection of one is unavailable"
         );
         h.app.host.clear_pane_selection(window);
         h.app.host.extend_pane_selection(window, a, b);
@@ -6274,9 +6039,8 @@ mod tests {
         let path = crate::config::workspace_config_path(root.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "[theme]\npreset = \"plexi-night\"\n").unwrap();
-        h.app.run_palette_command(PaletteCommand::Host(
-            crate::host::keys::Action::ReloadConfig,
-        ));
+        h.app
+            .run_palette_command(crate::host::keys::Action::ReloadConfig);
         let notice = &h
             .app
             .config_notice
@@ -6290,9 +6054,8 @@ mod tests {
         // An omitted global preset still has an effective default.
         std::fs::write(crate::config::config_path(), "").unwrap();
         h.app.config_notice = None;
-        h.app.run_palette_command(PaletteCommand::Host(
-            crate::host::keys::Action::ReloadConfig,
-        ));
+        h.app
+            .run_palette_command(crate::host::keys::Action::ReloadConfig);
         assert!(
             h.app
                 .config_notice

@@ -48,12 +48,13 @@ Agents (Tab again)
 
 ## Binding commands to keys
 
-Not every palette command can be bound in `[keybindings]` today.
-- Bindable: rows of `PaletteCommand::Host(Action)`, because `build_binding_table` turns each `KeyBindings` field into an `Action`, except `Action::OpenChangelog` (the "Changelog" row), which no `KeyBindings` field reaches. User commands bind through their own key in `commands.toml` (`KeyBindings::user_commands` to `Action::RunUserCommand`).
-- Not bindable: the palette-only variants `OpenGlobalConfig`, `OpenWorkspaceConfig`, `StatePreset`, `EditCommands`, `SwitchCommandsScope`, `OpenAttention`, `SetupCli`, `UiUpcycle`, `CheckForUpdates` and `RestartToUpdate`. They have no `Action`.
-- Context, plugin and note rows are destinations, not commands.
+The host command registry supplies stable IDs, search labels, argument
+requirements and bindings. Cmd+P and keyboard shortcuts dispatch the same
+host action and open the existing form when input is needed. See [keybinding
+configuration](CONFIG.md#keybindings) for assignment.
 
-The gap is stint 1151's scope: one registry where every command has a stable id assignable in `[keybindings]`, with a coverage test that fails on an unregistered action. 1151 stays in 0.6 Palette, and its coverage test must name these variants and `OpenChangelog`. No new stint.
+Context, pane and note results open named destinations. User commands retain
+workspace scoping and use the existing `[keys]` configuration.
 
 ## The component underneath
 
@@ -142,7 +143,7 @@ Chords checked in `KeyBindings::default`.
 
 ## Deleted
 
-Stint 1391: `PaletteEntry::Agent`, `PaletteAction`, `action_for_palette_entry`, `sort_palette_entries`, `reconcile_palette_selection`, the key block in `draw_command_palette`, `command_palette_handle_key`, and the `palette_query`, `palette_selected`, `palette_selected_key` and `palette_scroll_reset` fields. Stint 1151: `PaletteCommand`, `PaletteCommandEntry`, `PALETTE_COMMANDS`, `run_palette_selection`, `run_palette_command`.
+Stint 1391: `PaletteEntry::Agent`, `PaletteAction`, `action_for_palette_entry`, `sort_palette_entries`, `reconcile_palette_selection`, the key block in `draw_command_palette`, `command_palette_handle_key`, and the `palette_query`, `palette_selected`, `palette_selected_key` and `palette_scroll_reset` fields. Stint 1151 replaces the separate `PaletteCommand` enum and `PALETTE_COMMANDS` list with declarations in the [host command registry](../src/host/command_registry.rs).
 
 ## Build order
 

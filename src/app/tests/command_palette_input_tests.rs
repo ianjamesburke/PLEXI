@@ -8,7 +8,7 @@ use crate::spatial::tiling::PaneId;
 use crate::testing::HostHarness;
 use egui::{Event, Key, Modifiers, RawInput};
 
-const KEYBOARD_ROW: &str = "commands:cmd/Keyboard shortcuts";
+const KEYBOARD_ROW: &str = "commands:cmd/toggle_shortcuts";
 
 fn screen() -> Option<egui::Rect> {
     Some(egui::Rect::from_min_size(

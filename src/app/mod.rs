@@ -4612,6 +4612,17 @@ impl PlexiApp {
         }) {
             return;
         }
+        let window = &self.windows[self.active_window];
+        let context_id = window.context_id;
+        let window_id = window.window_id;
+        let pane_id = self.focused_pane_id();
+        let command_id = action.command_id();
+        if let Some(reason) = self.registered_command_unavailable(&action) {
+            log::info!("command: rejected id={command_id} context={context_id} window={window_id} pane={pane_id:?} reason={reason}");
+            self.attention_queue.transient_hint = Some((reason.into(), std::time::Instant::now()));
+            return;
+        }
+        log::info!("command: dispatch id={command_id} context={context_id} window={window_id} pane={pane_id:?}");
         // A wildcard arm is forbidden here. The palette routes every host row
         // through this match, and the test
         // `every_registered_palette_host_command_reaches_shared_dispatcher`
@@ -5060,6 +5071,17 @@ impl PlexiApp {
             Action::ContextZoomOut => {
                 self.zoom_out_or_close_surface();
             }
+            Action::OpenGlobalConfig
+            | Action::OpenWorkspaceConfig
+            | Action::StatePreset(_)
+            | Action::EditCommands
+            | Action::SwitchCommandsScope
+            | Action::OpenAttention
+            | Action::SetupCli
+            | Action::UiUpcycle(_)
+            | Action::CheckForUpdates
+            | Action::RestartToUpdate
+            | Action::CloseSelectedPanes => self.run_registered_command_ui(action),
             Action::RunUserCommand(ref name) => {
                 log::info!("keys: executing user command binding 'run:{name}'");
                 self.queue_user_command(name, None);
