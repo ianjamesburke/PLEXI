@@ -376,10 +376,16 @@ pub trait View: Send {
 
     /// A user-initiated close asks the plugin first. Returning false vetoes the
     /// close: the plugin shows its own prompt (unsaved buffer) and sets
-    /// `wants_close` once the user decides. Normal desktop quit also asks;
-    /// programmatic closes (CLI, context close, forced host stop) do not.
+    /// `wants_close` once the user decides. Programmatic closes (CLI,
+    /// context close, forced host stop) do not ask.
     fn request_close(&mut self) -> bool {
         true
+    }
+
+    /// A user quit can be paused for an unsaved-changes dialog. The host
+    /// resumes the quit when the dialog is resolved without closing the pane.
+    fn request_quit(&mut self) -> bool {
+        self.request_close()
     }
 
     /// Pending file-loss decision. The host gives it exclusive modal focus.

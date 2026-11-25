@@ -143,12 +143,11 @@ impl PlexiApp {
             crate::app::quit::trace("update_restart_received");
             self.update_quit_pending = false;
             // Plexi starts this quit itself, so it asks about unsaved work and
-            // working agents the way Cmd+Q does (stint 1538). A refusal leaves
-            // the ready update in place; Restart can be pressed again.
-            if self.prepare_user_quit() {
-                self.request_quit(crate::app::quit::ExitReason::UpdateRestart);
+            // working agents the way Cmd+Q does (stint 1538).
+            let reason = crate::app::quit::ExitReason::UpdateRestart;
+            if self.prepare_user_quit_for(reason) {
+                self.request_quit(reason);
             } else {
-                self.update_restart_confirming = self.pending_quit;
                 log::info!(
                     "update: restart waits on unsaved work or working agents; the update stays ready"
                 );

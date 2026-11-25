@@ -10054,10 +10054,7 @@ fn update_restart_confirmation_cancelled_leaves_an_ordinary_quit_plain() {
     h.run_frames(1);
     assert!(h.app.pending_quit);
     h.app.resolve_quit_confirmation(false);
-    assert!(
-        !h.app.update_restart_confirming,
-        "cancel clears the restart"
-    );
+    assert!(!h.app.pending_quit, "cancel clears the confirmation");
     assert!(
         h.app.update_status.ready().is_some(),
         "the update stays ready"
@@ -10179,7 +10176,7 @@ fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
 }
 
 #[test]
-fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
+fn editor_gate_keyboard_quit_waits_for_unsaved_conflict_then_resumes() {
     let mut h = HostHarness::new();
     h.app.config.confirm_quit = Some(false);
     let tmp = tempfile::tempdir().unwrap();
@@ -10194,10 +10191,8 @@ fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
     );
     assert_eq!(h.app.quit_press_count, 0);
     assert_eq!(gate_note_semantics(&h, pane)["source_text"], "my poem");
-    // A system/window close must also cancel even after an earlier quit flow
-    // marked itself complete; it must not bypass the unsaved-work veto.
-    h.app.quitting = true;
-    h.app.quit_press_count = 3;
+    // macOS can also send a viewport close for the same Cmd+Q. The open
+    // editor prompt still owns the decision.
     let mut input = egui::RawInput::default();
     input
         .viewports
@@ -10210,32 +10205,104 @@ fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
     assert_eq!(h.app.quit_press_count, 0);
     h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::D, egui::Modifiers::NONE);
-    h.run_frames(2);
-    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert!(h.app.windows[0].panes.contains_key(&pane));
     assert_eq!(
         std::fs::read_to_string(tmp.path().join("gate-note.md")).unwrap(),
         "agent version"
     );
     assert!(h.app.focus_stack.is_empty());
-    h.frame(egui::RawInput {
+    assert!(h.app.quit_coordinator.is_active());
+    assert_eq!(
+        h.app.quit_coordinator.reason,
+        Some(crate::app::quit::ExitReason::WindowClosed)
+    );
+}
+
+#[test]
+fn editor_gate_quit_requires_a_fresh_enter_for_each_dirty_editor() {
+    let (dir, path, mut h, pane) = unsaved_editor_fixture();
+    // Observe each delivery before a layout retry can service an accepted quit.
+    h.ctx
+        .options_mut(|options| options.max_passes = std::num::NonZeroUsize::MIN);
+    h.app.config.confirm_quit = Some(false);
+    let other_path = dir.path().join("other.txt");
+    std::fs::write(&other_path, "original bytes\n").unwrap();
+    let existing_panes = h.state().open_panes;
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new(
+            other_path.clone(),
+        )),
+        crate::app::permissions::PluginPermissions::builtin(),
+        dir.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let other_pane = h
+        .state()
+        .open_panes
+        .into_iter()
+        .find(|id| !existing_panes.contains(id))
+        .expect("the second editor opens a new pane");
+    h.run_frames(2);
+    h.text_editor_mut(pane).test_set_unsaved("edited");
+    h.text_editor_mut(other_pane).test_set_unsaved("edited");
+
+    h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.top(),
+        Some(crate::app::FocusKind::UnsavedChanges)
+    );
+    let (first_path, second_path, second_pane) = if h.app.focused_pane_id() == Some(pane) {
+        (&path, &other_path, other_pane)
+    } else {
+        assert_eq!(h.app.focused_pane_id(), Some(other_pane));
+        (&other_path, &path, pane)
+    };
+    let enter = |pressed, repeat| egui::RawInput {
         events: vec![egui::Event::Key {
-            key: egui::Key::Q,
+            key: egui::Key::Enter,
             physical_key: None,
-            pressed: false,
-            repeat: false,
-            modifiers: egui::Modifiers::COMMAND,
+            pressed,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
         }],
         ..Default::default()
-    });
-    // The veto navigates to the affected pane and reloads effective config.
-    h.app.config.confirm_quit = Some(false);
-    h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
-    assert!(
-        h.app.quitting,
-        "explicit resolution permits retry; count={} confirm={}",
-        h.app.quit_press_count,
-        h.app.confirm_quit()
+    };
+
+    h.frame(enter(true, false));
+    h.run_frames(2);
+    assert_eq!(std::fs::read_to_string(first_path).unwrap(), "edited");
+    assert_eq!(h.app.focused_pane_id(), Some(second_pane));
+    assert_eq!(
+        h.app.focus_stack.top(),
+        Some(crate::app::FocusKind::UnsavedChanges)
     );
+
+    for _ in 0..2 {
+        h.frame(enter(true, true));
+        assert_eq!(
+            std::fs::read_to_string(second_path).unwrap(),
+            "original bytes\n",
+            "held Return must not save the second editor"
+        );
+        assert_eq!(
+            h.app.focus_stack.top(),
+            Some(crate::app::FocusKind::UnsavedChanges)
+        );
+        assert!(!h.app.quitting);
+    }
+
+    h.frame(enter(false, false));
+    assert_eq!(
+        h.app.focus_stack.top(),
+        Some(crate::app::FocusKind::UnsavedChanges)
+    );
+    h.frame(enter(true, false));
+    assert_eq!(std::fs::read_to_string(second_path).unwrap(), "edited");
+    assert!(h.app.focus_stack.is_empty());
+    assert!(h.app.quit_coordinator.is_active());
 }
 
 #[test]

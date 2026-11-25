@@ -30,30 +30,13 @@ impl<'a> DialogShortcut<'a> {
         self
     }
 
-    /// A guarded action (stints 1498, 1513, 1489) takes only a fresh press
-    /// with exact modifiers (Shift+Q is not Q): an OS key repeat is consumed
-    /// without counting.
-    fn pressed_fresh(&self, ctx: &egui::Context) -> bool {
-        let repeat_only = ctx.input(|i| {
-            let mut matching = i.events.iter().filter(|event| {
-                matches!(event,
-                    egui::Event::Key { key, pressed: true, modifiers, .. }
-                        if *key == self.key && modifiers.matches_exact(self.modifiers)
-                )
-            });
-            let mut any = false;
-            let all_repeat = matching.all(|event| {
-                any = true;
-                matches!(event, egui::Event::Key { repeat: true, .. })
-            });
-            any && all_repeat
-        });
-        let pressed = Self {
-            exact: true,
-            ..*self
-        }
-        .pressed(ctx);
-        pressed && !repeat_only
+    fn matches(&self, key: egui::Key, modifiers: egui::Modifiers) -> bool {
+        key == self.key
+            && if self.exact {
+                modifiers.matches_exact(self.modifiers)
+            } else {
+                modifiers.matches_logically(self.modifiers)
+            }
     }
 
     fn pressed(&self, ctx: &egui::Context) -> bool {
@@ -62,7 +45,7 @@ impl<'a> DialogShortcut<'a> {
                 && !i.events.iter().any(|event| {
                     matches!(event,
                         egui::Event::Key { key, pressed: true, modifiers, .. }
-                            if *key == self.key && modifiers.matches_exact(self.modifiers)
+                            if self.matches(*key, *modifiers)
                     )
                 })
             {
@@ -372,33 +355,65 @@ impl<'a> ActionModal<'a> {
         let destructive_input = self.present_destructive(ctx);
         let guarded_destructive =
             |action: &DialogAction<'_>| action.destructive && destructive_input.is_some();
-        let press = |action: &DialogAction<'_>, shortcut: &DialogShortcut<'_>| {
+        let action_shortcut = |action: &DialogAction<'a>, shortcut: DialogShortcut<'a>| {
             // A consent dialog matches modifiers exactly: Shift+Enter
             // ("Always allow") must never be taken by Enter ("Grant once"),
             // which `matches_logically` would allow (stint 1489).
             if guarded_destructive(action) || self.consent_input.is_some() {
-                shortcut.pressed_fresh(ctx)
+                shortcut.exact()
             } else {
-                shortcut.pressed(ctx)
+                shortcut
             }
         };
+        let default_shortcut =
+            DialogShortcut::new(&["Enter"], egui::Modifiers::NONE, egui::Key::Enter).exact();
         // A Tab-focused action takes Enter and Space before any shortcut, so
         // Enter on a focused Cancel cancels instead of firing Close's Enter.
         let previous_ids: Vec<(String, egui::Id)> = ctx
             .data(|d| d.get_temp(action_ids_slot(self.id)))
             .unwrap_or_default();
-        // Only a modal that traps focus routes Enter or Space to the focused
-        // action; an untrapped modal keys exactly as before (stint 1493 critic).
-        let focused_action = ctx
-            .memory(|m| m.focused())
-            .filter(|_| trap_key.is_some())
-            .and_then(|focused| {
-                previous_ids
-                    .iter()
-                    .find(|(_, id)| *id == focused)
-                    .and_then(|(name, _)| self.actions.iter().find(|a| a.id == name))
+        let focused_action = ctx.memory(|m| m.focused()).and_then(|focused| {
+            previous_ids
+                .iter()
+                .find(|(_, id)| *id == focused)
+                .and_then(|(name, _)| self.actions.iter().find(|a| a.id == name))
+        });
+        // egui tracks held keys across frames, including across modal changes.
+        // Drop repeats before either shortcut dispatch or egui button activation.
+        // A field can still repeat typing, including spaces and newlines.
+        ctx.input_mut(|input| {
+            input.events.retain(|event| {
+                let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: true,
+                    modifiers,
+                    ..
+                } = event
+                else {
+                    return true;
+                };
+                let button_activation = matches!(key, egui::Key::Enter | egui::Key::Space)
+                    && (field_id.is_none() || focused_action.is_some());
+                let default_activation =
+                    self.default_action.is_some() && default_shortcut.matches(*key, *modifiers);
+                !(button_activation
+                    || default_activation
+                    || self.actions.iter().any(|action| {
+                        action
+                            .shortcut
+                            .iter()
+                            .chain(&action.alternate)
+                            .any(|shortcut| {
+                                action_shortcut(action, *shortcut).matches(*key, *modifiers)
+                            })
+                    }))
             });
+        });
+        // Only a modal that traps focus explicitly routes Enter or Space to
+        // the focused action.
         let mut selected = focused_action
+            .filter(|_| trap_key.is_some())
             .filter(|action| {
                 if guarded_destructive(action) {
                     take_fresh_activation(ctx)
@@ -424,34 +439,15 @@ impl<'a> ActionModal<'a> {
                 .find(|action| {
                     action
                         .shortcut
-                        .as_ref()
-                        .is_some_and(|shortcut| press(action, shortcut))
-                        || action
-                            .alternate
-                            .as_ref()
-                            .is_some_and(|shortcut| press(action, shortcut))
+                        .iter()
+                        .chain(&action.alternate)
+                        .any(|shortcut| action_shortcut(action, *shortcut).pressed(ctx))
                 })
                 .map(|action| action.id);
         }
 
-        if selected.is_none() {
-            if let Some(default) = self.default_action {
-                let enter =
-                    DialogShortcut::new(&["Enter"], egui::Modifiers::NONE, egui::Key::Enter)
-                        .exact();
-                let default_guarded = self
-                    .actions
-                    .iter()
-                    .any(|action| action.id == default && guarded_destructive(action));
-                let pressed = if default_guarded {
-                    enter.pressed_fresh(ctx)
-                } else {
-                    enter.pressed(ctx)
-                };
-                if pressed {
-                    selected = self.default_action;
-                }
-            }
+        if selected.is_none() && self.default_action.is_some() && default_shortcut.pressed(ctx) {
+            selected = self.default_action;
         }
 
         let mut shell = ModalShell::centered(self.id)

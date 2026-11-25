@@ -165,18 +165,11 @@ fn synthetic_input_cannot_commit_the_root_editor() {
         h.app.push_focus_layer(FocusKind::TextInput);
         h.run_frames(1);
     };
-    let enter = |h: &mut HostHarness, socket: Option<u64>| {
-        let key = egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        };
-        input_frame(h, socket, vec![key]);
-    };
     open(&mut h);
-    enter(&mut h, Some(pane));
+    // IPC sends a complete keystroke so egui sees Enter released before the
+    // person's next press.
+    let injected_enter = crate::app::key_str_to_egui_raw_input("Enter").unwrap();
+    input_frame(&mut h, Some(pane), injected_enter.events);
     assert_eq!(h.app.router.active().root, old.path());
     let (overlay, _) = h.app.text_overlay.as_ref().expect("the editor stays open");
     assert_eq!(overlay.buffer, target.path().display().to_string());
@@ -186,7 +179,8 @@ fn synthetic_input_cannot_commit_the_root_editor() {
         overlay.label
     );
     // The person's own Enter commits the original draft, without retyping.
-    enter(&mut h, None);
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(!h.app.synthetic_input_frame);
     assert_eq!(h.app.router.active().root, target.path());
 }
 
