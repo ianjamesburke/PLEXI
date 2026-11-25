@@ -3540,9 +3540,8 @@ impl PlexiApp {
                     .or_else(|| ws_root.map(std::path::Path::to_path_buf))
                     .unwrap_or_else(|| command.context_root.clone());
                 let task_str = message.or(prompt);
-                let Ok(payload) = crate::cli::agent::resolve_agent_start_in_stopping_at(
+                let Ok(payload) = crate::cli::agent::agent_start_payload(
                     &agent_name,
-                    &crate::config::config_dir(),
                     &eff_cwd,
                     task_str.as_deref(),
                     &[],
@@ -3553,7 +3552,13 @@ impl PlexiApp {
                 else {
                     return HostStepOutcome::Exited(1);
                 };
-                let reply = self.agent_spawn_reply_admitted(&crate::broker::caller::RequestOrigin::HostUi, default_pane_id, &req, admitted);
+                let reply = self.agent_spawn_reply_admitted(
+                    &crate::broker::caller::RequestOrigin::HostUi,
+                    default_pane_id,
+                    &req,
+                    admitted,
+                    None,
+                );
                 if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
                     self.notify_command_refused("agent launch", error);
                     return HostStepOutcome::Exited(1);
@@ -3614,9 +3619,8 @@ impl PlexiApp {
                     },
                     None => default_pane_id,
                 };
-                let Ok(payload) = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+                let Ok(payload) = crate::cli::agent::agent_spawn_payload(
                     &name,
-                    &crate::config::config_dir(),
                     &eff_cwd,
                     (!task.is_empty()).then_some(task.as_str()),
                     subcontext.as_deref(),
@@ -3629,7 +3633,13 @@ impl PlexiApp {
                 else {
                     return HostStepOutcome::Exited(1);
                 };
-                let reply = self.agent_spawn_reply_admitted(&crate::broker::caller::RequestOrigin::HostUi, from_id, &req, admitted);
+                let reply = self.agent_spawn_reply_admitted(
+                    &crate::broker::caller::RequestOrigin::HostUi,
+                    from_id,
+                    &req,
+                    admitted,
+                    None,
+                );
                 if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
                     self.notify_command_refused("agent launch", error);
                     return HostStepOutcome::Exited(1);

@@ -198,9 +198,8 @@ pub fn state_file(
     Ok(state_path(scope, plugin_id, format.ext(), context_root))
 }
 
-/// Assert that `path`'s parent directory really is the scope's state
-/// directory, resolving symlinks. Catches a symlinked `.plexi/` or
-/// `app_states/` that would silently redirect writes outside the scope.
+/// Return the verified canonical address of `path`'s parent in its scope.
+/// Catches symlinked scope directories that would redirect writes.
 ///
 /// The comparison anchors on the scope's trusted *base* (the context root, or
 /// the home dir for global scope): the base is canonicalized, the
@@ -213,7 +212,7 @@ pub fn assert_within_scope(
     scope: StateScope,
     kind: UserDataKind,
     context_root: &Path,
-) -> Result<(), String> {
+) -> Result<PathBuf, String> {
     let (base, tail) = scope_layout(scope, kind, context_root);
     let expected = tail.iter().fold(
         resolve_existing_prefix(&base)
@@ -241,7 +240,7 @@ pub fn assert_within_scope(
             kind.dir()
         ));
     }
-    Ok(())
+    Ok(expected)
 }
 
 /// Fully resolve `path` by canonicalizing its nearest existing ancestor and

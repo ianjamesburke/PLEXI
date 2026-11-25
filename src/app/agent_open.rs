@@ -122,6 +122,7 @@ impl PlexiApp {
         origin: &crate::broker::caller::RequestOrigin,
         admitted: AdmittedAgentMeshRoute,
     ) -> Result<AgentOpenOutcome, String> {
+        crate::agent::validate_agent_id(name)?;
         let launch_caller = self.resolve_launch_source(origin, caller)?;
         let verified_caller = launch_caller.caller_pane;
         if let Some(pane_id) = self.running_named_agent_pane(name) {
@@ -137,11 +138,11 @@ impl PlexiApp {
             return Ok(outcome);
         }
 
-        let (payload, harness) = named_agent_start_payload(name, cwd)?;
+        let (request, launch) = named_agent_start(name, cwd)?;
+        let harness = launch.harness.as_str();
 
-        let open_chat = self.exited_named_agent_chat(name, &harness, cwd);
-        if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, &harness, cwd))
-        {
+        let open_chat = self.exited_named_agent_chat(name, harness, cwd);
+        if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, harness, cwd)) {
             let session_id = record.session_id.clone().unwrap_or_default();
             // A reopen is admitted under the authenticated caller only. An
             // outside caller's run opens beside the focused pane (placement)
@@ -160,7 +161,7 @@ impl PlexiApp {
             });
         }
 
-        let pane_id = self.start_named_agent_chat(name, payload, origin, caller, admitted)?;
+        let pane_id = self.start_named_agent_chat(&request, &launch, origin, caller, admitted)?;
         log::info!("agent_open: name={name} outcome=started pane={pane_id}");
         Ok(AgentOpenOutcome::Started { pane_id })
     }
@@ -199,13 +200,19 @@ impl PlexiApp {
         // caller as it will be once that chat's pane is gone (a new chat
         // asked for from inside the chat it replaces). A launch that could
         // not proceed is refused here, with the current chat untouched.
-        let (payload, harness) = named_agent_start_payload(name, cwd)?;
-        let chat_pane = self.chat_pane_to_archive(name, &harness, cwd);
+        let (request, launch) = named_agent_start(name, cwd)?;
+        let harness = launch.harness.as_str();
+        let chat_pane = self.chat_pane_to_archive(name, harness, cwd);
         let (launch_origin, launch_caller) = self.origin_without_pane(origin, caller, chat_pane);
         self.resolve_launch_source(&launch_origin, launch_caller)?;
-        let archived_run_id = self.archive_named_agent_chat(name, &harness, cwd, chat_pane)?;
-        let pane_id =
-            self.start_named_agent_chat(name, payload, &launch_origin, launch_caller, admitted)?;
+        let archived_run_id = self.archive_named_agent_chat(name, harness, cwd, chat_pane)?;
+        let pane_id = self.start_named_agent_chat(
+            &request,
+            &launch,
+            &launch_origin,
+            launch_caller,
+            admitted,
+        )?;
         log::info!(
             "agent_new_chat: name={name} archived_run_id={archived_run_id:?} new_pane={pane_id}"
         );
@@ -302,16 +309,14 @@ impl PlexiApp {
     /// the request's own origin (stint 1285).
     fn start_named_agent_chat(
         &mut self,
-        name: &str,
-        mut payload: serde_json::Value,
+        request: &crate::protocol::HostRequest,
+        launch: &crate::pane_ops::create::ConfiguredAgentLaunch,
         origin: &crate::broker::caller::RequestOrigin,
         caller: Option<u64>,
         admitted: AdmittedAgentMeshRoute,
     ) -> Result<PaneId, String> {
-        payload["response_file"] = serde_json::Value::String(String::new());
-        let request: crate::protocol::HostRequest = serde_json::from_value(payload)
-            .map_err(|e| format!("agent open: start payload for '{name}' is invalid: {e}"))?;
-        let reply = self.agent_spawn_reply_admitted(origin, caller, &request, admitted);
+        let reply =
+            self.agent_spawn_reply_admitted(origin, caller, request, admitted, Some(launch));
         spawned_pane_id(&reply)
     }
 
@@ -524,32 +529,38 @@ impl PlexiApp {
 /// definition decides the harness; unknown agents fail here, before anything
 /// is launched. No pane id in the payload names a caller: the spawn it
 /// becomes resolves its caller from the request's origin (stint 1285).
-fn named_agent_start_payload(
+fn named_agent_start(
     name: &str,
     cwd: &Path,
-) -> Result<(serde_json::Value, String), String> {
+) -> Result<
+    (
+        crate::protocol::HostRequest,
+        crate::pane_ops::create::ConfiguredAgentLaunch,
+    ),
+    String,
+> {
     let stops = crate::app::registry::workspace_walk_stops()?;
-    let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
+    let payload = crate::cli::agent::agent_start_payload(name, cwd, None, &stops)?;
+    let request = serde_json::from_value(payload)
+        .map_err(|error| format!("agent open: invalid launch request for '{name}': {error}"))?;
+    let launch = crate::pane_ops::create::ConfiguredAgentLaunch::resolve_in(
         name,
-        &crate::config::config_dir(),
         cwd,
         None,
+        Some(false),
+        &crate::config::config_dir(),
         &stops,
     )?;
-    let harness = payload
-        .get("harness")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| format!("agent open: start payload for '{name}' has no harness"))?
-        .to_string();
-    Ok((payload, harness))
+    Ok((request, launch))
 }
 
 /// The workspace a chat belongs to: the nearest project root (`.plexi` or
 /// `.git`), else the directory itself, so a global agent used in two projects
 /// keeps one last chat per project.
 fn agent_chat_workspace(cwd: &Path) -> std::path::PathBuf {
-    crate::app::registry::resolve_agent_create_workspace_root(cwd)
-        .unwrap_or_else(|| cwd.to_path_buf())
+    let canonical_cwd = crate::platform::path::canonical_or_self(cwd);
+    crate::app::registry::resolve_agent_create_workspace_root(&canonical_cwd)
+        .unwrap_or(canonical_cwd)
 }
 
 fn spawned_pane_id(reply: &serde_json::Value) -> Result<PaneId, String> {

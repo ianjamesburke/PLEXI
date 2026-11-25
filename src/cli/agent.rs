@@ -1357,22 +1357,8 @@ pub fn resolve_harness_adapter(
     Ok(primary)
 }
 
-/// The memory folder a launch of `definition` is told about: a named
-/// (non-ephemeral) chat's, else none. Resolution only; the host creates the
-/// folder when it admits the launch (`PlexiApp::admit_worker_role`).
-pub fn named_agent_memory(
-    definition: &crate::agent::AgentDefinition,
-    ephemeral: bool,
-) -> Result<Option<PathBuf>, String> {
-    if ephemeral {
-        return Ok(None);
-    }
-    crate::agent::memory::memory_dir(definition).map(Some)
-}
-
 /// Build the `# Plexi worker contract` section included in every spawned agent session.
-/// `memory` is the agent's memory folder (`crate::agent::memory`), given to named
-/// chats only: an ephemeral run has no durable identity to remember for.
+/// Harnesses without native memory binding receive a folder instruction for named chats.
 pub fn format_worker_contract(
     definition: &crate::agent::AgentDefinition,
     memory: Option<&Path>,
@@ -1450,7 +1436,10 @@ pub fn build_agent_start_command(
         ));
     }
     let persona = definition.prompt.trim();
-    let contract = format_worker_contract(definition, memory);
+    let contract = format_worker_contract(
+        definition,
+        memory.filter(|_| adapter.harness != AgentHarness::Claude),
+    );
     let system_instructions = if persona.is_empty() {
         contract.clone()
     } else {
@@ -1526,7 +1515,7 @@ pub fn resolved_session_harness_flags_in(
     profile_dir: &Path,
     cwd: Option<&Path>,
 ) -> Vec<String> {
-    let Some(role) = role.and_then(non_empty_string) else {
+    let Some(role) = role else {
         return Vec::new();
     };
     let workspace_root = cwd.and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
@@ -1562,36 +1551,12 @@ fn tier_display_label(source: crate::agent::AgentSource) -> &'static str {
 
 /// Validate that `<name>` is a safe lowercase agent slug (`a-z`, `0-9`, `-`, starting with `a-z`).
 pub fn validate_agent_slug(name: &str) -> Result<(), String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() || trimmed != name {
-        return Err(format!(
-            "invalid agent name '{name}': must be a non-empty lowercase slug (a-z, 0-9, '-')"
-        ));
-    }
-    if trimmed == "default" {
+    crate::agent::validate_agent_id(name)?;
+    if name == "default" {
         return Err(
             "invalid agent name 'default': 'default' is the built-in agent — edit its seeded definition under <workspace>/.plexi/agents/default/ instead of creating it"
                 .to_string(),
         );
-    }
-    let mut chars = trimmed.chars();
-    let Some(first) = chars.next() else {
-        return Err("agent name cannot be empty".to_string());
-    };
-    if !first.is_ascii_lowercase() {
-        return Err(format!(
-            "invalid agent name '{name}': must start with a lowercase ASCII letter (a-z)"
-        ));
-    }
-    if trimmed.len() > 64
-        || !trimmed
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        || trimmed.ends_with('-')
-    {
-        return Err(format!(
-            "invalid agent name '{name}': must contain only lowercase ASCII letters, digits, and hyphens (a-z, 0-9, '-')"
-        ));
     }
     Ok(())
 }
@@ -1606,17 +1571,13 @@ pub(crate) fn agent_definition_exists(
     profile_dir: &Path,
     workspace_root: Option<&Path>,
 ) -> bool {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
+    if crate::agent::validate_agent_id(name).is_err() {
         return false;
     }
-    workspace_root.is_some_and(|ws| {
-        crate::agent::workspace_agents_dir(ws)
-            .join(trimmed)
-            .is_dir()
-    }) || profile_dir.join("agents").join(trimmed).is_dir()
+    workspace_root.is_some_and(|ws| crate::agent::workspace_agents_dir(ws).join(name).is_dir())
+        || profile_dir.join("agents").join(name).is_dir()
         || crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root)
-            .active(trimmed)
+            .active(name)
             .is_some()
 }
 
@@ -1625,14 +1586,11 @@ pub fn resolve_agent_definition_in(
     profile_dir: &Path,
     workspace_root: Option<&Path>,
 ) -> Result<(crate::agent::AgentDefinition, bool), String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return Err("agent name cannot be empty".to_string());
-    }
+    crate::agent::validate_agent_id(name)?;
     // First use of the built-in `default` seeds the workspace copy the user owns
     // (stint 1035). An existing `default` directory is never touched, so a user's
     // own definition always wins.
-    if trimmed == "default" {
+    if name == "default" {
         if let Some(ws) = workspace_root {
             if let Err(error) = crate::agent::ensure_workspace_default_agent(ws) {
                 log::error!(
@@ -1647,40 +1605,54 @@ pub fn resolve_agent_definition_in(
     let registry =
         crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root);
 
-    // If a workspace agent directory for `trimmed` exists on disk, ensure any parse error in it
+    // If a workspace agent directory for `name` exists on disk, ensure any parse error in it
     // is surfaced rather than silently falling through to a global definition or "not found".
     if let Some(ws) = workspace_root {
-        let ws_dir = crate::agent::workspace_agents_dir(ws).join(trimmed);
+        let ws_dir = crate::agent::workspace_agents_dir(ws).join(name);
         if ws_dir.is_dir()
             && !registry
-                .active(trimmed)
+                .active(name)
                 .is_some_and(|d| d.source == crate::agent::AgentSource::Workspace)
         {
             let def = crate::agent::AgentDefinition::load_dir(
                 &ws_dir,
                 crate::agent::AgentSource::Workspace,
             )?;
+            if def.id != name {
+                return Err(format!(
+                    "agent directory {} declares id '{}' instead of '{name}'",
+                    ws_dir.display(),
+                    def.id
+                ));
+            }
             let shadows_global = registry
-                .active(trimmed)
+                .active(name)
                 .is_some_and(|d| d.source == crate::agent::AgentSource::User);
             return Ok((def, shadows_global));
         }
     }
 
-    let global_dir = profile_dir.join("agents").join(trimmed);
+    let global_dir = profile_dir.join("agents").join(name);
     if global_dir.is_dir()
         && !registry
-            .active(trimmed)
+            .active(name)
             .is_some_and(|d| d.source != crate::agent::AgentSource::BuiltIn)
     {
         let def =
             crate::agent::AgentDefinition::load_dir(&global_dir, crate::agent::AgentSource::User)?;
+        if def.id != name {
+            return Err(format!(
+                "agent directory {} declares id '{}' instead of '{name}'",
+                global_dir.display(),
+                def.id
+            ));
+        }
         return Ok((def, false));
     }
 
-    if let Some(def) = registry.active(trimmed) {
+    if let Some(def) = registry.active(name) {
         let shadows_global = registry
-            .shadowed(trimmed)
+            .shadowed(name)
             .iter()
             .any(|s| s.source == crate::agent::AgentSource::User);
         return Ok((def.clone(), shadows_global));
@@ -1690,7 +1662,7 @@ pub fn resolve_agent_definition_in(
     if let Some(ws) = workspace_root {
         searched.push(
             crate::agent::workspace_agents_dir(ws)
-                .join(trimmed)
+                .join(name)
                 .display()
                 .to_string(),
         );
@@ -1707,7 +1679,7 @@ pub fn resolve_agent_definition_in(
         available.join(", ")
     };
     Err(format!(
-        "agent '{trimmed}' not found (searched: {}; available agents: {available_str})",
+        "agent '{name}' not found (searched: {}; available agents: {available_str})",
         searched.join(", ")
     ))
 }
@@ -2140,7 +2112,9 @@ pub fn agent_show_in(
             if let Some(display_harness) = display_def.harness.as_mut() {
                 display_harness.flags = redact_harness_flags(&display_harness.flags);
             }
-            let memory = named_agent_memory(&def, h.ephemeral)?;
+            let memory = (!h.ephemeral && adapter.harness != AgentHarness::Claude)
+                .then(|| crate::agent::memory::memory_dir(&def))
+                .transpose()?;
             Some(build_agent_spawn_command(
                 &display_def,
                 adapter,
@@ -2429,97 +2403,52 @@ fn display_agent_flags(def: &crate::agent::AgentDefinition, json: bool) -> i32 {
 /// `.plexi/agents/`, so a fresh checkout with a `.git` and nothing else would
 /// never get its own `default`. The seed walk (`agent create`'s) accepts `.git`
 /// and `.plexi` as well, which is exactly that case (stint 1035).
-fn resolve_agent_workspace_root_for(
+pub(crate) fn resolve_agent_workspace_root_for(
     name: &str,
     start_cwd: &Path,
     stops: &[PathBuf],
 ) -> Option<PathBuf> {
     let lookup =
         crate::app::registry::resolve_agent_lookup_workspace_root_stopping_at(start_cwd, stops);
-    if lookup.is_some() || name.trim() != "default" {
+    if lookup.is_some() || name != "default" {
         return lookup;
     }
     crate::app::registry::resolve_agent_create_workspace_root_stopping_at(start_cwd, stops)
 }
 
-/// Unified resolver for `plexi agent start <name>` and `plexi agent spawn <name>` from
-/// `start_cwd` (walking up to the project root stopping at `stops`, then falling back to
-/// `profile_dir`, then built-in) that assembles the `agent_spawn` IPC payload.
-#[allow(clippy::too_many_arguments)]
-pub fn resolve_agent_spawn_in_stopping_at(
+/// Send the launch intent. The host loads the definition and composes argv at admission.
+pub(crate) fn agent_spawn_payload(
     agent_name: &str,
-    profile_dir: &Path,
     start_cwd: &Path,
     task_or_message: Option<&str>,
     subcontext: Option<&str>,
     ephemeral_override: Option<bool>,
     stops: &[PathBuf],
 ) -> Result<serde_json::Value, String> {
-    let workspace_root = resolve_agent_workspace_root_for(agent_name, start_cwd, stops);
-    let (def, _) = resolve_agent_definition_in(agent_name, profile_dir, workspace_root.as_deref())?;
-    let Some(ref harness_cfg) = def.harness else {
-        return Err(format!(
-            "agent '{}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be started as a CLI harness session)",
-            def.id
-        ));
-    };
-    let adapter = resolve_harness_adapter(harness_cfg)?;
-    let effective_ephemeral = match ephemeral_override {
-        Some(explicit) => explicit,
-        None => harness_cfg.ephemeral,
-    };
-    let memory = named_agent_memory(&def, effective_ephemeral)?;
-    let cmd_string = with_auto_state_hooks(
-        adapter,
-        build_agent_start_command(&def, adapter, task_or_message, memory.as_deref())?,
-    );
-    let project_cwd = workspace_root
+    crate::agent::validate_agent_id(agent_name)?;
+    let project_cwd = resolve_agent_workspace_root_for(agent_name, start_cwd, stops)
         .or_else(|| {
             crate::app::registry::resolve_agent_create_workspace_root_stopping_at(start_cwd, stops)
         })
         .unwrap_or_else(|| start_cwd.to_path_buf());
-    let task_text = task_or_message
-        .and_then(non_empty_string)
-        .unwrap_or_default();
-
-    let mut payload = serde_json::json!({
+    Ok(serde_json::json!({
         "type": "agent_spawn",
-        "role": def.id,
-        "harness": adapter.harness.as_str(),
-        "command": cmd_string,
-        "task": task_text,
-        "ephemeral": effective_ephemeral,
-        "cwd": project_cwd.to_string_lossy().into_owned(),
-    });
-    if let Some(sub) = subcontext.and_then(non_empty_string) {
-        payload["subcontext"] = serde_json::Value::String(sub.to_string());
-    }
-    if let Some(ref schema) = harness_cfg.result_schema {
-        payload["result_schema"] = schema.clone();
-    }
-    Ok(payload)
+        "role": agent_name,
+        "task": task_or_message.and_then(non_empty_string),
+        "ephemeral": ephemeral_override,
+        "cwd": project_cwd,
+        "subcontext": subcontext.and_then(non_empty_string),
+        "response_file": "",
+    }))
 }
 
-/// Resolve an interactive `plexi agent start <name>` request from `start_cwd` (walking up to the
-/// project root stopping at `stops`, then falling back to `profile_dir`, then built-in) and
-/// assemble the `agent_spawn` IPC payload.
-pub fn resolve_agent_start_in_stopping_at(
+pub(crate) fn agent_start_payload(
     agent_name: &str,
-    profile_dir: &Path,
-    start_cwd: &Path,
+    cwd: &Path,
     message: Option<&str>,
     stops: &[PathBuf],
 ) -> Result<serde_json::Value, String> {
-    let mut payload = resolve_agent_spawn_in_stopping_at(
-        agent_name,
-        profile_dir,
-        start_cwd,
-        message,
-        None,
-        Some(false),
-        stops,
-    )?;
-    // Interactive start is the only agent launch that hands focus to the new pane.
+    let mut payload = agent_spawn_payload(agent_name, cwd, message, None, Some(false), stops)?;
     payload["focus"] = serde_json::Value::Bool(true);
     Ok(payload)
 }
@@ -2596,13 +2525,7 @@ pub fn agent_start_cli(
             return 1;
         }
     };
-    let payload = match resolve_agent_start_in_stopping_at(
-        agent_name,
-        &crate::config::config_dir(),
-        &effective_cwd,
-        message,
-        &stops,
-    ) {
+    let payload = match agent_start_payload(agent_name, &effective_cwd, message, &stops) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
@@ -2638,9 +2561,8 @@ pub fn agent_spawn_cli(
         }
     };
     let ephemeral_override = if ephemeral { Some(true) } else { None };
-    let mut payload = match resolve_agent_spawn_in_stopping_at(
+    let mut payload = match agent_spawn_payload(
         agent_name,
-        &crate::config::config_dir(),
         &effective_cwd,
         Some(task),
         subcontext,
@@ -3041,18 +2963,21 @@ fn named_agent_cli(
     cwd: Option<&str>,
     mode: OutputMode,
 ) -> i32 {
-    let Some(name) = non_empty_string(agent_name) else {
-        eprintln!("error: agent name cannot be empty");
+    if let Err(error) = crate::agent::validate_agent_id(agent_name) {
+        eprintln!("error: {error}");
         return 1;
-    };
+    }
     let effective_cwd = match resolve_effective_cwd(cwd) {
         Ok(d) => d,
         Err(code) => return code,
     };
-    log::info!("{kind}:cli: name={name} cwd={}", effective_cwd.display());
+    log::info!(
+        "{kind}:cli: name={agent_name} cwd={}",
+        effective_cwd.display()
+    );
     let payload = serde_json::json!({
         "type": kind,
-        "name": name,
+        "name": agent_name,
         "cwd": effective_cwd.to_string_lossy(),
     });
     let content = match super::request(
@@ -3473,8 +3398,8 @@ fn claude_question_decision(content: &str) -> Option<serde_json::Value> {
 /// Hook command registered with harnesses: no shell, no `jq`.
 const NATIVE_HOOK_COMMAND: &str = "plexi agent hook-event --agent";
 
-/// Settings JSON Claude Code merges via `--settings`, registering the state hooks.
-fn claude_state_settings_json() -> String {
+/// Settings Claude Code merges via `--settings`, registering the state hooks.
+fn claude_state_settings() -> serde_json::Value {
     let command = format!("{NATIVE_HOOK_COMMAND} claude-code");
     let mut hooks = serde_json::Map::new();
     for event in CLAUDE_CODE_HOOK_EVENTS {
@@ -3492,7 +3417,11 @@ fn claude_state_settings_json() -> String {
             settings["hooks"][*event] = serde_json::json!([claude_question_hook_entry(event)]);
         }
     }
-    serde_json::to_string_pretty(&settings).unwrap_or_default()
+    settings
+}
+
+fn claude_state_settings_json() -> String {
+    serde_json::to_string_pretty(&claude_state_settings()).unwrap_or_default()
 }
 
 fn claude_question_hook_entry(event: &str) -> serde_json::Value {
@@ -3534,6 +3463,46 @@ fn insert_after_binary(command: &str, binary: &str, flags: &[String]) -> String 
     }
 }
 
+/// Compose the settings for a named Claude chat. Claude still resolves
+/// `autoMemoryEnabled` from its own settings and environment.
+pub(crate) fn with_claude_auto_memory(command: &str, memory: &Path) -> Result<String, String> {
+    let memory = std::path::absolute(memory)
+        .map_err(|error| format!("resolve Claude memory folder {}: {error}", memory.display()))?;
+    let memory = memory
+        .to_str()
+        .ok_or_else(|| format!("Claude memory folder {} is not valid UTF-8", memory.display()))?;
+    let mut settings = claude_state_settings();
+    settings["autoMemoryDirectory"] = serde_json::json!(memory);
+    log::info!("agent_memory: binding Claude auto memory folder={memory}");
+    Ok(insert_after_binary(
+        command,
+        AgentHarness::Claude.adapter().binary,
+        &["--settings".into(), shell_quote_arg(&settings.to_string())],
+    ))
+}
+
+/// Reconstruct the binding for a saved run without consulting its current definition.
+pub(crate) fn bind_saved_claude_memory(
+    command: String,
+    memory: Option<&crate::agent::memory::ClaudeMemoryIdentity>,
+    harness: &str,
+    role: Option<&str>,
+    ephemeral: bool,
+) -> Result<String, String> {
+    let Some(memory) = memory else {
+        return Ok(command);
+    };
+    if ephemeral
+        || AgentHarness::parse(harness) != Some(AgentHarness::Claude)
+        || !memory.matches_role(role)
+    {
+        return Err(format!(
+            "invalid Claude memory binding for role={role:?} harness={harness}"
+        ));
+    }
+    with_claude_auto_memory(&command, &memory.ensure_dir()?)
+}
+
 /// Make state reporting work on first launch with zero `plexi agent hook
 /// install`: provision channel-neutral hook files under the shared dir and add
 /// the matching launch flags (`claude --settings`, `pi -e`). Codex has no
@@ -3570,14 +3539,17 @@ pub fn with_auto_state_hooks(adapter: &HarnessAdapter, command: String) -> Strin
     }
 }
 
-/// Add the fresh-launch hook settings to an already-built Claude resume.
+/// Add the fresh-launch hook settings to a Claude resume without a memory binding.
+/// A validated memory binding already supplies these hooks in its inline settings.
 pub(crate) fn with_claude_resume_hooks(
     harness: Option<AgentHarness>,
     command: &str,
     session_id: Option<&str>,
+    memory_is_bound: bool,
 ) -> String {
     // Match the adapter's final resume suffix so bare restore fallbacks stay bare.
-    if harness == Some(AgentHarness::Claude)
+    if !memory_is_bound
+        && harness == Some(AgentHarness::Claude)
         && session_id.is_some_and(|sid| {
             command.ends_with(&format!(" --resume {}", shell_quote_arg(sid.trim())))
         })
@@ -4128,6 +4100,49 @@ mod agent_tests {
     use std::fs;
 
     #[test]
+    fn completion_round_named_chat_cli_rejects_original_role() {
+        const CHILD: &str = "PLEXI_1786_NAMED_CHAT_CLI_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let tmp = tempfile::tempdir().unwrap();
+            let _profile = crate::config::set_test_profile_dir(tmp.path().to_path_buf());
+            for command in [super::agent_open_cli, super::agent_new_chat_cli] {
+                for name in [" writer", "writer ", "writer/"] {
+                    assert_eq!(command(name, None, super::OutputMode::Text), 1);
+                }
+            }
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cli::agent::agent_tests::completion_round_named_chat_cli_rejects_original_role",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("PLEXI_SOCKET", tmp.path().join("missing.sock"))
+            .current_dir(tmp.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = crate::app::registry::wait_for_home_lookup_test(child);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        for name in [" writer", "writer ", "writer/"] {
+            assert_eq!(
+                stderr
+                    .matches(&format!("invalid agent name '{name}'"))
+                    .count(),
+                2,
+                "{stderr}"
+            );
+        }
+    }
+
+    #[test]
     fn workspace_not_found_error_uses_the_active_channel_directory() {
         let _channel = crate::config::set_test_channel("alpha");
         let error = super::workspace_not_found_error(std::path::Path::new("/tmp/no-workspace"));
@@ -4286,6 +4301,56 @@ mod agent_tests {
         assert!(pi.contains("spawn(plexiBin, [\"agent\", \"hook-event\", \"--agent\", \"pi\"]"));
         assert!(!pi.contains("bash") && !pi.contains("jq"));
         assert!(super::is_plexi_pi_extension(&pi));
+    }
+
+    #[test]
+    fn named_claude_start_composes_one_inline_memory_and_hook_setting() {
+        let fixture = tempfile::tempdir().unwrap();
+        let profile = fixture.path().join("profile");
+        let shared = fixture.path().join("shared memory");
+        let _guard = crate::config::set_test_shared_dir(shared.clone());
+        let agent = profile.join("agents").join("walker");
+        fs::create_dir_all(&agent).unwrap();
+        fs::write(agent.join("AGENT.md"), "You are Walker.").unwrap();
+        fs::write(
+            agent.join("settings.toml"),
+            "[agent]\nid = \"walker\"\ndisplay_name = \"Walker\"\n[harness]\ncli = \"claude\"\n",
+        )
+        .unwrap();
+        let launch = |ephemeral| {
+            crate::pane_ops::create::ConfiguredAgentLaunch::resolve_in(
+                "walker",
+                fixture.path(),
+                Some("Start task"),
+                Some(ephemeral),
+                &profile,
+                &[fixture.path().to_path_buf()],
+            )
+            .unwrap()
+            .command
+        };
+
+        let command = launch(false);
+        let encoded = command
+            .strip_prefix("claude --settings '")
+            .and_then(|rest| rest.split_once("' "))
+            .map(|(settings, _)| settings)
+            .expect("Claude settings must be a single shell-quoted argument");
+        let settings: serde_json::Value =
+            serde_json::from_str(encoded).expect("named Claude settings must be inline JSON");
+        let memory = shared.canonicalize().unwrap().join("agent_memory/walker");
+        assert_eq!(settings["autoMemoryDirectory"], memory.to_str().unwrap());
+        assert!(settings.get("autoMemoryEnabled").is_none());
+        let hooks: serde_json::Value =
+            serde_json::from_str(&super::claude_state_settings_json()).unwrap();
+        assert_eq!(settings["hooks"], hooks["hooks"]);
+        assert_eq!(command.matches("--settings ").count(), 1, "{command}");
+        assert!(!command.contains("Your memory folder is"), "{command}");
+
+        let ephemeral = launch(true);
+        assert!(ephemeral.contains("--settings "), "{ephemeral}");
+        assert!(!ephemeral.contains("autoMemoryDirectory"), "{ephemeral}");
+        assert!(!ephemeral.contains("Your memory folder is"), "{ephemeral}");
     }
 
     #[test]
@@ -5126,16 +5191,8 @@ mod agent_tests {
         )
         .unwrap();
         assert_eq!(show["description"], "workspace definition");
-        let mut payload = super::resolve_agent_spawn_in_stopping_at(
-            "worker",
-            &profile,
-            &root,
-            Some("sleep 30"),
-            None,
-            None,
-            &[],
-        )
-        .unwrap();
+        let mut payload =
+            super::agent_spawn_payload("worker", &root, Some("sleep 30"), None, None, &[]).unwrap();
         assert_eq!(payload["role"], "worker");
         let reply_dir = tempfile::tempdir().unwrap();
         let spawn_reply = reply_dir.path().join("spawn.json");
@@ -5510,19 +5567,23 @@ mod agent_tests {
         fs::create_dir_all(repo.join(".git")).unwrap();
         let stops = vec![fake_home.path().to_path_buf()];
 
-        let payload = super::resolve_agent_start_in_stopping_at(
-            "default", &profile, &repo, None, &stops,
+        let payload = super::agent_start_payload("default", &repo, None, &stops).unwrap();
+        assert_eq!(payload["role"], "default");
+        assert!(payload.get("command").is_none());
+        assert_eq!(payload["cwd"], repo.to_string_lossy().as_ref());
+        let _shared = crate::config::set_test_shared_dir(fake_home.path().join("shared"));
+        let launch = crate::pane_ops::create::ConfiguredAgentLaunch::resolve_in(
+            "default",
+            &repo,
+            None,
+            Some(false),
+            &profile,
+            &stops,
         )
         .expect("default resolves in a fresh checkout");
-        assert_eq!(payload["role"], "default");
-        assert_eq!(payload["harness"], "pi");
-        let cmd = payload["command"].as_str().unwrap();
-        assert!(
-            cmd.starts_with("pi "),
-            "unexpected default start command: {cmd}"
-        );
-        assert!(!cmd.contains(" -p"));
-        assert_eq!(payload["cwd"], repo.to_string_lossy().as_ref());
+        assert_eq!(launch.harness, super::AgentHarness::Pi);
+        assert!(launch.command.starts_with("pi "), "{}", launch.command);
+        assert!(!launch.command.contains(" -p"));
 
         let seeded = repo.join(".plexi").join("agents").join("default");
         assert!(
@@ -5896,23 +5957,30 @@ mod agent_tests {
         // user profile dir and sets pane `cwd` to `~/temp/proj`.
         let proj = fake_home.path().join("temp").join("proj");
         fs::create_dir_all(&proj).unwrap();
-        let payload = super::resolve_agent_start_in_stopping_at(
-            "researcher",
-            &profile,
-            &proj,
-            Some("First turn"),
-            &stops,
-        )
-        .expect("resolve global researcher from ~/temp/proj");
+        let payload = super::agent_start_payload("researcher", &proj, Some("First turn"), &stops)
+            .expect("resolve global researcher from ~/temp/proj");
         assert_eq!(payload["type"], "agent_spawn");
         assert_eq!(payload["role"], "researcher");
-        assert_eq!(payload["harness"], "pi");
         assert_eq!(payload["ephemeral"], false);
         assert_eq!(payload["cwd"], proj.to_string_lossy().as_ref());
-        let cmd = payload["command"].as_str().unwrap();
-        assert!(cmd.contains("You are the global researcher."));
-        assert!(cmd.contains("# Plexi worker contract"));
-        assert!(!cmd.contains(" -p"));
+        assert_eq!(payload["task"], "First turn");
+        assert!(payload.get("command").is_none());
+        let _shared = crate::config::set_test_shared_dir(fake_home.path().join("shared"));
+        let admit = |role, cwd, task| {
+            crate::pane_ops::create::ConfiguredAgentLaunch::resolve_in(
+                role,
+                cwd,
+                task,
+                Some(false),
+                &profile,
+                &stops,
+            )
+        };
+        let global = admit("researcher", &proj, Some("First turn")).unwrap();
+        assert_eq!(global.harness, super::AgentHarness::Pi);
+        assert!(global.command.contains("You are the global researcher."));
+        assert!(global.command.contains("# Plexi worker contract"));
+        assert!(!global.command.contains(" -p"));
 
         // Inside a nested subdirectory of a project with `.plexi/agents/researcher`, walks up to
         // project root, shadows global, and sets pane `cwd` to the project root.
@@ -5938,38 +6006,26 @@ mod agent_tests {
             &profile,
         )
         .unwrap();
-        let ws_payload = super::resolve_agent_start_in_stopping_at(
-            "researcher",
-            &profile,
-            &nested,
-            None,
-            &stops,
-        )
-        .expect("resolve workspace researcher from nested dir");
+        let ws_payload = super::agent_start_payload("researcher", &nested, None, &stops)
+            .expect("resolve workspace researcher from nested dir");
         assert_eq!(ws_payload["role"], "researcher");
-        assert_eq!(ws_payload["harness"], "claude");
         assert_eq!(ws_payload["cwd"], proj.to_string_lossy().as_ref());
-        assert!(ws_payload["command"]
-            .as_str()
-            .unwrap()
-            .contains("You are the project researcher."));
+        let workspace = admit("researcher", &nested, None).unwrap();
+        assert_eq!(workspace.harness, super::AgentHarness::Claude);
+        assert!(
+            workspace
+                .command
+                .contains("You are the project researcher.")
+        );
 
-        // Unknown agent name fails and lists available agents; decoy at $HOME was never loaded.
-        let err = super::resolve_agent_start_in_stopping_at(
-            "nonexistent",
-            &profile,
-            &proj,
-            None,
-            &stops,
-        )
-        .unwrap_err();
+        // Unknown names list available agents without discovering the home decoy.
+        let err = admit("nonexistent", &proj, None).unwrap_err();
         assert!(
             err.contains("available agents: default, researcher, reviewer"),
             "unknown agent error must list available agents (including the launchable built-in `default`, stint 1035): {err}"
         );
         assert!(
-            super::resolve_agent_start_in_stopping_at("decoy", &profile, &proj, None, &stops)
-                .is_err(),
+            admit("decoy", &proj, None).is_err(),
             "$HOME/.plexi/agents must not be treated as a project workspace"
         );
     }

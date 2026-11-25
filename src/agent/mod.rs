@@ -270,15 +270,18 @@ fn parse_harness_cli_name(field: &str, raw: &str) -> Result<String, String> {
     }
 }
 
-fn check_named_agent_id(id: &str, file: &std::path::Path) -> Result<(), String> {
+/// The canonical spelling used by definitions, lookup and saved memory identities.
+pub(crate) fn validate_agent_id(id: &str) -> Result<(), String> {
     if id.starts_with("pane:") {
-        log::warn!(
-            "agent: {} refused: id '{id}' uses the reserved pane: prefix",
-            file.display()
-        );
+        return Err(format!("invalid agent name '{id}': reserved pane: prefix. Please rename the agent."));
+    }
+    if !id.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        || id.len() > 64
+        || id.ends_with('-')
+        || !id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
         return Err(format!(
-            "{}: agent id '{id}' uses the reserved pane: prefix. Please rename the agent.",
-            file.display()
+            "invalid agent name '{id}': use 1–64 lowercase ASCII letters, digits or hyphens, starting with a letter and ending with a letter or digit"
         ));
     }
     Ok(())
@@ -304,11 +307,10 @@ impl AgentDefinition {
         }
         let settings: SettingsToml =
             toml::from_str(settings_toml).map_err(|e| format!("invalid settings.toml: {e}"))?;
-        if settings.agent.id.trim().is_empty() {
-            return Err("settings.toml: [agent] id must be non-empty".to_string());
-        }
-        let directory = path.as_deref().unwrap_or_else(|| std::path::Path::new(""));
-        check_named_agent_id(&settings.agent.id, &directory.join("settings.toml"))?;
+        let directory = path.as_deref().unwrap_or_else(|| Path::new(""));
+        validate_agent_id(&settings.agent.id).map_err(|error| {
+            format!("{}: [agent] id: {error}", directory.join("settings.toml").display())
+        })?;
         if settings.agent.display_name.trim().is_empty() {
             return Err("settings.toml: [agent] display_name must be non-empty".to_string());
         }
@@ -346,7 +348,7 @@ impl AgentDefinition {
             .unwrap_or(settings.can_handoff);
         for (field, roles) in [("can_call", &can_call), ("can_handoff", &can_handoff)] {
             for role in roles {
-                crate::cli::agent::validate_agent_slug(role)
+                validate_agent_id(role)
                     .map_err(|error| format!("settings.toml: {field}: {error}"))?;
             }
         }
@@ -3063,5 +3065,18 @@ fallback = "codex"
             err.contains("does not support flag '--theme'"),
             "fallback validation must fail: {err}"
         );
+    }
+
+    #[test]
+    fn definition_parser_rejects_aliases_and_accepts_default() {
+        let parse = |id: &str| AgentDefinition::parse(
+            "Persona",
+            &format!("[agent]\nid = {id:?}\ndisplay_name = 'Writer'\n[harness]\ncli = 'claude'\n"),
+        );
+        assert_eq!(parse("default").unwrap().id, "default");
+        for alias in ["writer/", "./writer", " writer", "writer-", "Writer", "a_b"] {
+            let err = parse(alias).expect_err("definition id must be canonical");
+            assert!(err.contains(alias), "{err}");
+        }
     }
 }
