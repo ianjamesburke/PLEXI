@@ -323,7 +323,7 @@ impl FleetFilter {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AgentInput {
     pub live: bool,
     pub pane_id: u64,
@@ -333,6 +333,9 @@ pub struct AgentInput {
     pub role: String,
     pub harness: String,
     pub pane_name: Option<String>,
+    pub definition_id: Option<String>,
+    pub ask_id: Option<String>,
+    pub last_interaction_at: u64,
     pub parent_title: Option<String>,
     pub context_name: String,
     pub state: AgentState,
@@ -348,6 +351,34 @@ pub struct AgentInput {
     pub result: Option<serde_json::Value>,
     pub events: Vec<AgentEvent>,
 }
+impl AgentInput {
+    pub(crate) fn display_state(
+        &self,
+        now: u64,
+        stalled_after_secs: u64,
+        seen: bool,
+    ) -> DisplayState {
+        match self.state {
+            AgentState::NeedsYou | AgentState::Blocked => DisplayState::Blocked,
+            AgentState::Interrupted => DisplayState::Stalled,
+            AgentState::Failed => DisplayState::Failed,
+            AgentState::ExitedUnreported => DisplayState::ExitedUnreported,
+            AgentState::Completed if !seen => DisplayState::DoneUnseen,
+            AgentState::Idle if self.done_unseen && !seen => DisplayState::DoneUnseen,
+            AgentState::Idle
+                if self.ephemeral
+                    && !self.done_unseen
+                    && self.blocked_on.is_none()
+                    && now.saturating_sub(self.since) > stalled_after_secs =>
+            {
+                DisplayState::Stalled
+            }
+            AgentState::Working => DisplayState::Working,
+            _ => DisplayState::Idle,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentRow {
     pub live: bool,
@@ -486,24 +517,7 @@ impl AgentsView {
             let seen = r.seen || focused == Some(r.pane_id);
             let needs_you = r.state == AgentState::NeedsYou;
             let completed = r.state == AgentState::Completed;
-            let display_state = match r.state {
-                AgentState::NeedsYou | AgentState::Blocked => DisplayState::Blocked,
-                AgentState::Interrupted => DisplayState::Stalled,
-                AgentState::Failed => DisplayState::Failed,
-                AgentState::ExitedUnreported => DisplayState::ExitedUnreported,
-                AgentState::Completed if !seen => DisplayState::DoneUnseen,
-                AgentState::Idle if r.done_unseen && !seen => DisplayState::DoneUnseen,
-                AgentState::Idle
-                    if r.ephemeral
-                        && !r.done_unseen
-                        && r.blocked_on.is_none()
-                        && now.saturating_sub(r.since) > stalled_after_secs =>
-                {
-                    DisplayState::Stalled
-                }
-                AgentState::Working => DisplayState::Working,
-                _ => DisplayState::Idle,
-            };
+            let display_state = r.display_state(now, stalled_after_secs, seen);
             let blocked_on = if display_state == DisplayState::Blocked {
                 Some(r.blocked_on.unwrap_or(BlockedOn::Unknown))
             } else {
@@ -626,6 +640,9 @@ mod tests {
             role: format!("worker-{id}"),
             harness: "pi".into(),
             pane_name: None,
+            definition_id: None,
+            ask_id: None,
+            last_interaction_at: 0,
             parent_title: None,
             context_name: "Task".into(),
             state,

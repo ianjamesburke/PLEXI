@@ -210,8 +210,9 @@ fn read_stream_to_end(
         // Clear any timeout the transport left on the stream.
         let _ = stream.set_read_timeout(None);
     }
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 8192];
+    // A timeout can leave part of a secret reply in either buffer.
+    let mut buf = zeroize::Zeroizing::new(Vec::new());
+    let mut chunk = zeroize::Zeroizing::new([0u8; 8192]);
     let read = loop {
         if let Some(deadline) = deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -227,7 +228,7 @@ fn read_stream_to_end(
                 log::debug!("rpc: read timeout not set ({error}); peer likely closed");
             }
         }
-        match stream.read(&mut chunk) {
+        match stream.read(&mut chunk[..]) {
             Ok(0) => break Ok(()),
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -246,7 +247,7 @@ fn read_stream_to_end(
                 // a unit-test mock listener that writes to the fallback file).
                 Ok(None)
             } else {
-                Ok(Some(buf))
+                Ok(Some(std::mem::take(&mut *buf)))
             }
         }
         Err(e)
@@ -269,7 +270,13 @@ pub(crate) fn read_secret_reply(
 ) -> Result<String, PollError> {
     drop(take_client_stream(token));
     let bytes = read_stream_to_end(stream, Some(timeout))?.unwrap_or_default();
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    String::from_utf8(bytes).map_err(|error| {
+        let _discard = zeroize::Zeroizing::new(error.into_bytes());
+        PollError::Unreadable(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Invalid UTF-8 in secret reply",
+        ))
+    })
 }
 
 /// Wait for the host's reply on the registered `notify.sock` stream (or poll
@@ -449,15 +456,15 @@ pub(crate) fn write_json_response(response_file: &str, value: serde_json::Value)
 pub(crate) struct StagedReply {
     response_file: String,
     stream: IpcStream,
-    json: String,
+    json: zeroize::Zeroizing<String>,
 }
 
 pub(crate) fn stage_stream_only_json_response(
     response_file: &str,
-    value: serde_json::Value,
+    value: impl serde::Serialize,
 ) -> Option<StagedReply> {
     let json = match serde_json::to_string(&value) {
-        Ok(json) => json,
+        Ok(json) => zeroize::Zeroizing::new(json),
         Err(e) => {
             log::error!("rpc: could not serialize stream-only response for {response_file:?}: {e}");
             return None;

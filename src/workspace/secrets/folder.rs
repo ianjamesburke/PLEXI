@@ -6,7 +6,6 @@
 //!
 //! The CLI sends folder reads and mutations to the host command socket.
 //! The host checks the peer's authority and admits the exact folder account.
-//! The independent folder sheet serves the Unix gate listener.
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -16,7 +15,7 @@ use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 use super::store::{DeleteOutcome, SecretStore};
-use crate::broker::gate::{self, AdmitRequest, PermissionMonitor, UseDecision};
+use crate::broker::gate::{AdmitRequest, PermissionMonitor, UseDecision};
 use crate::broker::{ActorScope, ActorType, TargetType};
 
 const ACCOUNT_PREFIX: &str = "plexi:folder:";
@@ -167,16 +166,14 @@ pub fn list_folder_secrets(store: &dyn SecretStore) -> Vec<FolderSecretMeta> {
     metas
 }
 
-/// Secrets whose folder contains `cwd`, nearest folder winning on a name clash.
-pub fn env_for_cwd(
+pub(crate) fn folders_for_cwd(
     cwd: &Path,
+    pane_root: Option<&Path>,
     store: &dyn SecretStore,
-) -> Result<Vec<(String, Zeroizing<String>)>, String> {
-    ensure_host_gate();
-    let cwd = canonical_folder(cwd)?;
+) -> std::collections::BTreeMap<String, PathBuf> {
     let mut best: HashMap<String, (usize, PathBuf)> = HashMap::new();
     for meta in list_folder_secrets(store) {
-        if !cwd.starts_with(&meta.folder) {
+        if !cwd.starts_with(&meta.folder) || pane_root.is_some_and(|root| root != meta.folder) {
             continue;
         }
         let depth = meta.folder.components().count();
@@ -188,12 +185,20 @@ pub fn env_for_cwd(
             best.insert(meta.name, (depth, meta.folder));
         }
     }
-    let mut names: Vec<String> = best.keys().cloned().collect();
-    names.sort();
-    let mut out = Vec::with_capacity(names.len());
-    for name in names {
-        let folder = &best[&name].1;
-        let account = account_name(folder, &name);
+    best.into_iter()
+        .map(|(name, (_, folder))| (name, folder))
+        .collect()
+}
+
+/// Secrets whose folder contains `cwd`, nearest folder winning on a name clash.
+pub fn env_for_cwd(
+    cwd: &Path,
+    store: &dyn SecretStore,
+) -> Result<Vec<(String, Zeroizing<String>)>, String> {
+    let cwd = canonical_folder(cwd)?;
+    let mut out = Vec::new();
+    for (name, folder) in folders_for_cwd(&cwd, None, store) {
+        let account = account_name(&folder, &name);
         let Some(value) = store
             .get_interactive(&account)
             .map_err(|error| error.to_string())?
@@ -216,7 +221,11 @@ pub fn env_for_cwd(
 #[derive(Debug)]
 pub enum ReadResult {
     Value(Zeroizing<String>),
-    PermissionRequired { pending_id: String },
+    PermissionRequired {
+        // Tests use the id to decide this exact read through the monitor.
+        #[cfg(test)]
+        pending_id: String,
+    },
     Denied,
     NotFound,
 }
@@ -336,6 +345,7 @@ pub(super) fn admitted_read_with(
                 actor.id
             );
             ReadResult::PermissionRequired {
+                #[cfg(test)]
                 pending_id: pending_request_id,
             }
         }),
@@ -411,425 +421,8 @@ pub(super) fn admitted_read_with(
     }))
 }
 
-/// One folder-secret ask the Assistant sheet can show. The value is not here.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FolderSecretSheet {
-    pub pending_id: String,
-    pub actor_id: String,
-    pub resource_id: String,
-    pub summary: String,
-}
-
-/// `true` while a human sheet is waiting for an Assistant pane to adopt it.
-pub fn folder_secret_sheet_pending() -> bool {
-    !human_sheets()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .queue
-        .is_empty()
-}
-
-/// Hand the next sheet to the Assistant. The click reply stays here so the
-/// pane does not have to know about the waiter.
-pub fn take_folder_secret_sheet() -> Option<FolderSecretSheet> {
-    let mut sheets = human_sheets().lock().unwrap_or_else(|err| err.into_inner());
-    if sheets.armed.is_some() {
-        return None;
-    }
-    let ticket = sheets.queue.pop_front()?;
-    sheets.armed = Some(ArmedClick {
-        reply: ticket.reply,
-        granted: ticket.granted,
-    });
-    Some(FolderSecretSheet {
-        pending_id: ticket.pending_id,
-        actor_id: ticket.actor_id,
-        resource_id: ticket.resource_id,
-        summary: ticket.summary,
-    })
-}
-
-/// Forward a human click (`once`, `session`, `always`, `deny`, or `deny_always`) to the
-/// waiter that calls `approve_pending`. Returns after that grant is recorded,
-/// so the next read sees it. Returns false when no sheet is armed or the
-/// waiter does not finish.
-pub fn deliver_folder_secret_choice(
-    choice: &str,
-    evidence: Option<crate::broker::consent::DecisionEvidence>,
-) -> bool {
-    let armed = {
-        let mut sheets = human_sheets().lock().unwrap_or_else(|err| err.into_inner());
-        sheets.armed.take()
-    };
-    let Some(armed) = armed else {
-        return false;
-    };
-    let sent = armed.reply.send((choice.to_string(), evidence)).is_ok();
-    let granted = sent
-        && armed
-            .granted
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .is_ok();
-    log::info!("folder_secrets: human click choice={choice} delivered={sent} granted={granted}");
-    granted
-}
-
-struct SheetTicket {
-    pending_id: String,
-    actor_id: String,
-    resource_id: String,
-    summary: String,
-    reply: std::sync::mpsc::Sender<(String, Option<crate::broker::consent::DecisionEvidence>)>,
-    /// Signaled after `approve_pending` returns. The click waits on this.
-    granted: std::sync::mpsc::Receiver<()>,
-}
-
-struct ArmedClick {
-    reply: std::sync::mpsc::Sender<(String, Option<crate::broker::consent::DecisionEvidence>)>,
-    granted: std::sync::mpsc::Receiver<()>,
-}
-
-struct HumanSheets {
-    queue: std::collections::VecDeque<SheetTicket>,
-    armed: Option<ArmedClick>,
-    /// Pending ids already handed to the host gate. Only `post_human_sheet`
-    /// reads this, and that waiter exists on a Unix host build. Windows and
-    /// `cfg(test)` admit locally, so the field is not part of those binaries.
-    #[cfg(all(unix, not(test)))]
-    posted: std::collections::HashSet<String>,
-}
-
-fn human_sheets() -> &'static std::sync::Mutex<HumanSheets> {
-    static SHEETS: std::sync::OnceLock<std::sync::Mutex<HumanSheets>> = std::sync::OnceLock::new();
-    SHEETS.get_or_init(|| {
-        std::sync::Mutex::new(HumanSheets {
-            queue: std::collections::VecDeque::new(),
-            armed: None,
-            #[cfg(all(unix, not(test)))]
-            posted: std::collections::HashSet::new(),
-        })
-    })
-}
-
-#[cfg(all(unix, not(test)))]
-fn post_human_sheet(pending_id: &str, actor_id: &str, resource: &str, summary: &str) {
-    let (inbox, granted_tx) = {
-        let mut sheets = human_sheets().lock().unwrap_or_else(|err| err.into_inner());
-        if !sheets.posted.insert(pending_id.to_string()) {
-            return;
-        }
-        let (reply, inbox) = std::sync::mpsc::channel();
-        let (granted_tx, granted_rx) = std::sync::mpsc::channel();
-        sheets.queue.push_back(SheetTicket {
-            pending_id: pending_id.to_string(),
-            actor_id: actor_id.to_string(),
-            resource_id: resource.to_string(),
-            summary: summary.to_string(),
-            reply,
-            granted: granted_rx,
-        });
-        (inbox, granted_tx)
-    };
-    let owned_id = pending_id.to_string();
-    let monitor = match PermissionMonitor::for_profile(&crate::config::config_dir()) {
-        Ok(monitor) => monitor,
-        Err(error) => {
-            log::error!("folder_secrets: no approval sheet for {pending_id}: {error}");
-            return;
-        }
-    };
-    if let Err(err) = std::thread::Builder::new()
-        .name("folder-secret-approval".into())
-        .spawn(move || wait_for_human_choice(monitor, owned_id, inbox, granted_tx))
-    {
-        log::warn!("folder_secrets: approval thread failed: {err}");
-    }
-    log::info!(
-        "folder_secrets: human sheet pending={pending_id} actor={actor_id} resource={resource}"
-    );
-    nudge_host_repaint();
-}
-
-#[cfg(all(unix, not(test)))]
-fn wait_for_human_choice(
-    monitor: std::sync::Arc<PermissionMonitor>,
-    pending_id: String,
-    inbox: std::sync::mpsc::Receiver<(String, Option<crate::broker::consent::DecisionEvidence>)>,
-    granted: std::sync::mpsc::Sender<()>,
-) {
-    let (choice, evidence) = inbox
-        .recv_timeout(std::time::Duration::from_secs(180))
-        .unwrap_or_else(|_| ("deny".to_string(), None));
-    let approval = match choice.as_str() {
-        "once" => gate::ApprovalChoice::Once,
-        "session" => gate::ApprovalChoice::Session,
-        "always" => gate::ApprovalChoice::Always,
-        "deny_always" => gate::ApprovalChoice::DenyAlways,
-        _ => gate::ApprovalChoice::Deny,
-    };
-    let decided = match evidence {
-        Some(evidence) => monitor.decide_pending(&evidence, &pending_id, approval),
-        None => monitor.cancel_pending(&pending_id),
-    };
-    match decided {
-        Ok(()) => log::info!("folder_secrets: human choice={choice} pending={pending_id}"),
-        Err(err) => {
-            log::info!("folder_secrets: human choice failed pending={pending_id} err={err}")
-        }
-    }
-    let _ = granted.send(());
-    human_sheets()
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .posted
-        .remove(&pending_id);
-}
-
-#[cfg(all(unix, not(test)))]
-fn nudge_host_repaint() {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        let path = crate::platform::ipc::endpoint_path();
-        let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&path) else {
-            return;
-        };
-        let _ = stream.write_all(b"{\"type\":\"wake\"}\n");
-    }
-}
-
-/// Start the gate only in the process that is listening on `notify.sock`.
-/// A CLI `secret exec` also calls `env_for_cwd` and must not bind this socket.
-fn ensure_host_gate() {
-    #[cfg(all(unix, not(test)))]
-    {
-        static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-        if !process_holds_notify_socket() {
-            return;
-        }
-        let _ = STARTED.get_or_init(|| {
-            if let Err(err) = std::thread::Builder::new()
-                .name("folder-secret-gate".into())
-                .spawn(run_folder_secret_gate)
-            {
-                log::warn!("folder_secrets: gate thread failed: {err}");
-            }
-        });
-    }
-}
-
-#[cfg(all(unix, not(test)))]
-fn process_holds_notify_socket() -> bool {
-    let wanted = crate::platform::ipc::endpoint_path();
-    if open_fds()
-        .into_iter()
-        .any(|fd| unix_socket_path(fd).as_ref() == Some(&wanted))
-    {
-        return true;
-    }
-    // Linux `getsockname` on a unix socket often reports `socket:[inode]`
-    // rather than the bound path. `/proc/net/unix` still names the listener.
-    linux_listener_inode_is_ours(&wanted)
-}
-
-#[cfg(all(unix, not(test)))]
-fn linux_listener_inode_is_ours(wanted: &Path) -> bool {
-    let Ok(table) = std::fs::read_to_string("/proc/net/unix") else {
-        return false;
-    };
-    let wanted = wanted.to_string_lossy();
-    let mut inodes = Vec::new();
-    for line in table.lines().skip(1) {
-        let mut cols = line.split_whitespace();
-        let Some(inode) = cols.nth(6) else {
-            continue;
-        };
-        if cols.next() == Some(wanted.as_ref()) {
-            inodes.push(format!("socket:[{inode}]"));
-        }
-    }
-    if inodes.is_empty() {
-        return false;
-    }
-    for fd in open_fds() {
-        let Ok(link) = std::fs::read_link(format!("/proc/self/fd/{fd}")) else {
-            continue;
-        };
-        if inodes.iter().any(|inode| link.to_string_lossy() == *inode) {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(all(unix, not(test)))]
-fn open_fds() -> Vec<i32> {
-    let mut fds = Vec::new();
-    for dir in ["/proc/self/fd", "/dev/fd"] {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if let Ok(fd) = entry.file_name().to_string_lossy().parse::<i32>() {
-                fds.push(fd);
-            }
-        }
-        if !fds.is_empty() {
-            return fds;
-        }
-    }
-    (0..256).collect()
-}
-
-#[cfg(all(unix, not(test)))]
-fn unix_socket_path(fd: i32) -> Option<std::path::PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    let rc = unsafe {
-        libc::getsockname(
-            fd,
-            &mut addr as *mut libc::sockaddr_un as *mut libc::sockaddr,
-            &mut len,
-        )
-    };
-    if rc != 0 || addr.sun_family as i32 != libc::AF_UNIX {
-        return None;
-    }
-    let bytes = unsafe {
-        std::slice::from_raw_parts(addr.sun_path.as_ptr() as *const u8, addr.sun_path.len())
-    };
-    let end = bytes
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(bytes.len());
-    if end == 0 {
-        return None;
-    }
-    Some(PathBuf::from(OsStr::from_bytes(&bytes[..end])))
-}
-
-#[cfg(all(unix, not(test)))]
-fn run_folder_secret_gate() {
-    use std::os::unix::fs::PermissionsExt;
-    let path = crate::config::config_dir().join("folder-secret-gate.sock");
-    let _ = std::fs::remove_file(&path);
-    let listener = match std::os::unix::net::UnixListener::bind(&path) {
-        Ok(listener) => listener,
-        Err(err) => {
-            log::warn!(
-                "folder_secrets: gate bind failed at {}: {err}",
-                path.display()
-            );
-            return;
-        }
-    };
-    if let Err(err) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-        log::warn!("folder_secrets: gate chmod failed: {err}");
-    }
-    log::info!("folder_secrets: gate listening at {}", path.display());
-    for conn in listener.incoming() {
-        match conn {
-            Ok(stream) => {
-                let _ = std::thread::Builder::new()
-                    .name("folder-secret-gate-conn".into())
-                    .spawn(move || serve_gate_client(stream));
-            }
-            Err(err) => log::warn!("folder_secrets: gate accept failed: {err}"),
-        }
-    }
-}
-
-#[cfg(all(unix, not(test)))]
-fn serve_gate_client(stream: std::os::unix::net::UnixStream) {
-    use std::io::{BufRead, BufReader, Write};
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
-    let mut writer = match stream.try_clone() {
-        Ok(writer) => writer,
-        Err(err) => {
-            log::warn!("folder_secrets: gate clone failed: {err}");
-            return;
-        }
-    };
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
-        return;
-    }
-    let response = match handle_gate_line(&line) {
-        Ok(body) => body,
-        Err(err) => serde_json::json!({"status": "error", "error": err}).to_string(),
-    };
-    let _ = writeln!(writer, "{response}");
-}
-
-#[cfg(all(unix, not(test)))]
-fn handle_gate_line(line: &str) -> Result<String, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(line).map_err(|err| format!("folder secret gate: {err}"))?;
-    let kind = value
-        .get("kind")
-        .and_then(|item| item.as_str())
-        .unwrap_or("");
-    let actor_id = value
-        .get("actor_id")
-        .and_then(|item| item.as_str())
-        .unwrap_or("");
-    let name = value
-        .get("name")
-        .and_then(|item| item.as_str())
-        .unwrap_or("");
-    let folder = value
-        .get("folder")
-        .and_then(|item| item.as_str())
-        .unwrap_or("");
-    let actor_kind = match kind {
-        "agent" => ActorType::Agent,
-        "app" => ActorType::Plugin,
-        other => return Err(format!("unknown actor kind {other}")),
-    };
-    if actor_id.is_empty() || name.is_empty() || folder.is_empty() {
-        return Err("folder secret gate: missing actor, name, or folder".to_string());
-    }
-    let actor = SecretActor {
-        kind: actor_kind,
-        id: actor_id.to_string(),
-    };
-    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
-        .map_err(|error| error.to_string())?;
-    let result = read_folder_secret(
-        &monitor,
-        super::folder_store(),
-        &actor,
-        name,
-        Path::new(folder),
-    )?;
-    if let ReadResult::PermissionRequired { pending_id } = &result {
-        let resource = format!("{name}@{folder}");
-        let summary = format!("{name} @ {folder}");
-        post_human_sheet(pending_id, actor_id, &resource, &summary);
-    }
-    Ok(encode_read_result(&result))
-}
-
-#[cfg(all(unix, not(test)))]
-fn encode_read_result(result: &ReadResult) -> String {
-    match result {
-        ReadResult::Value(value) => {
-            serde_json::json!({"status": "value", "value": value.as_str()}).to_string()
-        }
-        ReadResult::PermissionRequired { pending_id } => {
-            serde_json::json!({"status": "permission_required", "pending_id": pending_id})
-                .to_string()
-        }
-        ReadResult::Denied => serde_json::json!({"status": "denied"}).to_string(),
-        ReadResult::NotFound => serde_json::json!({"status": "not_found"}).to_string(),
-    }
-}
-
 /// Storage identity uses the bytes of the canonical folder selected by the host.
-pub(super) fn account_name(folder: &Path, name: &str) -> String {
+pub(crate) fn account_name(folder: &Path, name: &str) -> String {
     format!("{ACCOUNT_PREFIX}{}:{name}", hex_encode(&path_bytes(folder)))
 }
 
@@ -906,7 +499,7 @@ fn from_hex(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::broker::gate::PermissionMonitor;
+    use crate::broker::gate;
 
     fn store() -> super::super::store::InMemoryKeychain {
         super::super::store::InMemoryKeychain::new()
@@ -1154,7 +747,8 @@ mod tests {
         let _enabled =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let root = scratch();
-        let _profile = crate::config::set_test_profile_dir(root.path().join("profile"));
+        let profile = scratch();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_owned());
         let folder_a = root.path().join("A");
         let folder_b = root.path().join("B");
         std::fs::create_dir(&folder_a).unwrap();
@@ -1164,6 +758,11 @@ mod tests {
         set_folder_secret(super::super::folder_store(), name, &folder_a, value).unwrap();
         let inside = crate::host::shell::build_env(Some(&folder_a));
         assert_eq!(inside.get(name).map(String::as_str), Some(value));
+        assert!(!profile
+            .path()
+            .join("folder-secret-gate.sock")
+            .try_exists()
+            .unwrap());
         assert!(
             inside
                 .keys()
@@ -1269,6 +868,7 @@ mod removal_outcome_tests {
 mod approval_retry_tests {
     use super::super::store::SecretError;
     use super::*;
+    use crate::broker::gate;
 
     #[test]
     fn concurrent_secret_requests_cannot_share_one_approval() {

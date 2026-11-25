@@ -155,7 +155,7 @@ pub(crate) const SECRET_SOCKET_ORIGIN: &str = "host.command_socket";
 pub(crate) fn command_secret_tool(tool: &str) -> bool {
     matches!(
         tool,
-        "secret.get" | "secret.read" | "secret.set" | "secret.delete"
+        "secret.get" | "secret.exec" | "secret.read" | "secret.set" | "secret.delete"
     )
 }
 
@@ -165,7 +165,7 @@ impl TargetType {
         // desktop grant is claimed on retry, while socket calls own their click.
         self == Self::Secret
             && command_secret_tool(tool)
-            && (tool != "secret.read" || trust_origin == SECRET_SOCKET_ORIGIN)
+            && (!matches!(tool, "secret.read" | "secret.exec") || trust_origin == SECRET_SOCKET_ORIGIN)
     }
 }
 
@@ -268,7 +268,7 @@ impl GrantRecord {
     /// Whether this row may exist for its actor at all: an outside-process
     /// row only for once or session (stint 1285).
     pub fn duration_admissible(&self) -> bool {
-        if self.actor.kind() == ActorType::External
+        if (self.actor.kind() == ActorType::External || self.target_id == "secret.exec")
             && self.target_type == TargetType::Secret
             && self.decision == Decision::Allow
             && command_secret_tool(&self.target_id)

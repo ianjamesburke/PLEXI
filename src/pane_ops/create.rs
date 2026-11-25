@@ -2894,6 +2894,18 @@ impl PlexiApp {
         context_id: Option<u64>,
         origin: OriginQuery<'_>,
     ) -> Option<(usize, PaneId, usize)> {
+        self.locate_view_instance_where(manifest_id, context_id, origin, &|_| true)
+    }
+
+    /// [`Self::locate_view_instance`] counting only instances `accept` takes,
+    /// at every depth of each overlay chain.
+    pub(crate) fn locate_view_instance_where(
+        &self,
+        manifest_id: &str,
+        context_id: Option<u64>,
+        origin: OriginQuery<'_>,
+        accept: &dyn Fn(&crate::host::pane::ViewPane) -> bool,
+    ) -> Option<(usize, PaneId, usize)> {
         let wanted = match origin {
             OriginQuery::Entry(entry) => Some(crate::platform::path::canonical_or_self(entry)),
             _ => None,
@@ -2919,7 +2931,7 @@ impl PlexiApp {
             let mut depth = 0;
             loop {
                 let app = current.as_view()?;
-                if app.manifest_id == manifest_id && runs(app) {
+                if app.manifest_id == manifest_id && runs(app) && accept(app) {
                     return Some(depth);
                 }
                 current = app.overlay_replaced.as_deref()?;
@@ -3819,9 +3831,19 @@ impl PlexiApp {
             ));
         }
         let context_id = self.windows[self.active_window].context_id;
-        if let Some((win_idx, slot, depth)) =
-            self.locate_view_instance("agents-dashboard", Some(context_id), OriginQuery::Builtin)
-        {
+        let workspace = crate::platform::path::canonical_or_self(workspace);
+        // Only a dashboard already showing this workspace is reused, found
+        // among every dashboard in the context: another one's pane would
+        // serve that workspace's projection.
+        let showing = |view: &crate::host::pane::ViewPane| {
+            crate::platform::path::canonical_or_self(&view.workspace_root) == workspace
+        };
+        if let Some((win_idx, slot, depth)) = self.locate_view_instance_where(
+            "agents-dashboard",
+            Some(context_id),
+            OriginQuery::Builtin,
+            &showing,
+        ) {
             self.reveal_and_focus_instance(win_idx, slot, depth);
             return Ok(slot);
         }

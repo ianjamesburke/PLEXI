@@ -119,6 +119,19 @@ pub struct SecretInventory {
 pub const GRANT_DETAILS_FROM_HOST: &str =
     "Grant and last-used details come from the running Plexi host and are not available to this command.";
 
+/// Whether a global secret is stored under its canonical or a legacy spelling.
+/// Scans account attributes only: no value is read and nothing is migrated.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+pub fn global_secret_stored(name: &str) -> Result<bool, String> {
+    let accounts = super::system_store()
+        .scan_accounts()
+        .map_err(|error| error.to_string())?;
+    Ok(std::iter::once(name)
+        .chain(super::reconcile::legacy_friendly_names(name))
+        .map(super::keychain_user_name)
+        .any(|account| accounts.contains(&account)))
+}
+
 pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry>, String> {
     Ok(secret_inventory_report(cwd, global_only)?.entries)
 }

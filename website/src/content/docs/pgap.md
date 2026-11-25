@@ -1003,6 +1003,26 @@ Delete a secret after admission for its exact name and scope.
 | `response_file` | `string` | yes |
 | `workspace_root` | `string?` | no |
 
+### `folder_secret_exec`
+
+Release the environment for this folder on the requesting connection.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `cwd` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `run_secrets`
+
+Release the approved command definition and its required environment.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `command` | `string` | yes |
+| `cwd` | `string` | yes |
+| `response_file` | `string` | yes |
+| `workspace_root` | `string?` | no |
+
 ### `folder_secret_read`
 
 Read one folder account on the original connection after host admission.

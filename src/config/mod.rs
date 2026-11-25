@@ -164,7 +164,6 @@ const KNOWN_AGENTS: &[&str] = &[
     "standby_scrollback_lines",
     "stalled_after_secs",
     "stale_failure_hours",
-    "palette_agent_results",
     "os_notifications",
 ];
 const KNOWN_CLI: &[&str] = &["tips"];
@@ -1305,8 +1304,6 @@ pub struct AgentsConfig {
     pub stalled_after_secs: Option<u64>,
     /// Age threshold in hours after which failed runs collapse into the older fleet group (default 12).
     pub stale_failure_hours: Option<u64>,
-    /// Show agent jump rows in the command palette (default false).
-    pub palette_agent_results: Option<bool>,
     /// Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions.
     pub low: Option<String>,
     /// Standard work. Default: claude sonnet with --dangerously-skip-permissions.
@@ -1329,9 +1326,6 @@ impl AgentsConfig {
         }
         if other.stale_failure_hours.is_some() {
             self.stale_failure_hours = other.stale_failure_hours;
-        }
-        if other.palette_agent_results.is_some() {
-            self.palette_agent_results = other.palette_agent_results;
         }
         if other.low.is_some() {
             self.low = other.low;
@@ -2729,7 +2723,6 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
         ("agents", "os_notifications", toml::Value::Boolean(true)),
         ("agents", "stalled_after_secs", toml::Value::Integer(120)),
         ("agents", "stale_failure_hours", toml::Value::Integer(crate::agent::fleet::DEFAULT_STALE_FAILURE_HOURS as i64)),
-        ("agents", "palette_agent_results", toml::Value::Boolean(false)),
         ("agents", "restore_mode", toml::Value::String("lazy".to_owned())),
         ("agents", "standby_scrollback_lines", toml::Value::Integer(PlexiConfig::default().standby_scrollback_lines() as i64)),
         ("effects", "ghost", toml::Value::Boolean(true)),
@@ -3983,7 +3976,6 @@ thinking = "low"
 os_notifications = true
 stalled_after_secs = 60
 stale_failure_hours = 5
-palette_agent_results = true
 low = "one"
 medium = "two"
 high = "three"

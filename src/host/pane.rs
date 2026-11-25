@@ -838,6 +838,8 @@ pub struct TerminalPane {
     pub fleet_dismissed: bool,
     pub fleet_done_unseen: bool,
     pub fleet_since: u64,
+    /// Milliseconds since the Unix epoch of the last human interaction.
+    pub last_interaction_at: u64,
     /// Pane ID — matches the key used in HashMap<PaneId, Pane>.
     pub id: PaneId,
     pub backend: TerminalBackend,
@@ -1185,6 +1187,7 @@ impl TerminalPane {
             fleet_dismissed: false,
             fleet_done_unseen: false,
             fleet_since: crate::platform::clock::now_secs(),
+            last_interaction_at: 0,
             agent: None,
             agent_reported_at: None,
             observed_agent: None,
@@ -1795,6 +1798,7 @@ impl TerminalPane {
             s.fleet_dismissed = self.fleet_dismissed;
             s.fleet_done_unseen = self.fleet_done_unseen;
             s.fleet_since = self.fleet_since;
+            s.last_interaction_at = self.last_interaction_at;
             s.ephemeral = self.ephemeral;
             if s.tail_preview.is_none() {
                 s.tail_preview = self.tail_preview.clone();
@@ -1820,6 +1824,7 @@ impl TerminalPane {
             fleet_dismissed: self.fleet_dismissed,
             fleet_done_unseen: self.fleet_done_unseen,
             fleet_since: self.fleet_since,
+            last_interaction_at: self.last_interaction_at,
             harness,
             config_name: self.agent_role.clone(),
             permission_posture: self.permission_ceiling().ok().flatten().cloned(),
@@ -2062,6 +2067,7 @@ mod agent_source_tests {
             fleet_done_unseen: false,
             fleet_dismissed: false,
             fleet_since: 0,
+            last_interaction_at: 0,
             harness: harness.to_string(),
             config_name: None,
             permission_posture: None,

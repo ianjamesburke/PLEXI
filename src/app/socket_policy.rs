@@ -333,6 +333,8 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
         | HostRequest::SecretGet { .. }
         | HostRequest::SecretSet { .. }
         | HostRequest::SecretDelete { .. }
+        | HostRequest::FolderSecretExec { .. }
+        | HostRequest::RunSecrets { .. }
         | HostRequest::FolderSecretRead { .. }
         | HostRequest::FolderSecretSet { .. }
         | HostRequest::FolderSecretRm { .. }
@@ -378,8 +380,7 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
             None => return Err(invalid_op("agents", op)),
         },
         HostRequest::AgentsDashboard { op, .. } => match DashboardOp::parse(op) {
-            Some(DashboardOp::Open | DashboardOp::List) => Operator,
-            Some(DashboardOp::Cancel) => Protected,
+            Some(DashboardOp::Open | DashboardOp::List | DashboardOp::Cancel) => Protected,
             None => return Err(invalid_op("agents dashboard", op)),
         },
 
@@ -458,6 +459,8 @@ pub(crate) fn admit_request(
             HostRequest::SecretGet { .. }
                 | HostRequest::SecretSet { .. }
                 | HostRequest::SecretDelete { .. }
+                | HostRequest::FolderSecretExec { .. }
+                | HostRequest::RunSecrets { .. }
                 | HostRequest::FolderSecretRead { .. }
                 | HostRequest::FolderSecretSet { .. }
                 | HostRequest::FolderSecretRm { .. }

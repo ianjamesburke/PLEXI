@@ -1,5 +1,5 @@
 use super::reply::OutputMode;
-use super::{is_executable, print_tip, PlexiCommands, UserCommandScope, PLUGIN_ID};
+use super::{is_executable, print_tip, PlexiCommands, UserCommandScope};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -995,7 +995,7 @@ pub fn run_command_for_root_from_pane(
         }
     };
 
-    let (scope, run_snippet, steps, on_load, secret_keys) = match target {
+    let (scope, mut run_snippet, mut steps, mut on_load, secret_keys) = match target {
         ResolvedRunTarget::GlobalScript(script_path) => {
             log::info!("cli: running global script {:?}", script_path);
             #[expect(
@@ -1032,6 +1032,26 @@ pub fn run_command_for_root_from_pane(
             secrets,
         } => (scope, run, steps, on_load, secrets),
     };
+    let approved_cwd;
+    let (cwd, resolved) = if secret_keys.is_empty() {
+        (cwd, Vec::new())
+    } else {
+        let request = serde_json::json!({"type":"run_secrets","command":command_name,"cwd":cwd,"workspace_root":ws_root});
+        let bundle = match super::workspace::request_bundle(&format!("run {command_name}"), request)
+        {
+            Ok(bundle) => bundle,
+            Err(code) => return fail(code),
+        };
+        let Some(definition) = bundle.definition else {
+            eprintln!("run {command_name}: Plexi did not return the approved command definition.");
+            return fail(1);
+        };
+        run_snippet = definition.run;
+        steps = definition.steps;
+        on_load = definition.on_load;
+        approved_cwd = bundle.cwd;
+        (approved_cwd.as_path(), bundle.values)
+    };
     log::info!(
         "cli: running command '{command_name}' from scope={} (steps={}, on_load={})",
         scope.as_str(),
@@ -1053,107 +1073,6 @@ pub fn run_command_for_root_from_pane(
         }
     }
 
-    // Resolve secrets via workspace-routed v3 resolver.
-    let mut resolved: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
-    let mut missing: Vec<&str> = Vec::new();
-
-    if !secret_keys.is_empty() {
-        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-        {
-            use crate::workspace::secrets::{
-                resolve, system_store, ResolveOutcome, WorkspaceConfig, WorkspaceSecrets,
-            };
-            let store = system_store();
-            // Load workspace context once — fail early if secrets are required but workspace
-            // is not initialised (missing workspace.toml or secrets.toml).
-            let ws_root_for_secrets = crate::app::registry::resolve_workspace_root(cwd)
-                .or_else(|| ws_root.map(std::path::Path::to_path_buf));
-            let ws_context: Option<(String, WorkspaceSecrets)> =
-                ws_root_for_secrets.as_ref().and_then(|root| {
-                    let cfg = match WorkspaceConfig::load(root) {
-                        Ok(Some(c)) => c,
-                        Ok(None) => {
-                            log::warn!("run_command: workspace.toml missing at {}", root.display());
-                            return None;
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "run_command: failed to load workspace.toml at {}: {e}",
-                                root.display()
-                            );
-                            return None;
-                        }
-                    };
-                    let router = match WorkspaceSecrets::load(root) {
-                        Ok(Some(r)) => r,
-                        Ok(None) => {
-                            log::warn!("run_command: secrets.toml missing at {}", root.display());
-                            return None;
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "run_command: failed to load secrets.toml at {}: {e}",
-                                root.display()
-                            );
-                            return None;
-                        }
-                    };
-                    Some((cfg.id, router))
-                });
-            match ws_context {
-                None => {
-                    log::warn!(
-                        "run_command: secrets required but workspace context unavailable in {}",
-                        cwd.display()
-                    );
-                    let channel_dir = crate::config::workspace_channel_dir();
-                    eprintln!(
-                        "error: command requires secrets but workspace is not fully initialized."
-                    );
-                    eprintln!("  → plexi workspace init   (creates {channel_dir}/workspace.toml + {channel_dir}/secrets.toml)");
-                    eprintln!("  → plexi secret set <NAME>  (then store the required secrets)");
-                    return fail(1);
-                }
-                Some((ws_id, router)) => {
-                    for key in &secret_keys {
-                        match resolve(&ws_id, PLUGIN_ID, key, &router, store) {
-                            ResolveOutcome::Found(value) => {
-                                resolved.push((key.to_string(), value));
-                            }
-                            ResolveOutcome::HardMissing { reason } => {
-                                log::warn!("run_command: secret '{key}' hard-missing: {reason}");
-                                missing.push(key.as_str());
-                            }
-                            ResolveOutcome::PromptUser => {
-                                log::info!("run_command: secret '{key}' not in workspace Keychain");
-                                missing.push(key.as_str());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-        {
-            for key in &secret_keys {
-                missing.push(key.as_str());
-            }
-        }
-    }
-
-    if !missing.is_empty() {
-        eprintln!("error: missing required secrets:");
-        for key in &missing {
-            eprintln!("  - {key}");
-        }
-        eprintln!();
-        eprintln!("Set them with:");
-        for key in &missing {
-            eprintln!("  plexi secret set {key}");
-        }
-        return fail(1);
-    }
-
     // If `steps` or `on_load` are declared, run sequentially through the step runner.
     if !steps.is_empty() || !on_load.is_empty() {
         let mut all_steps = if steps.is_empty() {
@@ -1162,10 +1081,12 @@ pub fn run_command_for_root_from_pane(
             steps
         };
         all_steps.extend(on_load);
-        let mut env_vars: Vec<(String, String)> = resolved
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_str().to_string()))
-            .collect();
+        let mut env_vars = zeroize::Zeroizing::new(
+            resolved
+                .into_iter()
+                .map(|mut entry| (entry.name, std::mem::take(&mut entry.value.0)))
+                .collect::<Vec<_>>(),
+        );
         if let Some(pane_id) = invoker_pane_id {
             if !env_vars.iter().any(|(k, _)| k == "PLEXI_PANE_ID") {
                 env_vars.push(("PLEXI_PANE_ID".to_string(), pane_id.to_string()));
@@ -1193,8 +1114,8 @@ pub fn run_command_for_root_from_pane(
     }
     child_cmd.current_dir(cwd);
     child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
-    for (key, value) in &resolved {
-        child_cmd.env(key, value);
+    for entry in &resolved {
+        child_cmd.env(&entry.name, &entry.value.0);
     }
 
     let code = match child_cmd.status() {

@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+use super::workspace::{global_secret_lookup, GlobalSecret};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -18,6 +20,9 @@ struct OpenRouterReport {
     /// Human-readable status string for non-JSON output.
     #[serde(skip)]
     status: String,
+    /// The host confirmed the key is not stored (not merely unreadable).
+    #[serde(skip)]
+    missing: bool,
 }
 
 #[derive(Serialize)]
@@ -38,40 +43,10 @@ struct LlmServerReport {
 fn check_openrouter() -> OpenRouterReport {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        use crate::workspace::secrets::{keychain_user_name, system_store};
-        super::workspace::reconcile_secrets_before_read("cli:doctor");
-        let key = system_store().get(&keychain_user_name("OPENROUTER_API_KEY"));
-        match key {
-            None => {
-                log::info!("cli:doctor: OPENROUTER_API_KEY not found in keychain");
-                OpenRouterReport {
-                    configured: false,
-                    model_count: None,
-                    status: "not configured".to_string(),
-                }
-            }
-            Some(key) => {
-                log::info!("cli:doctor: OPENROUTER_API_KEY found -- validating via API");
-                match probe_openrouter_key(key.as_str()) {
-                    Some(count) => {
-                        log::info!("cli:doctor: openrouter key valid -- {count} models");
-                        OpenRouterReport {
-                            configured: true,
-                            model_count: Some(count),
-                            status: format!("configured ({count} models available)"),
-                        }
-                    }
-                    None => {
-                        log::warn!("cli:doctor: openrouter key present but API validation failed");
-                        OpenRouterReport {
-                            configured: true,
-                            model_count: None,
-                            status: "configured (key set, API unreachable)".to_string(),
-                        }
-                    }
-                }
-            }
-        }
+        openrouter_report(
+            global_secret_lookup("OPENROUTER_API_KEY"),
+            probe_openrouter_key,
+        )
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
@@ -82,7 +57,48 @@ fn check_openrouter() -> OpenRouterReport {
             configured: false,
             model_count: None,
             status: "not configured (keychain unavailable)".to_string(),
+            missing: false,
         }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn openrouter_report(
+    lookup: GlobalSecret,
+    probe: impl FnOnce(&str) -> Option<usize>,
+) -> OpenRouterReport {
+    match lookup {
+        GlobalSecret::Value(key) => {
+            let model_count = probe(&key);
+            let status = match model_count {
+                Some(count) => {
+                    log::info!("cli:doctor: openrouter key valid -- {count} models");
+                    format!("configured ({count} models available)")
+                }
+                None => {
+                    log::warn!("cli:doctor: openrouter key present but API validation failed");
+                    "configured (key set, API unreachable)".into()
+                }
+            };
+            OpenRouterReport {
+                configured: true,
+                model_count,
+                status,
+                missing: false,
+            }
+        }
+        GlobalSecret::NotSet => OpenRouterReport {
+            configured: false,
+            model_count: None,
+            status: "not configured".into(),
+            missing: true,
+        },
+        GlobalSecret::Unavailable(reason) => OpenRouterReport {
+            configured: false,
+            model_count: None,
+            status: format!("not checked ({reason})"),
+            missing: false,
+        },
     }
 }
 
@@ -327,7 +343,7 @@ pub fn doctor_cli(json: bool) -> i32 {
 fn print_openrouter_section(report: &OpenRouterReport) {
     println!("\nOpenRouter:");
     println!("  {}", report.status);
-    if !report.configured {
+    if report.missing {
         println!("  --> run: plexi secret set OPENROUTER_API_KEY --global");
     }
 }
@@ -409,5 +425,56 @@ fn installation_report() -> (serde_json::Value, bool) {
             serde_json::json!({ "cli": cli, "running": running, "shell": shell, "error": error }),
             false,
         ),
+    }
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
+mod tests {
+    use super::*;
+    use crate::cli::workspace::secret_set_tests::{with_stored_openrouter_key, BUNDLE_RESPONSE};
+    use crate::workspace::secrets::take_test_store_calls;
+
+    #[test]
+    fn doctor_uses_the_host_even_when_the_key_is_stored_locally() {
+        with_stored_openrouter_key(|| {
+            BUNDLE_RESPONSE.set(Some(Box::new(|_| r#"{"status":"not_found"}"#.into())));
+            take_test_store_calls();
+            assert!(!check_openrouter().configured);
+            assert_eq!(take_test_store_calls(), 0);
+            assert!(BUNDLE_RESPONSE.take().is_none());
+        });
+    }
+
+    #[test]
+    fn openrouter_report_probes_only_a_returned_value() {
+        for count in [Some(7), None] {
+            let report =
+                openrouter_report(GlobalSecret::Value("fixture".to_owned().into()), |key| {
+                    assert_eq!(key, "fixture");
+                    count
+                });
+            assert!(report.configured);
+            assert_eq!(report.model_count, count);
+            assert_eq!(
+                report.status,
+                if count.is_some() {
+                    "configured (7 models available)"
+                } else {
+                    "configured (key set, API unreachable)"
+                }
+            );
+        }
+        for (lookup, status) in [
+            (GlobalSecret::NotSet, "not configured"),
+            (
+                GlobalSecret::Unavailable("denied".into()),
+                "not checked (denied)",
+            ),
+        ] {
+            let report = openrouter_report(lookup, |_| panic!("no key to probe"));
+            assert!(!report.configured);
+            assert_eq!(report.model_count, None);
+            assert_eq!(report.status, status);
+        }
     }
 }

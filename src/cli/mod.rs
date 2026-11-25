@@ -630,7 +630,6 @@ pub mod experiments;
 pub mod front;
 pub mod help;
 pub mod introspect;
-mod pane_caller;
 mod queued_spawn;
 pub(crate) mod reply;
 pub(crate) use reply::OutputMode;
@@ -1676,7 +1675,7 @@ const IDENTITY_ACK_VERBS: &[&str] = &[
     "agent_reopen", "agent_spawn", "agent_wait", "agents_api", "call_plugin_tool",
     "caller_context", "create_context", "create_sub_context", "dismiss_notification",
     "file_open", "focus_context", "list_plugin_tools", "needs_you_api", "notify",
-    "pane_message_send", "secret_get", "secret_set", "secret_delete", "folder_secret_read", "folder_secret_set", "folder_secret_rm", "pane_secret_list", "permissions", "resource_lease",
+    "pane_message_send", "secret_get", "secret_set", "secret_delete", "folder_secret_exec", "run_secrets", "folder_secret_read", "folder_secret_set", "folder_secret_rm", "pane_secret_list", "permissions", "resource_lease",
     "send_to_pane", "set_agent_state", "spawn_pane",
 ];
 
@@ -1727,7 +1726,7 @@ fn send_to_socket_connected(
 ) -> Result<crate::platform::ipc::IpcStream, i32> {
     let socket_path = match payload["type"].as_str() {
         Some(
-            "secret_get" | "secret_set" | "secret_delete" | "folder_secret_read"
+            "secret_get" | "secret_set" | "secret_delete" | "folder_secret_exec" | "run_secrets" | "folder_secret_read"
             | "folder_secret_set" | "folder_secret_rm",
         ) => resolve_secret_socket(),
         _ => resolve_command_socket().ok_or_else(|| {

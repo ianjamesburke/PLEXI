@@ -212,6 +212,14 @@ pub fn default_ask_options() -> Vec<QueueOption> {
     ]
 }
 
+/// An outside process's dashboard read is one use: no remembered choice.
+pub(crate) fn outside_dashboard_ask_options() -> Vec<QueueOption> {
+    default_ask_options()
+        .into_iter()
+        .filter(|o| matches!(o.key.as_str(), "allow_once" | "deny"))
+        .collect()
+}
+
 fn pane_send_ask_options() -> Vec<QueueOption> {
     let mut options = default_ask_options();
     options[1].label = format!(
@@ -714,6 +722,10 @@ impl PlexiApp {
                     | crate::host::plugin_admission::TRUST_FOLDER_TOOL
             );
             let is_secret = crate::broker::command_secret_tool(&pending.tool)
+                && (pending.actor_id == crate::broker::principal::EXTERNAL_ID
+                    || pending.tool == "secret.exec");
+            let is_outside_dashboard_read = pending.tool
+                == <crate::broker::permit::ReadDashboard as crate::broker::permit::Operation>::NAME
                 && pending.actor_id == crate::broker::principal::EXTERNAL_ID;
             let cmd_text = if is_cli_operation || is_plugin_admission || is_secret {
                 // The summary is already a full sentence naming plugin, workspace,
@@ -765,7 +777,9 @@ impl PlexiApp {
                 },
                 command_text: cmd_text,
                 options: {
-                    let options = if pending.tool == "pane.send" {
+                    let options = if is_outside_dashboard_read {
+                        outside_dashboard_ask_options()
+                    } else if pending.tool == "pane.send" {
                         pane_send_ask_options()
                     } else if is_cli_operation {
                         cli_operation_ask_options()
@@ -2058,6 +2072,7 @@ impl PlexiApp {
             verdict.option_key
         );
         self.attention_queue.verdicts.push(verdict);
+        self.record_agent_interaction(overlay.pane_id, "answer");
         self.attention_queue.decision_overlay = None;
         self.sync_attention_queue_layer();
         self.sync_attention_queue();

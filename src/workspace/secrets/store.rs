@@ -642,7 +642,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub(super) fn take_test_value_reads() -> usize {
+pub fn take_test_value_reads() -> usize {
     TEST_VALUE_READS.with(|count| count.replace(0))
 }
 

@@ -123,21 +123,39 @@ impl UsageWriter {
             return;
         };
         if sender.send(book).is_err() {
-            log::warn!("palette usage: writer thread is gone; this pick is not saved");
+            log::warn!("palette usage: writer thread is gone; the ranking change is not saved");
         }
     }
 }
 
 /// The palette's usage history as the UI thread holds it. Loading and
-/// writing run on their own threads; a pick made before the file loaded is
-/// replayed onto it.
+/// writing run on their own threads. Changes made before the file loads are
+/// replayed in order so a reset also forgets any previously saved picks.
 #[derive(Default)]
 pub(crate) struct PaletteUsage {
     book: UsageBook,
-    early: Vec<(String, SystemTime)>,
+    early: Vec<(String, UsageChange)>,
     loading: Option<Receiver<Result<UsageBook, String>>>,
     writer: Option<UsageWriter>,
     started: bool,
+}
+
+#[derive(Clone, Copy)]
+enum UsageChange {
+    Pick(SystemTime),
+    Reset,
+}
+
+impl UsageChange {
+    fn apply(self, book: &mut UsageBook, key: &str) -> bool {
+        match self {
+            Self::Pick(at) => {
+                book.record(key, at);
+                true
+            }
+            Self::Reset => book.entries.remove(key).is_some(),
+        }
+    }
 }
 
 impl PaletteUsage {
@@ -159,7 +177,10 @@ impl PaletteUsage {
             });
         match spawned {
             Ok(_) => self.loading = Some(receiver),
-            Err(err) => log::warn!("palette usage: spawn loader for {}: {err}", path.display()),
+            Err(err) => {
+                log::warn!("palette usage: spawn loader for {}: {err}", path.display());
+                return;
+            }
         }
         match UsageWriter::spawn(path, USAGE_WRITE_DEBOUNCE) {
             Ok(writer) => self.writer = Some(writer),
@@ -184,8 +205,12 @@ impl PaletteUsage {
             Ok(book) => {
                 log::info!("palette usage: loaded {} row(s)", book.entries.len());
                 self.book = book;
-                for (key, at) in std::mem::take(&mut self.early) {
-                    self.book.record(&key, at);
+                let mut changed = false;
+                for (key, change) in std::mem::take(&mut self.early) {
+                    changed |= change.apply(&mut self.book, &key);
+                }
+                if changed {
+                    self.save();
                 }
             }
             Err(err) => {
@@ -199,12 +224,25 @@ impl PaletteUsage {
 
     /// Count one pick of `key` and save the history in the background.
     pub(crate) fn record(&mut self, key: &str) {
-        let now = SystemTime::now();
-        self.book.record(key, now);
+        self.update(key, UsageChange::Pick(SystemTime::now()));
+    }
+
+    /// Forget one row's ranking history.
+    pub(crate) fn reset(&mut self, key: &str) {
+        log::info!("palette usage: requested a ranking reset for one file row");
+        self.update(key, UsageChange::Reset);
+    }
+
+    fn update(&mut self, key: &str, change: UsageChange) {
+        let changed = change.apply(&mut self.book, key);
         if self.loading.is_some() {
-            self.early.push((key.to_owned(), now));
-            return;
+            self.early.push((key.to_owned(), change));
+        } else if changed {
+            self.save();
         }
+    }
+
+    fn save(&self) {
         if let Some(writer) = &self.writer {
             writer.submit(self.book.clone());
         }
@@ -467,5 +505,35 @@ mod tests {
         }
         assert!(usage.book().get("files:a").is_some(), "saved pick survives");
         assert!(usage.book().get("files:b").is_some(), "early pick replays");
+    }
+
+    #[test]
+    fn usage_replays_early_resets_and_picks_in_order() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(USAGE_FILE);
+        let mut saved = UsageBook::default();
+        for key in ["forgotten", "repicked", "untouched"] {
+            saved.record(key, SystemTime::now());
+        }
+        fs::write(&path, saved.to_json().expect("serialize")).expect("write usage");
+
+        let mut usage = PaletteUsage::default();
+        usage.start(path.clone());
+        usage.record("forgotten");
+        usage.reset("forgotten");
+        usage.reset("repicked");
+        usage.record("repicked");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while usage.loading.is_some() && Instant::now() < deadline {
+            usage.poll();
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(usage.loading.is_none(), "usage never loaded");
+        drop(usage);
+
+        let reloaded = load_usage(&path).expect("load saved usage");
+        assert_eq!(reloaded.get("forgotten"), None);
+        assert_eq!(reloaded.get("repicked").map(|entry| entry.count), Some(1));
+        assert_eq!(reloaded.get("untouched"), saved.get("untouched"));
     }
 }

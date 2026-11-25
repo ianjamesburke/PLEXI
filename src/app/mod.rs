@@ -13,6 +13,7 @@ pub(crate) mod card_gallery;
 mod cli_actions;
 pub mod cli_operation;
 mod conjoined;
+pub(crate) mod context_scope;
 pub(crate) mod core_only;
 pub(crate) mod debounce;
 mod directed_pipes;
@@ -40,6 +41,7 @@ pub(crate) mod notification_image;
 mod notifications;
 pub mod package;
 pub mod packs;
+pub(crate) mod palette_agents;
 pub(crate) mod pane_status;
 pub(crate) mod pane_wait;
 pub mod permissions;
@@ -244,8 +246,9 @@ pub struct PlexiApp {
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
     /// The pane a single-pane "Close pane?" dialog asked about (stint 1491).
-    /// Confirm closes this pane only, and only while it is still focused.
     pub(crate) close_confirm_target: Option<CloseConfirmTarget>,
+    /// Confirmed by pane id in the dialog, closed on the next logic pass.
+    pub(crate) confirmed_pane_close: Option<PaneId>,
     pub(crate) pending_quit: bool,
     /// The working-agent confirmation on screen came from "Restart to
     /// update": confirming restarts into the update instead of quitting
@@ -379,6 +382,8 @@ pub struct PlexiApp {
     pub(crate) palette_answer: Option<crate::overlays::command_palette::PaletteAnswer>,
     /// The palette's background sources: Files index, previews, usage.
     pub(crate) palette_sources: crate::overlays::command_palette::PaletteSources,
+    pub(crate) palette_agents: palette_agents::PaletteAgents,
+    pub(crate) palette_agent_activation: Option<palette_agents::AgentActivation>,
     /// The palette's input owner: its ordered field, last presented hit
     /// geometry and the input its session claimed.
     pub(crate) palette_input: crate::ui::picker::PickerInput,
@@ -845,7 +850,7 @@ pub(crate) fn admit_stream_frame(
     peer: Option<&crate::broker::caller::PeerWitness>,
     frame: socket_policy::StreamFrame,
     scope: Option<String>,
-) -> Result<crate::broker::caller::SocketCaller, socket_policy::Refusal> {
+) -> Result<socket_caller::StreamAdmission, socket_policy::Refusal> {
     let (reply, admitted) = std::sync::mpsc::sync_channel(1);
     if mailbox
         .send(socket_caller::PaneIpcMessage::Admit {
@@ -883,10 +888,10 @@ pub(crate) fn handle_socket_line_in(
         if frame["type"] == "cli_trace" {
             match admit_stream_frame(mailbox, peer, socket_policy::StreamFrame::CliTrace, None) {
                 // The pane on the record is the one the kernel named.
-                Ok(caller) => match crate::host::flight_recorder::record_cli_trace(
+                Ok(admitted) => match crate::host::flight_recorder::record_cli_trace(
                     profile,
                     &frame,
-                    caller.pane().map(|pane| pane.terminal_pane),
+                    admitted.caller.pane().map(|pane| pane.terminal_pane),
                 ) {
                     Ok(()) => {
                         if let Err(error) = ack_writer.write_all(PEER_IDENTITY_ACK) {
@@ -952,6 +957,8 @@ pub(crate) fn handle_socket_line_in(
                 crate::protocol::HostRequest::SecretGet { response_file, .. }
                 | crate::protocol::HostRequest::SecretSet { response_file, .. }
                 | crate::protocol::HostRequest::SecretDelete { response_file, .. }
+                | crate::protocol::HostRequest::FolderSecretExec { response_file, .. }
+                | crate::protocol::HostRequest::RunSecrets { response_file, .. }
                 | crate::protocol::HostRequest::FolderSecretRead { response_file, .. }
                 | crate::protocol::HostRequest::FolderSecretSet { response_file, .. }
                 | crate::protocol::HostRequest::FolderSecretRm { response_file, .. } => {
@@ -1277,8 +1284,8 @@ fn handle_socket_connection(
                     .unwrap_or("")
                     .to_string()
             });
-            let caller = match admit_stream_frame(&mailbox, peer.as_ref(), frame, scope) {
-                Ok(caller) => caller,
+            let (caller, dashboard) = match admit_stream_frame(&mailbox, peer.as_ref(), frame, scope) {
+                Ok(admitted) => (admitted.caller, admitted.dashboard),
                 Err(refusal) => {
                     let mut reply = refusal.reply();
                     reply["type"] = serde_json::json!("error");
@@ -1303,13 +1310,11 @@ fn handle_socket_connection(
                 ),
                 StreamFrame::EventsList => handle_events_list(write_half, &val),
                 StreamFrame::CommandViewFollow => {
-                    let workspace = val
-                        .get("workspace")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
                     log::info!("command_view: follow connected caller={}", caller.class());
-                    crate::host::command_view::serve_follow(write_half, workspace, caller);
+                    match dashboard {
+                        Some(permit) => crate::host::command_view::serve_follow(write_half, &permit),
+                        None => log::error!("command_view: follow admitted without a permit"),
+                    }
                 }
                 StreamFrame::EventsDeclare | StreamFrame::EventsEmit => {
                     handle_events_publish(write_half, val, &publish_mailbox, caller)
@@ -1909,6 +1914,7 @@ impl PlexiApp {
                     claimed_host_key_releases: HashSet::new(),
                     pending_close: false,
                     close_confirm_target: None,
+                    confirmed_pane_close: None,
                     pending_quit: false,
                     update_restart_confirming: false,
                     pending_context_close: None,
@@ -1968,6 +1974,8 @@ impl PlexiApp {
                     palette_commands: Vec::new(),
                     palette_answer: None,
                     palette_sources: Default::default(),
+                    palette_agents: Default::default(),
+                    palette_agent_activation: None,
                     palette_input: Default::default(),
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
@@ -2208,6 +2216,7 @@ impl PlexiApp {
             key_bindings,
             pending_close: false,
             close_confirm_target: None,
+            confirmed_pane_close: None,
             pending_quit: false,
             update_restart_confirming: false,
             pending_context_close: None,
@@ -2267,6 +2276,8 @@ impl PlexiApp {
             palette_commands: Vec::new(),
             palette_answer: None,
             palette_sources: Default::default(),
+            palette_agents: Default::default(),
+            palette_agent_activation: None,
             palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
@@ -3179,6 +3190,7 @@ impl PlexiApp {
             key_bindings,
             pending_close: false,
             close_confirm_target: None,
+            confirmed_pane_close: None,
             pending_quit: false,
             update_restart_confirming: false,
             pending_context_close: None,
@@ -3237,6 +3249,8 @@ impl PlexiApp {
             palette_commands: Vec::new(),
             palette_answer: None,
             palette_sources: Default::default(),
+            palette_agents: Default::default(),
+            palette_agent_activation: None,
             palette_input: Default::default(),
             context_visit_history: Vec::new(),
             renaming_pane: None,
@@ -3745,6 +3759,9 @@ impl eframe::App for PlexiApp {
         crate::platform::ui_profile::set_drag_active(drag.active);
         if self.service_pending_notification_decision() {
             ctx.request_repaint();
+        }
+        if let Some(pane) = self.confirmed_pane_close.take() {
+            self.close_pane_by_id(pane);
         }
         self.update_preamble(ctx, drag.active);
         if self.service_quit(frame) {
@@ -4738,9 +4755,7 @@ impl PlexiApp {
                     {
                         // No focused pane (an empty page) has nothing to name
                         // or terminate: it takes the no-pane cleanup below.
-                        log::info!("close_confirm: asking pane={}", target.pane);
-                        self.close_confirm_target = Some(target);
-                        self.pending_close = true;
+                        self.ask_to_close_pane(target);
                     } else {
                         self.execute_close_pane();
                         self.mark_workspace_dirty();
@@ -6470,6 +6485,7 @@ pub(crate) fn restore_workspace(
                                 pane.fleet_dismissed = session.fleet_dismissed;
                                 pane.fleet_done_unseen = session.fleet_done_unseen;
                                 pane.fleet_since = session.fleet_since;
+                                pane.last_interaction_at = session.last_interaction_at;
                                 pane.ephemeral = session.ephemeral;
                                 pane.parent_pane_id = session.parent_pane_id;
                                 pane.spawned_by = session.spawned_by.clone().or(pane.spawned_by);

@@ -848,13 +848,26 @@ pub(crate) struct Approved {
 }
 
 impl Approved {
+    /// An outside process's one-use claim of `tool`: a standing or session
+    /// row never reaches here, since another process sharing the external
+    /// principal could reuse it.
+    pub(super) fn is_external_once_use(&self, tool: &str) -> bool {
+        self.request.actor_type == ActorType::External
+            && self.request.actor_id == super::principal::EXTERNAL_ID
+            && self.request.target_type == TargetType::HostTool
+            && self.request.target_id == tool
+            && !self.request.operation_id.is_empty()
+    }
+
     pub(super) fn is_external_secret_read(&self) -> bool {
         self.request.actor_type == ActorType::External
             && self.request.actor_id == super::principal::EXTERNAL_ID
             && self.request.target_type == TargetType::Secret
             && (self.request.target_id == "secret.get"
-                || (self.request.target_id == "secret.read"
-                    && self.request.trust_origin == super::SECRET_SOCKET_ORIGIN))
+                || (matches!(
+                    self.request.target_id.as_str(),
+                    "secret.read" | "secret.exec"
+                ) && self.request.trust_origin == super::SECRET_SOCKET_ORIGIN))
             && !self.request.operation_id.is_empty()
     }
 }
@@ -1796,7 +1809,24 @@ impl PermissionMonitor {
                     }
                     summary
                 });
-                let disclosure = disclosure.or(outside_secret.as_deref());
+                let bundle = (req.target_type == TargetType::Secret && req.tool == "secret.exec")
+                    .then(|| {
+                        let input: serde_json::Value =
+                            serde_json::from_str(req.input_json).unwrap_or_default();
+                        let command = input["command"].as_str();
+                        let verb = command
+                            .map(|id| format!("run {id}"))
+                            .unwrap_or_else(|| "secret exec".into());
+                        format!(
+                            "Allow {} to use {verb} once in {} with {}",
+                            req.principal.label(),
+                            input["scope"].as_str().unwrap_or(""),
+                            input["names"]
+                        )
+                    });
+                let disclosure = disclosure
+                    .or(bundle.as_deref())
+                    .or(outside_secret.as_deref());
                 // A decision takes this lock first, so nobody can decide the
                 // request before its `ask` row is in the audit chain. Secret
                 // tools already hold it from `_filing`.
@@ -1994,6 +2024,14 @@ impl PermissionMonitor {
         };
         let owner = pending.binding.owner();
         self.store().ensure_owner_active(&owner)?;
+        if pending.binding.target_type == TargetType::Secret
+            && pending.tool == "secret.exec"
+            && !matches!(choice, ApprovalChoice::Once | ApprovalChoice::Deny)
+        {
+            return Err(
+                "A secret environment requires a one-use decision for this invocation.".into(),
+            );
+        }
         if choice == ApprovalChoice::AllowTool
             && pending.binding.target_type != TargetType::PluginConnector
         {
@@ -2005,6 +2043,12 @@ impl PermissionMonitor {
             && choice == ApprovalChoice::Session
         {
             return Err("An outside terminal needs a one-use approval for this secret.".into());
+        }
+        if pending.binding.actor.kind() == ActorType::External
+            && pending.tool == <super::permit::ReadDashboard as super::permit::Operation>::NAME
+            && matches!(choice, ApprovalChoice::Session | ApprovalChoice::Always)
+        {
+            return Err("An outside terminal needs a one-use approval to read a dashboard.".into());
         }
         if !choice.allowed_for(&owner) {
             log::info!("permission_monitor: refused {choice:?} on {pending_id} for {owner}");
@@ -3254,7 +3298,8 @@ impl PermissionMonitor {
             actor: owner.clone(),
             resource: resource.clone(),
             summary: if pending.binding.target_type == TargetType::Secret
-                && pending.binding.actor.kind() == ActorType::External
+                && (pending.binding.actor.kind() == ActorType::External
+                    || pending.tool == "secret.exec")
                 && super::command_secret_tool(&pending.tool)
             {
                 pending.input_summary.clone()
@@ -6253,6 +6298,13 @@ pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Optio
             .map(str::to_string);
         return (ResourceScope::Workspace, scope);
     }
+    if tool == "secret.exec" {
+        let resource = parsed.as_ref().and_then(|input| {
+            let scope = input["scope"].as_str()?;
+            Some(format!("exec@{scope}#{}", bundle_digest(input_json).ok()?))
+        });
+        return (ResourceScope::Path, resource);
+    }
     let place_key = match tool {
         "secret.read" => Some("folder"),
         tool if super::command_secret_tool(tool) => Some("scope"),
@@ -6316,6 +6368,31 @@ pub fn stream_fingerprint(target_id: &str) -> String {
         serde_json::to_string(target_id).unwrap_or_else(|_| "\"\"".to_string())
     );
     fingerprint_args(&raw).unwrap_or_default()
+}
+
+#[cfg(test)]
+#[test]
+fn bundle_resource_binds_names_command_and_snapshot() {
+    let input =
+        serde_json::json!({"scope":"/root","names":["A","B"],"command":"build","definition":"d"});
+    let resource = |v: &serde_json::Value| resource_of("secret.exec", &v.to_string()).1.unwrap();
+    let first = resource(&input);
+    assert!(first.starts_with("exec@/root#"));
+    assert_eq!(first.split('#').last().unwrap().len(), 64);
+    for (key, value) in [
+        ("names", serde_json::json!(["A"])),
+        ("definition", "updated".into()),
+        ("command", "other".into()),
+    ] {
+        let mut changed = input.clone();
+        changed[key] = value;
+        assert_ne!(first, resource(&changed));
+    }
+}
+
+pub(crate) fn bundle_digest(input: &str) -> Result<String, String> {
+    let canonical = canon_string(&parse_canon(input)?);
+    Ok(format!("{:x}", Sha256::digest(canonical.as_bytes())))
 }
 
 pub fn fingerprint_args(raw: &str) -> Result<String, String> {

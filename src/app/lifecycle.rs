@@ -435,15 +435,19 @@ impl PlexiApp {
         filed
     }
 
-    /// Whether `caller` may read the agents dashboard of `workspace`: a pane
-    /// within its own context scope, an outside process once admitted as
-    /// itself. Anything else is refused (stint 1285).
+    /// Admit `caller` to read the agents dashboard of `workspace`: a pane
+    /// within its own context scope, an outside process once approved for
+    /// this workspace. The permit is what list, open and follow commit
+    /// against; anything else is refused (stints 1285, 1716).
     pub(crate) fn admit_dashboard_workspace(
         &self,
         caller: &crate::broker::caller::SocketCaller,
         workspace: &str,
-    ) -> Result<(), super::socket_policy::Refusal> {
-        use crate::broker::caller::SocketCaller;
+    ) -> Result<
+        crate::broker::permit::Permit<crate::broker::permit::ReadDashboard>,
+        super::socket_policy::Refusal,
+    > {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
         let refuse = |message: String| {
             log::info!("command_view: refused workspace={workspace} caller={}: {message}", caller.class());
             super::socket_policy::Refusal { code: "permission_denied", message }
@@ -456,30 +460,47 @@ impl PlexiApp {
                 ..refusal
             });
         }
-        let path = std::path::Path::new(workspace);
-        match caller {
-            SocketCaller::Pane(pane) => {
-                if self.pane_may_access_context_root(pane.terminal_pane, path) {
-                    Ok(())
-                } else {
-                    Err(refuse(format!(
-                        "{workspace} is outside pane {}'s context",
-                        pane.terminal_pane
-                    )))
-                }
+        // Resolved once: containment, approval and every read use this path.
+        let canonical =
+            crate::broker::permit::ReadDashboard::canonical(std::path::Path::new(workspace));
+        let path = canonical.as_path();
+        if let SocketCaller::Pane(pane) = caller {
+            if !self.pane_may_access_context_root(pane.terminal_pane, path) {
+                return Err(refuse(format!(
+                    "{workspace} is outside pane {}'s context",
+                    pane.terminal_pane
+                )));
             }
-            SocketCaller::External(_) => self
-                .admit_caller_use(
-                    &crate::broker::caller::RequestOrigin::Socket(caller.clone()),
-                    "agents.dashboard.follow",
-                    &serde_json::json!({"workspace": workspace}),
-                    path,
-                    0,
-                )
-                .map_err(refuse),
-            SocketCaller::Unidentified(reason) => Err(refuse(format!(
-                "caller identity could not be established: {reason}"
-            ))),
+        }
+        super::agent_tools::UseSubject::from_origin(&RequestOrigin::Socket(caller.clone()))
+            .and_then(|subject| subject.admit_dashboard_read(path))
+            .map_err(refuse)
+    }
+
+    /// The permit a dashboard `list` or `open` of `workspace` commits against.
+    /// Desktop and host code read as themselves and hold none (`Ok(None)`);
+    /// a socket caller is bound to the workspace it named, and any other
+    /// origin is not served.
+    fn dashboard_read_permit(
+        &self,
+        origin: &crate::broker::caller::RequestOrigin,
+        workspace: &std::path::Path,
+    ) -> Result<
+        Option<crate::broker::permit::Permit<crate::broker::permit::ReadDashboard>>,
+        super::socket_policy::Refusal,
+    > {
+        use crate::broker::caller::RequestOrigin;
+        match origin {
+            RequestOrigin::HostUi | RequestOrigin::HostSystem => Ok(None),
+            RequestOrigin::Socket(caller) => self
+                .admit_dashboard_workspace(caller, &workspace.to_string_lossy())
+                .map(Some),
+            RequestOrigin::PluginGuest(_) | RequestOrigin::SpawnQueue => {
+                Err(super::socket_policy::Refusal {
+                    code: "permission_denied",
+                    message: format!("the agents dashboard is not served to {}", origin.class()),
+                })
+            }
         }
     }
 
@@ -1096,12 +1117,15 @@ impl PlexiApp {
                 reply,
             } => {
                 let caller = self.classify_socket_peer(peer.as_ref());
-                let admitted = socket_policy::admit(&caller, frame.policy())
-                    .and_then(|()| match scope {
-                        Some(workspace) => self.admit_dashboard_workspace(&caller, &workspace),
-                        None => Ok(()),
+                let admitted = socket_policy::admit(&caller, frame.policy()).and_then(|()| {
+                    let dashboard = scope
+                        .map(|workspace| self.admit_dashboard_workspace(&caller, &workspace))
+                        .transpose()?;
+                    Ok(super::socket_caller::StreamAdmission {
+                        caller: caller.clone(),
+                        dashboard,
                     })
-                    .map(|()| caller.clone());
+                });
                 if let Err(refusal) = &admitted {
                     socket_policy::trace_refusal(frame.as_str(), &caller, Some(frame.policy()), refusal);
                 }
@@ -1239,9 +1263,26 @@ impl PlexiApp {
                             "error": crate::release::feature_unavailable_text(dashboard),
                         })
                     }
-                    "open" => match self.open_command_view(&workspace) {
-                        Ok(pane_id) => serde_json::json!({"ok": true, "pane_id": pane_id}),
-                        Err(error) => serde_json::json!({"ok": false, "error": error}),
+                    "open" | "list" => match self.dashboard_read_permit(&origin, &workspace) {
+                        Err(refusal) => refusal.reply(),
+                        Ok(permit) if op == "list" => match permit {
+                            Some(permit) => crate::host::command_view::read(&permit).unwrap_or_else(
+                                |error| {
+                                    serde_json::json!({"ok": false, "error_code": "permission_denied", "error": error})
+                                },
+                            ),
+                            None => crate::agent::runs::host_projection(&workspace),
+                        },
+                        Ok(permit) => {
+                            let served = match &permit {
+                                Some(permit) => permit.recheck().map(|()| permit.workspace()),
+                                None => Ok(workspace.clone()),
+                            };
+                            match served.and_then(|served| self.open_command_view(&served)) {
+                                Ok(pane_id) => serde_json::json!({"ok": true, "pane_id": pane_id}),
+                                Err(error) => serde_json::json!({"ok": false, "error": error}),
+                            }
+                        }
                     },
                     "cancel" => {
                         let run = payload
@@ -1269,12 +1310,9 @@ impl PlexiApp {
                             }),
                         }
                     }
-                    _ => match &origin {
-                        crate::broker::caller::RequestOrigin::Socket(caller) => {
-                            crate::agent::runs::socket_projection(&workspace, caller)
-                        }
-                        _ => crate::agent::runs::host_projection(&workspace),
-                    },
+                    other => serde_json::json!({
+                        "ok": false, "error": format!("unknown agents dashboard op {other}"),
+                    }),
                 };
                 write_json_response(response_file, body);
             }
@@ -1383,18 +1421,16 @@ impl PlexiApp {
                 workspace_cwd,
                 response_file,
             } => {
-                use crate::cli::workspace::check_pane_context_scope;
                 let pane = origin
                     .socket_caller()
                     .and_then(crate::broker::caller::SocketCaller::pane)
                     .map(|pane| pane.visible_pane);
                 let root = pane.and_then(|pane| self.pane_context_authority_root(pane));
-                let workspace_error = match (&root, workspace_cwd) {
-                    (Some(root), Some(cwd)) => {
-                        check_pane_context_scope(root.clone(), cwd, None).err()
-                    }
-                    _ => None,
-                };
+                let workspace_error = super::context_scope::caller_scope_error(
+                    pane.is_some(),
+                    root.as_deref(),
+                    workspace_cwd.as_deref(),
+                );
                 write_json_response(
                     response_file,
                     serde_json::json!({
@@ -1487,6 +1523,22 @@ impl PlexiApp {
                     &origin,
                     response_file,
                     None,
+                );
+            }
+            crate::protocol::HostRequest::FolderSecretExec { cwd, response_file } => {
+                self.serve_secret_bundle(cwd, None, &origin, response_file);
+            }
+            crate::protocol::HostRequest::RunSecrets {
+                command,
+                cwd,
+                workspace_root,
+                response_file,
+            } => {
+                self.serve_secret_bundle(
+                    cwd,
+                    Some((command.clone(), workspace_root.clone())),
+                    &origin,
+                    response_file,
                 );
             }
             crate::protocol::HostRequest::FolderSecretRead {

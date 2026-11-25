@@ -218,6 +218,36 @@ impl std::fmt::Debug for SecretInput {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BundleDefinition {
+    pub run: String,
+    pub steps: Vec<String>,
+    pub on_load: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct BundleValue {
+    pub name: String,
+    pub value: SecretInput,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ApprovedBundle {
+    pub cwd: std::path::PathBuf,
+    pub values: Vec<BundleValue>,
+    #[serde(flatten)]
+    pub definition: Option<BundleDefinition>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SecretBundleReply {
+    Values(ApprovedBundle),
+    Missing { names: Vec<String> },
+    Denied { reason: Option<String> },
+    Error { error: String },
+}
+
 /// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -1265,6 +1295,18 @@ pub enum HostRequest {
         name: String,
         #[serde(default)]
         global: bool,
+        workspace_root: Option<std::path::PathBuf>,
+        response_file: String,
+    },
+    /// Release the environment for this folder on the requesting connection.
+    FolderSecretExec {
+        cwd: std::path::PathBuf,
+        response_file: String,
+    },
+    /// Release the approved command definition and its required environment.
+    RunSecrets {
+        command: String,
+        cwd: std::path::PathBuf,
         workspace_root: Option<std::path::PathBuf>,
         response_file: String,
     },

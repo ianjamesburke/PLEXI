@@ -41,9 +41,12 @@ fn row(source: &str, id: &str, group_rank: u32, score: Option<i64>) -> PickerRow
         score,
         pinned: false,
         unavailable: None,
+        attention: None,
+        inline_preview: None,
         actions: vec![RowAction {
             id: "run",
             label: "Run",
+            chord: None,
         }],
         usage: None,
         modified: None,
@@ -178,7 +181,7 @@ fn no_key_command_edits_the_query() {
     }
     // Enter and Esc close the picker; nothing they do types into the query.
     let mut accepted = state.clone();
-    accepted.apply(PickerCommand::Accept);
+    accepted.apply(PickerCommand::Accept(None));
     assert!(!accepted.query().contains(['\n', '\t']));
     state.apply(PickerCommand::Close);
     assert_eq!(state.query(), "");
@@ -214,7 +217,7 @@ fn selection_follows_row_key_and_clears_on_removal() {
         vec![row("commands", "c", 0, None), row("commands", "a", 0, None)],
     );
     assert_eq!(selected(&state), None);
-    assert!(state.apply(PickerCommand::Accept).is_empty());
+    assert!(state.apply(PickerCommand::Accept(None)).is_empty());
     // b coming back does not reselect it behind the person's back.
     answer(
         &mut state,
@@ -259,7 +262,7 @@ fn mouse_and_enter_resolve_the_same_action() {
     let (mut keyboard, _) = opened(THREE_STOPS);
     answer(&mut keyboard, rows.clone());
     keyboard.apply(PickerCommand::Move(Step::Down));
-    let by_enter = keyboard.apply(PickerCommand::Accept);
+    let by_enter = keyboard.apply(PickerCommand::Accept(None));
 
     let (mut mouse, _) = opened(THREE_STOPS);
     answer(&mut mouse, rows);
@@ -282,7 +285,7 @@ fn unavailable_row_stays_listed_and_refuses_enter() {
     parked.unavailable = Some("no live window");
     answer(&mut state, vec![parked]);
     assert_eq!(state.rows().len(), 1);
-    assert!(state.apply(PickerCommand::Accept).is_empty());
+    assert!(state.apply(PickerCommand::Accept(None)).is_empty());
     assert!(state
         .apply(PickerCommand::Click(hit(&state, "parked")))
         .is_empty());
@@ -354,7 +357,7 @@ fn enter_while_rows_load_accepts_the_new_answer() {
     // Paste and Enter in one frame: the field's edit lands first, then Enter.
     state.apply(PickerCommand::QueryEdited("new".into()));
     assert!(
-        state.apply(PickerCommand::Accept).is_empty(),
+        state.apply(PickerCommand::Accept(None)).is_empty(),
         "Enter waits for the edited query's rows"
     );
     assert!(state.is_open());
@@ -391,7 +394,7 @@ fn enter_and_arrows_bind_in_arrival_order() {
     let ab = ["a", "b", "c"];
     let (mut state, _) = opened(THREE_STOPS);
     deliver(&mut state, &ab, true);
-    let effects = state.apply(PickerCommand::Accept);
+    let effects = state.apply(PickerCommand::Accept(None));
     state.apply(PickerCommand::Move(Step::Down));
     assert_eq!(activated(&effects), vec!["a"], "Enter, Down runs A");
 
@@ -399,7 +402,7 @@ fn enter_and_arrows_bind_in_arrival_order() {
     deliver(&mut state, &ab, true);
     state.apply(PickerCommand::Move(Step::Down));
     assert_eq!(
-        activated(&state.apply(PickerCommand::Accept)),
+        activated(&state.apply(PickerCommand::Accept(None))),
         vec!["b"],
         "Down, Enter runs B"
     );
@@ -409,7 +412,10 @@ fn enter_and_arrows_bind_in_arrival_order() {
     deliver(&mut state, &ab, true);
     state.apply(PickerCommand::Move(Step::Up));
     state.apply(PickerCommand::Move(Step::Down));
-    assert_eq!(activated(&state.apply(PickerCommand::Accept)), vec!["b"]);
+    assert_eq!(
+        activated(&state.apply(PickerCommand::Accept(None))),
+        vec!["b"]
+    );
 }
 
 #[test]
@@ -430,10 +436,10 @@ fn pending_enter_freezes_the_moves_before_it() {
     deliver(&mut state, &["old"], true);
     state.apply(PickerCommand::QueryEdited("q".into()));
     state.apply(PickerCommand::Move(Step::Down));
-    assert!(state.apply(PickerCommand::Accept).is_empty());
+    assert!(state.apply(PickerCommand::Accept(None)).is_empty());
     state.apply(PickerCommand::Move(Step::Down));
     assert!(
-        state.apply(PickerCommand::Accept).is_empty(),
+        state.apply(PickerCommand::Accept(None)).is_empty(),
         "no duplicate"
     );
     // A partial answer resolves nothing.
@@ -465,7 +471,7 @@ fn pending_enter_on_a_partial_answer_freezes_its_key() {
     state.apply(PickerCommand::QueryEdited("q".into()));
     deliver(&mut state, &["a", "b"], false);
     state.apply(PickerCommand::Move(Step::Down));
-    assert!(state.apply(PickerCommand::Accept).is_empty());
+    assert!(state.apply(PickerCommand::Accept(None)).is_empty());
     // A later move changes the live selection, never the frozen key.
     state.apply(PickerCommand::Move(Step::Up));
     let effects = deliver(&mut state, &["c", "b", "a"], true);
@@ -476,7 +482,7 @@ fn pending_enter_on_a_partial_answer_freezes_its_key() {
     state.apply(PickerCommand::QueryEdited("q".into()));
     deliver(&mut state, &["a", "b"], false);
     state.apply(PickerCommand::Move(Step::Down));
-    state.apply(PickerCommand::Accept);
+    state.apply(PickerCommand::Accept(None));
     assert!(deliver(&mut state, &["a", "c"], true).is_empty());
     // The intent is consumed: a later refresh does not resurrect it.
     assert!(deliver(&mut state, &["a", "b"], true).is_empty());
@@ -487,7 +493,7 @@ fn pending_enter_on_a_partial_answer_freezes_its_key() {
 fn empty_final_answer_consumes_a_pending_enter() {
     let (mut state, _) = opened(THREE_STOPS);
     state.apply(PickerCommand::QueryEdited("q".into()));
-    state.apply(PickerCommand::Accept);
+    state.apply(PickerCommand::Accept(None));
     assert!(deliver(&mut state, &[], true).is_empty());
     assert!(
         deliver(&mut state, &["a"], true).is_empty(),
@@ -500,13 +506,13 @@ fn empty_final_answer_consumes_a_pending_enter() {
 fn new_query_and_close_cancel_a_pending_enter() {
     let (mut state, _) = opened(THREE_STOPS);
     state.apply(PickerCommand::QueryEdited("q".into()));
-    state.apply(PickerCommand::Accept);
+    state.apply(PickerCommand::Accept(None));
     state.apply(PickerCommand::QueryEdited("qr".into()));
     assert!(deliver(&mut state, &["a"], true).is_empty());
 
     let (mut state, _) = opened(THREE_STOPS);
     state.apply(PickerCommand::QueryEdited("q".into()));
-    state.apply(PickerCommand::Accept);
+    state.apply(PickerCommand::Accept(None));
     let generation = state.generation();
     state.apply(PickerCommand::Close);
     state.apply(PickerCommand::Open {
@@ -532,11 +538,14 @@ fn new_query_and_close_cancel_a_pending_enter() {
 fn yield_cancels_a_pending_enter() {
     let (mut state, _) = opened(THREE_STOPS);
     state.apply(PickerCommand::QueryEdited("q".into()));
-    state.apply(PickerCommand::Accept);
+    state.apply(PickerCommand::Accept(None));
     assert!(state.apply(PickerCommand::Yield).is_empty());
     assert!(deliver(&mut state, &["a"], true).is_empty());
     assert!(state.is_open(), "yielding keeps the picker open");
-    assert_eq!(activated(&state.apply(PickerCommand::Accept)), vec!["a"]);
+    assert_eq!(
+        activated(&state.apply(PickerCommand::Accept(None))),
+        vec!["a"]
+    );
 }
 
 /// Round 2: a hover or click from rows painted for an older query is
@@ -548,7 +557,7 @@ fn stale_pointer_hits_are_dropped() {
     let old_b = hit(&state, "b");
     state.apply(PickerCommand::QueryEdited("q".into()));
     state.apply(PickerCommand::Hover(old_b.clone()));
-    state.apply(PickerCommand::Accept);
+    state.apply(PickerCommand::Accept(None));
     state.apply(PickerCommand::Hover(old_b.clone()));
     let effects = deliver(&mut state, &["c", "b"], true);
     assert_eq!(activated(&effects), vec!["c"], "B survived second; C runs");
@@ -564,7 +573,10 @@ fn stale_pointer_hits_are_dropped() {
     );
     let current_b = hit(&state, "b");
     state.apply(PickerCommand::Hover(current_b));
-    assert_eq!(activated(&state.apply(PickerCommand::Accept)), vec!["b"]);
+    assert_eq!(
+        activated(&state.apply(PickerCommand::Accept(None))),
+        vec!["b"]
+    );
 }
 
 #[test]
@@ -770,7 +782,7 @@ fn oversized_source_answer_is_truncated() {
         state.rows()[MAX_SOURCE_ROWS - 1].key.stable_id(),
         format!("c{}", MAX_SOURCE_ROWS - 1)
     );
-    let effects = state.apply(PickerCommand::Accept);
+    let effects = state.apply(PickerCommand::Accept(None));
     assert!(
         matches!(&effects[..], [PickerEffect::Activate { row, .. }, PickerEffect::Closed] if row.stable_id() == "c0"),
         "{effects:?}"
@@ -788,4 +800,117 @@ fn stops_without_a_preview_never_load_one() {
     });
     assert!(effects.is_empty());
     assert_eq!(state.preview(), None);
+}
+
+#[test]
+fn cmd_enter_lists_actions_and_keeps_the_query() {
+    let (mut state, _) = opened(THREE_STOPS);
+    state.apply(PickerCommand::QueryEdited("original".into()));
+    let mut result = row("commands", "agent", 0, None);
+    result.actions.push(RowAction {
+        id: "close",
+        label: "Close pane",
+        chord: None,
+    });
+    answer(&mut state, vec![result]);
+    let before = state.selected().cloned();
+    assert!(state.apply(PickerCommand::ShowActions).is_empty());
+    assert_eq!(state.visible_actions().len(), 2);
+    assert_eq!(state.field_text(), "");
+    assert!(state
+        .apply(PickerCommand::QueryEdited("close".into()))
+        .is_empty());
+    assert_eq!(state.visible_actions()[0].id, "close");
+    state.apply(PickerCommand::NextStop);
+    assert_eq!(state.active_stop().id, "commands");
+    assert!(state.apply(PickerCommand::Back).is_empty());
+    assert_eq!(state.field_text(), "original");
+    assert_eq!(state.selected(), before.as_ref());
+    state.apply(PickerCommand::ShowActions);
+    assert!(matches!(
+        state.apply(PickerCommand::Accept(Some("close"))).as_slice(),
+        [PickerEffect::Activate { row, action: "close", .. }, PickerEffect::Closed]
+            if Some(row) == before.as_ref()
+    ));
+}
+
+#[test]
+fn cmd_enter_before_first_answer_uses_the_initial_selection_at_the_chord() {
+    let (mut state, _) = opened(THREE_STOPS);
+    state.apply(PickerCommand::QueryEdited("new query".into()));
+    state.apply(PickerCommand::ShowActions);
+    state.apply(PickerCommand::Move(Step::Down));
+    answer(&mut state, rows(&["a", "b"]));
+
+    assert!(state.showing_actions());
+    assert_eq!(selected(&state), Some("commands:a"));
+}
+
+#[test]
+fn cmd_enter_during_files_walk_keeps_the_requested_row() {
+    let (mut state, _) = opened(FILES_STOP);
+    let files = || vec![row("files", "a", 0, None), row("files", "b", 0, None)];
+    state.apply(PickerCommand::Rows {
+        generation: state.generation(),
+        rows: files(),
+        done: false,
+    });
+    let requested = state.selected().cloned().expect("visible file");
+
+    state.apply(PickerCommand::ShowActions);
+    state.apply(PickerCommand::Move(Step::Down));
+    assert_ne!(state.selected(), Some(&requested));
+    answer(&mut state, files());
+
+    assert!(state.showing_actions());
+    assert_eq!(
+        state.selected(),
+        Some(&requested),
+        "Cmd+Enter keeps its file"
+    );
+    assert_eq!(
+        activated(&state.apply(PickerCommand::Accept(None))),
+        vec![requested.stable_id()]
+    );
+}
+
+#[test]
+fn cmd_enter_during_files_walk_cancels_when_the_requested_row_disappears() {
+    let (mut state, _) = opened(FILES_STOP);
+    state.apply(PickerCommand::Rows {
+        generation: state.generation(),
+        rows: vec![row("files", "a", 0, None), row("files", "b", 0, None)],
+        done: false,
+    });
+
+    state.apply(PickerCommand::ShowActions);
+    state.apply(PickerCommand::Move(Step::Down));
+    answer(&mut state, vec![row("files", "b", 0, None)]);
+
+    assert!(
+        !state.showing_actions(),
+        "Cmd+Enter cannot retarget a missing file"
+    );
+    assert_eq!(selected(&state), Some("files:b"));
+}
+
+#[test]
+fn agents_waiting_on_you_sort_first() {
+    let mut waiting = row("agents", "waiting", 0, Some(1));
+    waiting.attention = Some(AttentionRank {
+        waiting_on_you: true,
+        last_interaction_at: 1,
+    });
+    let mut recent = row("agents", "recent", 0, Some(100));
+    recent.attention = Some(AttentionRank {
+        waiting_on_you: false,
+        last_interaction_at: 10,
+    });
+    let mut state = PickerState::new(PALETTE_STOPS);
+    state.apply(PickerCommand::Open {
+        stop: "agents",
+        query: "match".into(),
+    });
+    answer(&mut state, vec![recent, waiting]);
+    assert_eq!(selected(&state), Some("agents:waiting"));
 }

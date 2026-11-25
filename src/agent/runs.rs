@@ -1968,11 +1968,7 @@ pub fn host_projection(workspace: &Path) -> Value {
     )
 }
 
-pub fn socket_projection(workspace: &Path, socket: &crate::broker::caller::SocketCaller) -> Value {
-    let Some(principal) = socket.principal() else {
-        log::info!("command_view: refused observation without a requester");
-        return json!({"ok":false,"error_code":"permission_denied"});
-    };
+pub(crate) fn principal_projection(workspace: &Path, principal: Principal) -> Value {
     projection(
         workspace,
         &AgentsCaller::Principal {

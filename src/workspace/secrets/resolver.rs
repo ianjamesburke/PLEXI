@@ -8,7 +8,7 @@ use std::path::Path;
 use zeroize::Zeroizing;
 
 use super::reconcile::canonical_friendly;
-use super::store::NonDestructiveStore;
+use super::store::{NonDestructiveStore, SecretError};
 use super::{keychain_user_name, keychain_workspace_name};
 
 #[derive(Deserialize, Debug, Clone)]
@@ -141,18 +141,15 @@ pub struct ResolvedSecret {
 
 /// 4-step runtime resolution. Pure function — no I/O beyond the `SecretStore`
 /// trait calls. Tests use `InMemoryKeychain`; production uses `MacKeychain`.
-pub fn resolve(
+#[cfg(test)]
+fn resolve(
     workspace_id: &str,
     plugin_id: &str,
     canonical_name: &str,
     router: &WorkspaceSecrets,
     store: &dyn NonDestructiveStore,
 ) -> ResolveOutcome {
-    match resolve_with_source(workspace_id, plugin_id, canonical_name, router, store) {
-        ResolveWithSourceOutcome::Found(found) => ResolveOutcome::Found(found.value),
-        ResolveWithSourceOutcome::HardMissing { reason } => ResolveOutcome::HardMissing { reason },
-        ResolveWithSourceOutcome::PromptUser => ResolveOutcome::PromptUser,
-    }
+    resolve_with_source(workspace_id, plugin_id, canonical_name, router, store).into()
 }
 
 #[derive(Debug)]
@@ -160,6 +157,16 @@ pub enum ResolveWithSourceOutcome {
     Found(ResolvedSecret),
     HardMissing { reason: String },
     PromptUser,
+}
+
+impl From<ResolveWithSourceOutcome> for ResolveOutcome {
+    fn from(outcome: ResolveWithSourceOutcome) -> Self {
+        match outcome {
+            ResolveWithSourceOutcome::Found(found) => Self::Found(found.value),
+            ResolveWithSourceOutcome::HardMissing { reason } => Self::HardMissing { reason },
+            ResolveWithSourceOutcome::PromptUser => Self::PromptUser,
+        }
+    }
 }
 
 /// Canonical-name resolver used by PGAP, `plexi run`, PTY env injection, and
@@ -172,6 +179,33 @@ pub fn resolve_with_source(
     router: &WorkspaceSecrets,
     store: &dyn NonDestructiveStore,
 ) -> ResolveWithSourceOutcome {
+    let Ok(outcome) = resolve_using(workspace_id, plugin_id, canonical_name, router, |account| {
+        Ok::<_, std::convert::Infallible>(store.get(account))
+    });
+    outcome
+}
+
+/// A failed account read ends an admitted lookup, including alias and global fallback.
+pub(crate) fn resolve_interactive(
+    workspace_id: &str,
+    plugin_id: &str,
+    canonical_name: &str,
+    router: &WorkspaceSecrets,
+    store: &dyn NonDestructiveStore,
+) -> Result<ResolveOutcome, SecretError> {
+    resolve_using(workspace_id, plugin_id, canonical_name, router, |account| {
+        store.get_interactive(account)
+    })
+    .map(ResolveOutcome::from)
+}
+
+fn resolve_using<E>(
+    workspace_id: &str,
+    plugin_id: &str,
+    canonical_name: &str,
+    router: &WorkspaceSecrets,
+    read: impl Fn(&str) -> Result<Option<Zeroizing<String>>, E>,
+) -> Result<ResolveWithSourceOutcome, E> {
     if crate::workspace::secrets::workspace_id_is_reserved(workspace_id)
         || crate::workspace::secrets::secret_account_is_reserved(&keychain_workspace_name(
             workspace_id,
@@ -181,18 +215,18 @@ pub fn resolve_with_source(
         log::info!(
             "workspace_secrets: refused reserved namespace workspace_id={workspace_id} secret={canonical_name}"
         );
-        return ResolveWithSourceOutcome::HardMissing {
+        return Ok(ResolveWithSourceOutcome::HardMissing {
             reason: crate::workspace::secrets::reserved_secret_error(workspace_id),
-        };
+        });
     }
     // Step 1+2: workspace route (plugins.<id> first, then [default]).
     if let Some(friendly) = router.route_for(plugin_id, canonical_name) {
         let account = keychain_workspace_name(workspace_id, friendly);
-        if let Some(value) = store.get(&account) {
-            return ResolveWithSourceOutcome::Found(ResolvedSecret {
+        if let Some(value) = read(&account)? {
+            return Ok(ResolveWithSourceOutcome::Found(ResolvedSecret {
                 value,
                 source: ResolvedSecretSource::WorkspaceRoute,
-            });
+            }));
         }
         // The route value is a persisted friendly name that reconcile cannot
         // rewrite (secrets.toml lives per-workspace; reconcile is
@@ -201,51 +235,51 @@ pub fn resolve_with_source(
         // table that renamed it — loudly, until the file is fixed.
         if let Some(canonical) = canonical_friendly(friendly) {
             let renamed = keychain_workspace_name(workspace_id, canonical);
-            if let Some(value) = store.get(&renamed) {
+            if let Some(value) = read(&renamed)? {
                 log::warn!(
                     "workspace_secrets: route for '{canonical_name}' (plugin '{plugin_id}') points at \
                      legacy spelling '{friendly}' but the keychain account is now '{renamed}' — \
                      resolving anyway; update the route value in .plexi/secrets.toml to '{canonical}'"
                 );
-                return ResolveWithSourceOutcome::Found(ResolvedSecret {
+                return Ok(ResolveWithSourceOutcome::Found(ResolvedSecret {
                     value,
                     source: ResolvedSecretSource::WorkspaceRoute,
-                });
+                }));
             }
         }
         // Route declared but Keychain is empty — prompt the user (don't
         // silently fall through to user-scope; the route was explicit).
-        return ResolveWithSourceOutcome::PromptUser;
+        return Ok(ResolveWithSourceOutcome::PromptUser);
     }
 
     // Step 2.5: no alias route means the canonical name is the workspace key.
     let workspace_account = keychain_workspace_name(workspace_id, canonical_name);
-    if let Some(value) = store.get(&workspace_account) {
-        return ResolveWithSourceOutcome::Found(ResolvedSecret {
+    if let Some(value) = read(&workspace_account)? {
+        return Ok(ResolveWithSourceOutcome::Found(ResolvedSecret {
             value,
             source: ResolvedSecretSource::WorkspaceCanonical,
-        });
+        }));
     }
 
     // Step 3: user-scope fallback when allowed.
     if router.fallback {
         let user_account = keychain_user_name(canonical_name);
-        if let Some(value) = store.get(&user_account) {
-            return ResolveWithSourceOutcome::Found(ResolvedSecret {
+        if let Some(value) = read(&user_account)? {
+            return Ok(ResolveWithSourceOutcome::Found(ResolvedSecret {
                 value,
                 source: ResolvedSecretSource::GlobalCanonical,
-            });
+            }));
         }
-        return ResolveWithSourceOutcome::PromptUser;
+        return Ok(ResolveWithSourceOutcome::PromptUser);
     }
 
     // Step 4: no route + fallback disabled → hard error.
-    ResolveWithSourceOutcome::HardMissing {
+    Ok(ResolveWithSourceOutcome::HardMissing {
         reason: format!(
             "no workspace or route value in .plexi/secrets.toml for plugin '{plugin_id}' / secret \
              '{canonical_name}', and fallback = false"
         ),
-    }
+    })
 }
 
 pub fn resolve_terminal_env(
