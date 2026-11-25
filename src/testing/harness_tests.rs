@@ -14115,6 +14115,54 @@ mod agent_boot {
         });
     }
 
+    fn ask_from_pane(h: &mut HostHarness, pane_id: u64) -> serde_json::Value {
+        let response_file = temp_response(&h.workspace_root(), "agent-ask");
+        h.inject_from_pane(
+            pane_id,
+            HostRequest::AgentAsk {
+                pane_id,
+                question: "Which branch?".into(),
+                response_file: response_file.clone(),
+            },
+        );
+        h.hidden_frame();
+        read_json_response(&response_file)
+    }
+
+    #[test]
+    fn agent_ask_accepts_host_launched_alias_before_any_state_report() {
+        let mut h = HostHarness::new();
+        let root = h.workspace_root();
+        h.add_test_pane();
+        let _response = spawn_agent_pane(&mut h, &root, "sleep 30", None);
+        h.hidden_frame();
+        let pane_id = spawned_terminal(&h);
+
+        let reply = ask_from_pane(&mut h, pane_id);
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn agent_ask_accepts_host_observed_harnesses() {
+        for (program, harness) in [("claude", "claude-code"), ("codex", "codex"), ("pi", "pi")] {
+            let mut h = HostHarness::new();
+            let pane_id = h.add_focused_terminal();
+            let executable = h.workspace_root().join(program);
+            std::fs::copy("/bin/sleep", &executable).unwrap();
+            let command = crate::host::shell::shell_quote(&executable.to_string_lossy());
+            write_to_terminal(&mut h, pane_id, &format!("{command} 30\n"));
+            tick_until(&mut h, pane_id, harness, |t| {
+                t.observed_agent
+                    .as_ref()
+                    .is_some_and(|a| a.agent == harness)
+            });
+
+            let reply = ask_from_pane(&mut h, pane_id);
+            assert_eq!(reply["ok"], true, "{harness}: {reply}");
+        }
+    }
+
     /// The core contract: a pane id on stdout means "ready for a brief". The
     /// host must therefore withhold the spawn reply through every state that
     /// is not the agent reporting itself idle.

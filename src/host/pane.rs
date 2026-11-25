@@ -976,8 +976,8 @@ pub struct AgentLaunch {
 /// How the host started the agent, which decides what proves it ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentLaunchKind {
-    /// The pane's own launch command (`$SHELL -c "<agent>; exec $SHELL -i -l"`):
-    /// a spawned agent pane or a restored pane that auto-resumes.
+    /// A host-dispatched shell command: a spawned agent pane, a restored
+    /// pane that auto-resumes, or an alias typed by `pane new --agent`.
     Command,
     /// A resume command typed into the pane's existing interactive shell (a
     /// Standby wake). Only the host detector naming `harness` in the PTY
