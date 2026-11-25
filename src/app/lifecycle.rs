@@ -6036,6 +6036,9 @@ impl PlexiApp {
                 log::info!("pane_ipc: kind=wake draining queued spawns");
                 self.drain_spawn_queue();
             }
+            crate::protocol::HostRequest::ShutdownForRestart { response_file } => {
+                self.queue_restart_shutdown(response_file);
+            }
             crate::protocol::HostRequest::Shutdown { response_file } => {
                 // `update_preamble` checks live editors before accepting
                 // the stop. Accepted stops reply from `exit_host`.

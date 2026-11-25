@@ -1980,6 +1980,8 @@ pub enum HostCmd {
         /// Confirm restarting the host containing this pane; this pane will close.
         #[arg(long)]
         yes: bool,
+        #[arg(long, hide = true)]
+        after_pid: Option<std::num::NonZeroU32>,
     },
     /// Launch this channel's plugin bundle detached and wait for readiness.
     ///

@@ -7,7 +7,7 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -28,6 +28,10 @@ struct FakeHost {
 
 impl FakeHost {
     fn bind(profile_dir: &Path) -> Self {
+        Self::bind_with_stop_refusal(profile_dir, false)
+    }
+
+    fn bind_with_stop_refusal(profile_dir: &Path, refuse_stop: bool) -> Self {
         std::fs::create_dir_all(profile_dir).unwrap();
         let listener = UnixListener::bind(profile_dir.join("notify.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -37,15 +41,25 @@ impl FakeHost {
         let thread = std::thread::spawn(move || {
             while !done.load(Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok((mut stream, _)) => {
                         // A probe may hang up before these calls; the read
                         // below then records it as a bare probe.
                         let _ = stream.set_nonblocking(false);
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                         let mut line = String::new();
-                        let _ = BufReader::new(stream).read_line(&mut line);
+                        let _ = BufReader::new(&stream).read_line(&mut line);
                         let frame = serde_json::from_str::<serde_json::Value>(&line)
                             .unwrap_or_else(|_| serde_json::json!({"type": "<probe>"}));
+                        if refuse_stop
+                            && matches!(
+                                frame["type"].as_str(),
+                                Some("shutdown" | "shutdown_for_restart")
+                            )
+                        {
+                            stream
+                                .write_all(br#"{"ok":false,"error_code":"unsaved_editor_changes","error":"Save or discard the changes in the editor for draft.md before stopping the host"}"#)
+                                .unwrap();
+                        }
                         seen.lock().unwrap().push(frame);
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(10)),
@@ -90,10 +104,15 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with_stop_refusal(false)
+}
+
+fn fixture_with_stop_refusal(refuse_stop: bool) -> Fixture {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().to_path_buf();
     let default_host = FakeHost::bind(&home.join(format!(".plexi-{CHANNEL}")));
-    let named_host = FakeHost::bind(&home.join(format!(".plexi-{PROFILE}")));
+    let named_host =
+        FakeHost::bind_with_stop_refusal(&home.join(format!(".plexi-{PROFILE}")), refuse_stop);
     let binary = home.join(format!("plexi-{CHANNEL}"));
     std::fs::copy(common::plexi_binary(), &binary).unwrap();
     Fixture {
@@ -178,9 +197,8 @@ fn host_stop_with_profile_stops_only_the_named_profile() {
     assert_only_named(&fixture, "host stop", "shutdown");
 }
 
-/// Restart's stop step runs in a child `host stop`; it must carry the profile.
-/// The fake named host never exits, so restart waits; the test ends it once the
-/// shutdown request has arrived, before any start step could launch a host.
+/// Restart's stop step must address the named profile. The fake host never
+/// exits, so end the CLI as soon as its shutdown request arrives.
 #[test]
 fn host_restart_with_profile_stops_only_the_named_profile() {
     let fixture = fixture();
@@ -207,10 +225,46 @@ fn host_restart_with_profile_stops_only_the_named_profile() {
     }
     child.kill().ok();
     child.wait().ok();
-    // The restart's own stop child may still be running; give it no chance
-    // to outlive the fixture's sockets.
-    std::thread::sleep(Duration::from_millis(100));
     assert_only_named(&fixture, "host restart", "shutdown");
+}
+
+#[test]
+fn host_restart_reports_unsaved_editor_refusal_before_relaunch() {
+    for in_pane in [true, false] {
+        let fixture = fixture_with_stop_refusal(true);
+        let socket = fixture.home.join(format!(".plexi-{PROFILE}/notify.sock"));
+        let pane_env = [
+            ("PLEXI_SOCKET", socket.as_path()),
+            ("PLEXI_PANE_ID", Path::new("7")),
+        ];
+        let mut child = spawn_raw(
+            &fixture,
+            &["--profile", PROFILE, "host", "restart", "--yes"],
+            if in_pane { &pane_env } else { &[] },
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().ok();
+                child.wait().unwrap();
+                panic!("restart waited after the refusal (in_pane={in_pane})");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "in_pane={in_pane}: stdout={stdout:?}, stderr={stderr:?}"
+        );
+        assert!(stdout.is_empty(), "in_pane={in_pane}: {stdout}");
+        assert!(stderr.contains("Save or discard"), "{stderr}");
+        assert!(stderr.contains("draft.md"), "{stderr}");
+        let request = if in_pane { "shutdown_for_restart" } else { "shutdown" };
+        assert_only_named(&fixture, "host restart", request);
+    }
 }
 
 /// From a pane of the named profile's host, `--profile` keeps the caller's
