@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded persistent Cargo slots, exclusively locked for the entire operation."""
+from contextlib import ExitStack
 import fcntl
 import hashlib
 import json
@@ -9,7 +10,9 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
+import tomllib
 import uuid
 
 MARKER = "plexi-owned-build-cache-v1"
@@ -77,6 +80,60 @@ def tree_bytes(path):
             if stat.S_ISREG(info.st_mode):
                 total += info.st_size
     return total
+
+
+def seed_codex(source, worktree):
+    """Clone a warm debug tree before launching Codex in a fresh worktree."""
+    target = worktree / "target"
+    if target.is_symlink() or (target.exists() and (not target.is_dir() or any(target.iterdir()))):
+        print(f"build-cache: skip Codex seed: target already populated path={target}", flush=True)
+        return
+    fingerprints = source / ".fingerprint"
+    if source.is_symlink() or fingerprints.is_symlink() or not fingerprints.is_dir():
+        print(f"build-cache: skip Codex seed: no warm target path={source}", flush=True)
+        return
+    if (sys.platform != "darwin" or source.stat().st_dev != worktree.stat().st_dev
+            or subprocess.run(["/bin/df", "-T", "apfs", str(worktree)],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode):
+        print("build-cache: skip Codex seed: source and worktree need the same APFS volume", flush=True)
+        return
+
+    floor = positive_bytes("PLEXI_BUILD_MIN_FREE_BYTES", DEFAULT_MIN_FREE_BYTES)
+    with ExitStack() as locks:
+        for name in (".cargo-build-lock", ".cargo-artifact-lock", ".cargo-lock"):
+            try:
+                lock = locks.enter_context((source / name).open("rb"))
+            except FileNotFoundError:
+                continue
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(f"build-cache: skip Codex seed: warm target busy path={source}", flush=True)
+                return
+        size = tree_bytes(source)
+        free = free_bytes(worktree)
+        if free - size < floor:
+            print(f"build-cache: skip Codex seed: free_bytes={free} reserve_bytes={size} "
+                  f"PLEXI_BUILD_MIN_FREE_BYTES={floor}", flush=True)
+            return
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".seed-", dir=target) as stage:
+            debug = Path(stage) / "debug"
+            subprocess.run(["/bin/cp", "-c", "-R", str(source), str(debug)], check=True)
+            require_free_space(worktree, floor)
+
+            # Cargo keys path packages by relative source paths and mtimes.
+            # Force a rebuild even if a different checkout has older files.
+            packages = tomllib.loads((worktree / "Cargo.lock").read_text())["package"]
+            local_names = {package["name"] for package in packages if "source" not in package}
+            for fingerprint in (debug / ".fingerprint").iterdir():
+                if fingerprint.name.rpartition("-")[0] in local_names:
+                    shutil.rmtree(fingerprint)
+            if any(entry != Path(stage) for entry in target.iterdir()):
+                print(f"build-cache: skip Codex seed: target already populated path={target}", flush=True)
+                return
+            debug.rename(target / "debug")
+    print(f"build-cache: seeded Codex target source={source} path={target / 'debug'} bytes={size}", flush=True)
 
 
 def prune_slot(slot):
@@ -323,7 +380,6 @@ def run(channel, command):
     # before choosing a slot so they cannot mutate the same source/install via
     # different free slots.
     # Serialize both channel and owner; sorted acquisition avoids lock inversion.
-    from contextlib import ExitStack
     with ExitStack() as stack:
         locks = [stack.enter_context((base / f"{name}.lock").open("a+")) for name in sorted({channel, owner})]
         deadline = time.monotonic() + float(os.environ.get("PLEXI_BUILD_CACHE_TIMEOUT", "900"))
@@ -405,6 +461,9 @@ if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["sync-sources"]:
             sys.exit(sync_from_environment())
+        if len(sys.argv) == 4 and sys.argv[1] == "seed-codex":
+            seed_codex(Path(sys.argv[2]), Path(sys.argv[3]))
+            sys.exit(0)
         sys.exit(run(sys.argv[1], sys.argv[2:]))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"build-cache: {error}", file=sys.stderr)
