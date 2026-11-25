@@ -10219,6 +10219,87 @@ fn editor_gate_keyboard_quit_waits_for_unsaved_conflict_then_resumes() {
 }
 
 #[test]
+fn editor_gate_quit_requires_a_fresh_enter_for_each_dirty_editor() {
+    let (dir, path, mut h, pane) = unsaved_editor_fixture();
+    // Observe each delivery before a layout retry can service an accepted quit.
+    h.ctx
+        .options_mut(|options| options.max_passes = std::num::NonZeroUsize::MIN);
+    h.app.config.confirm_quit = Some(false);
+    let other_path = dir.path().join("other.txt");
+    std::fs::write(&other_path, "original bytes\n").unwrap();
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new(
+            other_path.clone(),
+        )),
+        crate::app::permissions::PluginPermissions::builtin(),
+        dir.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let other_pane = *h.state().open_panes.last().unwrap();
+    h.run_frames(2);
+    h.text_editor_mut(pane).test_set_unsaved("edited");
+    h.text_editor_mut(other_pane).test_set_unsaved("edited");
+
+    h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.top(),
+        Some(crate::app::FocusKind::UnsavedChanges)
+    );
+    let (first_path, second_path, second_pane) = if h.app.focused_pane_id() == Some(pane) {
+        (&path, &other_path, other_pane)
+    } else {
+        assert_eq!(h.app.focused_pane_id(), Some(other_pane));
+        (&other_path, &path, pane)
+    };
+    let enter = |pressed, repeat| egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    };
+
+    h.frame(enter(true, false));
+    h.run_frames(2);
+    assert_eq!(std::fs::read_to_string(first_path).unwrap(), "edited");
+    assert_eq!(h.app.focused_pane_id(), Some(second_pane));
+    assert_eq!(
+        h.app.focus_stack.top(),
+        Some(crate::app::FocusKind::UnsavedChanges)
+    );
+
+    for _ in 0..2 {
+        h.frame(enter(true, true));
+        assert_eq!(
+            std::fs::read_to_string(second_path).unwrap(),
+            "original bytes\n",
+            "held Return must not save the second editor"
+        );
+        assert_eq!(
+            h.app.focus_stack.top(),
+            Some(crate::app::FocusKind::UnsavedChanges)
+        );
+        assert!(!h.app.quitting);
+    }
+
+    h.frame(enter(false, false));
+    assert_eq!(
+        h.app.focus_stack.top(),
+        Some(crate::app::FocusKind::UnsavedChanges)
+    );
+    h.frame(enter(true, false));
+    assert_eq!(std::fs::read_to_string(second_path).unwrap(), "edited");
+    assert!(h.app.focus_stack.is_empty());
+    assert!(h.app.quit_coordinator.is_active());
+}
+
+#[test]
 fn editor_gate_prose_after_conflict_prompt_preserves_both_versions() {
     let mut h = HostHarness::new();
     let tmp = tempfile::tempdir().unwrap();
