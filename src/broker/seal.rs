@@ -570,10 +570,10 @@ fn profile_is_specific(profile: &str) -> bool {
 }
 
 #[derive(Serialize, serde::Deserialize)]
-struct AuditEnvelope {
-    seq: u64,
+pub(super) struct AuditEnvelope {
+    pub(super) seq: u64,
     prev: String,
-    fact: String,
+    pub(super) fact: String,
     mac: String,
 }
 

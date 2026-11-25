@@ -5857,22 +5857,57 @@ impl PermissionMonitor {
     fn restore_audit_window(&self, history: &str) {
         let mut recent = std::collections::VecDeque::new();
         for line in history.lines().rev().take(AUDIT_MEM_CAP) {
-            let decode = || -> Option<AuditFact> {
-                let envelope: serde_json::Value = serde_json::from_str(line).ok()?;
-                let mut fact: serde_json::Value =
-                    serde_json::from_str(envelope["fact"].as_str()?).ok()?;
-                let owner = match fact.get_mut("owner") {
-                    Some(owner) => owner.take(),
+            let envelope: super::seal::AuditEnvelope = match serde_json::from_str(line) {
+                Ok(envelope) => envelope,
+                Err(error) => {
+                    log::warn!(
+                        "permission_monitor: could not decode verified audit envelope: {error}"
+                    );
+                    continue;
+                }
+            };
+            let decode = || -> Result<AuditFact, String> {
+                let mut fact: serde_json::Map<String, serde_json::Value> =
+                    serde_json::from_str(&envelope.fact).map_err(|error| error.to_string())?;
+                let owner = match fact.remove("owner") {
+                    Some(owner) => owner,
                     None => {
-                        serde_json::json!(RecordOwner::Legacy(fact["actor"].as_str()?.to_owned()))
+                        let actor = fact
+                            .get("actor")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or("missing or non-string `actor`")?
+                            .to_owned();
+                        // The seal layer wrote these markers without action metadata.
+                        if actor == "host"
+                            && matches!(
+                                fact.get("kind").and_then(serde_json::Value::as_str),
+                                Some("legacy_migration" | "key_rotation")
+                            )
+                        {
+                            for field in [
+                                "call_id",
+                                "grant_id",
+                                "resource_id",
+                                "args_fingerprint",
+                                "operation_id",
+                                "revision_before",
+                                "revision_after",
+                            ] {
+                                fact.entry(field).or_insert_with(|| serde_json::json!(""));
+                            }
+                        }
+                        serde_json::json!(RecordOwner::Legacy(actor))
                     }
                 };
-                fact["actor"] = owner;
-                serde_json::from_value(fact).ok()
+                fact.insert("actor".into(), owner);
+                serde_json::from_value(fact.into()).map_err(|error| error.to_string())
             };
             match decode() {
-                Some(fact) => recent.push_front(fact),
-                None => log::warn!("permission_monitor: skipped unrecognized sealed audit fact"),
+                Ok(fact) => recent.push_front(fact),
+                Err(error) => log::warn!(
+                    "permission_monitor: skipped undecodable sealed audit fact seq={}: {error}",
+                    envelope.seq
+                ),
             }
         }
         log::info!("permission_monitor: restored {} audit facts", recent.len());
@@ -7981,6 +8016,77 @@ mod tests {
         assert_eq!(own.len(), 1);
         assert_eq!(own[0].call_id, "current-call");
         assert!(restored.records_for(&replacement).audit().is_empty());
+    }
+
+    #[test]
+    fn sealed_audit_restores_legacy_markers_as_host_history() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("permission-audit.jsonl");
+        // These marker payloads were written directly by the seal layer.
+        let migration = serde_json::json!({
+            "kind": "legacy_migration",
+            "actor": "host",
+            "decision": "migrated legacy unsealed permission-audit.jsonl",
+        });
+        let rotation = serde_json::json!({
+            "kind": "key_rotation",
+            "actor": "host",
+            "decision": "grants_reset",
+            "summary": "previous grants could not be verified after the seal key was rotated",
+        });
+        for row in [&migration, &rotation] {
+            super::super::seal::append_audit(TEST_HOST, &path, row).unwrap();
+        }
+        super::super::seal::verify_audit(TEST_HOST, &path).unwrap();
+
+        let logs = crate::testing::test_log::capture();
+        let restored = PermissionMonitor::open_profile(profile.path()).unwrap();
+        let rows = restored.host_records().audit();
+        assert_eq!(rows.len(), 2, "startup logs: {:?}", logs.records());
+        for (row, payload) in rows.iter().zip([migration, rotation]) {
+            assert_eq!(row.kind, payload["kind"]);
+            assert_eq!(row.decision, payload["decision"]);
+            assert_eq!(row.actor, RecordOwner::Legacy("host".into()));
+            assert!(row.call_id.is_empty());
+        }
+    }
+
+    #[test]
+    fn sealed_audit_restore_warns_with_sequence_and_decode_error() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("permission-audit.jsonl");
+        let before = PermissionMonitor::open_profile(profile.path()).unwrap();
+        before.note_denial(
+            &RecordOwner::Host("host".into()),
+            "valid-call",
+            "",
+            "",
+            "deny",
+        );
+        let incomplete = serde_json::json!({
+            "kind": "outcome",
+            "actor": "pane:7",
+            "decision": "ok",
+        });
+        super::super::seal::append_audit(TEST_HOST, &path, &incomplete).unwrap();
+        super::super::seal::verify_audit(TEST_HOST, &path).unwrap();
+        super::super::integrity::mark_clean_shutdown(profile.path());
+        drop(before);
+
+        let logs = crate::testing::test_log::capture();
+        let restored = PermissionMonitor::open_profile(profile.path()).unwrap();
+        let rows = restored.host_records().audit();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].call_id, "valid-call");
+        let records = logs.records();
+        assert!(
+            records
+                .iter()
+                .any(|(level, message)| *level == log::Level::Warn
+                    && message.contains("seq=2")
+                    && message.contains("missing field `call_id`")),
+            "missing decode warning for the second sealed row: {records:?}"
+        );
     }
 
     #[test]
