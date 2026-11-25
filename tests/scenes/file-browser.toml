@@ -75,3 +75,21 @@ assert = { pane_count = 1 }
 
 [[steps]]
 shot = "file-browser.png"
+
+[[steps]]
+key = { target = "files", value = "slash" }
+
+[[steps]]
+text = { target = "files", value = "new file" }
+
+[[steps]]
+key = { target = "files", value = "enter" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert_label = { target = "files", label = "Create file: <name> — type filename and press Enter" }
+
+[[steps]]
+shot = "file-browser-new-file-prompt.png"

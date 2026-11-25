@@ -1166,3 +1166,26 @@ fn screenshot_file_browser_action_palette_and_intent_preview_chip() {
     h.save_screenshot(&evidence_png!("_search_todo"))
         .expect("render file_browser search with `todo`");
 }
+
+#[test]
+fn screenshot_file_browser_new_file_prompt() {
+    let mut h = PlexiUiHarness::new_sized(880.0, 560.0);
+    let root = h.workspace_root().to_path_buf();
+    std::fs::write(root.join("plan.md"), "# Plan\n").expect("seed plan.md");
+    h.open_file_browser(root);
+    h.run_steps(3);
+
+    h.harness().key_press(egui::Key::Slash);
+    h.run_steps(2);
+    h.harness()
+        .input_mut()
+        .events
+        .push(egui::Event::Text("new file".to_string()));
+    h.run_steps(2);
+    h.harness().key_press(egui::Key::Enter);
+    h.run_steps(2);
+
+    assert!(h.host_has_label("Create file: <name> — type filename and press Enter"));
+    h.save_screenshot(&evidence_png!())
+        .expect("render file_browser filename prompt");
+}

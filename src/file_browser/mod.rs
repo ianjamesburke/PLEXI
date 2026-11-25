@@ -70,25 +70,19 @@ enum FileBrowserAction {
     Escape,
     EnterSearch,
     EnterPaletteSlash,
-    EnterPaletteCommand,
     TabComplete,
     ToggleSort,
     ToggleInspector,
     ToggleQuickLook,
     ToggleHidden,
-    Refresh,
     CdTerminalAndClose,
     SelectAll,
-    NewFile,
-    NewFolder,
     Rename,
     Copy,
     CopyPath,
     Cut,
     Paste,
     MoveToTrash,
-    Reveal,
-    OpenWithDefault,
     AppendText(String),
 }
 
@@ -345,7 +339,6 @@ pub(crate) const EXPLORER_KEYS: &[ExplorerKey] = {
             Browsing,
             "Show / hide hidden files",
         ),
-        ExplorerKey::new(A::Refresh, egui::Key::R, cmd(true), Browsing, "Refresh"),
         ExplorerKey::new(A::CopyPath, egui::Key::C, cmd(true), Browsing, "Copy path"),
         ExplorerKey::new(
             A::SelectAll,
@@ -353,15 +346,6 @@ pub(crate) const EXPLORER_KEYS: &[ExplorerKey] = {
             cmd(false),
             Browsing,
             "Select all",
-        ),
-        ExplorerKey::new(A::NewFile, egui::Key::N, cmd(false), Always, "New file"),
-        ExplorerKey::new(A::NewFolder, egui::Key::N, cmd(true), Always, "New folder"),
-        ExplorerKey::new(
-            A::EnterPaletteCommand,
-            egui::Key::K,
-            cmd(false),
-            Always,
-            "Commands",
         ),
         ExplorerKey::new(A::EnterSearch, egui::Key::F, cmd(false), Always, "Search"),
         ExplorerKey::new(A::Rename, egui::Key::F2, Bare, Browsing, "Rename"),
@@ -379,20 +363,6 @@ pub(crate) const EXPLORER_KEYS: &[ExplorerKey] = {
             cmd(false),
             Browsing,
             "Move to Trash",
-        ),
-        ExplorerKey::new(
-            A::OpenWithDefault,
-            egui::Key::O,
-            cmd(false),
-            Browsing,
-            "Open with default app",
-        ),
-        ExplorerKey::new(
-            A::Reveal,
-            egui::Key::Enter,
-            cmd(false),
-            Browsing,
-            "Reveal in Finder",
         ),
         ExplorerKey::new(A::Escape, egui::Key::Escape, Any, Always, "Cancel / close"),
         ExplorerKey::new(
@@ -447,7 +417,7 @@ pub(crate) const EXPLORER_KEYS: &[ExplorerKey] = {
             egui::Key::Slash,
             NoCmd,
             Browsing,
-            "Path palette",
+            "Actions",
         ),
         ExplorerKey::new(A::ToggleSort, egui::Key::S, Bare, Browsing, "Change sort"),
         ExplorerKey::new(
@@ -535,7 +505,7 @@ pub struct FileBrowserView {
     /// selected wherever it ranks; without it the selection follows the top
     /// result. A query change clears it.
     search_pinned_path: Option<PathBuf>,
-    // Action palette (`/` and `Cmd+K`, stint 0813)
+    // Slash action palette
     in_palette: bool,
     palette_query: String,
     palette_selected: usize,
@@ -2289,28 +2259,6 @@ impl FileBrowserView {
             log::info!("file_browser: cancelled pending file operation");
         }
         self.pending_operation = None;
-    }
-
-    fn reveal_selected(&mut self) {
-        for path in self.selected_paths() {
-            log::info!("file_browser: reveal '{}'", path.display());
-            self.pending_cmds.push(ViewCommand::OpenArtifact {
-                sender_pane_id: 0,
-                path: path.to_string_lossy().to_string(),
-                mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
-            });
-        }
-    }
-
-    fn open_selected_with_default(&mut self) {
-        for path in self.selected_paths() {
-            log::info!("file_browser: open with default '{}'", path.display());
-            self.pending_cmds.push(ViewCommand::OpenArtifact {
-                sender_pane_id: 0,
-                path: path.to_string_lossy().to_string(),
-                mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
-            });
-        }
     }
 
     fn copy_selected_path(&mut self) {
@@ -4187,14 +4135,6 @@ impl View for FileBrowserView {
                 log::info!("file_browser: entering search mode");
                 KeyDisposition::Consumed
             }
-            (Mode::Palette, Some(FileBrowserAction::NewFile)) => {
-                self.open_palette("/new file ");
-                KeyDisposition::Consumed
-            }
-            (Mode::Palette, Some(FileBrowserAction::NewFolder)) => {
-                self.open_palette("/new folder ");
-                KeyDisposition::Consumed
-            }
             (Mode::Palette, _) => KeyDisposition::Consumed,
             // Escape: closes browser in normal mode, exits search in search mode
             (Mode::Search, Some(FileBrowserAction::Escape)) => {
@@ -4253,18 +4193,6 @@ impl View for FileBrowserView {
                 self.refilter();
                 KeyDisposition::Consumed
             }
-            (Mode::Search, Some(FileBrowserAction::EnterPaletteCommand)) => {
-                self.open_palette("");
-                KeyDisposition::Consumed
-            }
-            (Mode::Search, Some(FileBrowserAction::NewFile)) => {
-                self.open_palette("/new file ");
-                KeyDisposition::Consumed
-            }
-            (Mode::Search, Some(FileBrowserAction::NewFolder)) => {
-                self.open_palette("/new folder ");
-                KeyDisposition::Consumed
-            }
             (Mode::Search, Some(FileBrowserAction::EnterSearch)) => {
                 self.search_focus_pending = true;
                 KeyDisposition::Consumed
@@ -4286,10 +4214,6 @@ impl View for FileBrowserView {
             }
             (Mode::Normal, Some(FileBrowserAction::EnterPaletteSlash)) => {
                 self.open_palette("/");
-                KeyDisposition::Consumed
-            }
-            (Mode::Normal, Some(FileBrowserAction::EnterPaletteCommand)) => {
-                self.open_palette("");
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::SelectNext)) if !self.entries.is_empty() => {
@@ -4373,20 +4297,8 @@ impl View for FileBrowserView {
                 );
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Refresh)) => {
-                self.refresh();
-                KeyDisposition::Consumed
-            }
             (Mode::Normal, Some(FileBrowserAction::SelectAll)) if !self.entries.is_empty() => {
                 self.select_all_visible();
-                KeyDisposition::Consumed
-            }
-            (Mode::Normal, Some(FileBrowserAction::NewFile)) => {
-                self.open_palette("/new file ");
-                KeyDisposition::Consumed
-            }
-            (Mode::Normal, Some(FileBrowserAction::NewFolder)) => {
-                self.open_palette("/new folder ");
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::Rename)) if !self.entries.is_empty() => {
@@ -4409,14 +4321,6 @@ impl View for FileBrowserView {
             }
             (Mode::Normal, Some(FileBrowserAction::MoveToTrash)) if !self.entries.is_empty() => {
                 self.request_move_selected_to_trash();
-                KeyDisposition::Consumed
-            }
-            (Mode::Normal, Some(FileBrowserAction::Reveal)) => {
-                self.reveal_selected();
-                KeyDisposition::Consumed
-            }
-            (Mode::Normal, Some(FileBrowserAction::OpenWithDefault)) => {
-                self.open_selected_with_default();
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::CopyPath)) => {
@@ -4661,25 +4565,19 @@ mod tests {
                 | A::Escape
                 | A::EnterSearch
                 | A::EnterPaletteSlash
-                | A::EnterPaletteCommand
                 | A::TabComplete
                 | A::ToggleSort
                 | A::ToggleInspector
                 | A::ToggleQuickLook
                 | A::ToggleHidden
-                | A::Refresh
                 | A::CdTerminalAndClose
                 | A::SelectAll
-                | A::NewFile
-                | A::NewFolder
                 | A::Rename
                 | A::Copy
                 | A::CopyPath
                 | A::Cut
                 | A::Paste
-                | A::MoveToTrash
-                | A::Reveal
-                | A::OpenWithDefault => true,
+                | A::MoveToTrash => true,
             }
         }
         use FileBrowserAction as A;
@@ -4696,25 +4594,19 @@ mod tests {
             A::Escape,
             A::EnterSearch,
             A::EnterPaletteSlash,
-            A::EnterPaletteCommand,
             A::TabComplete,
             A::ToggleSort,
             A::ToggleInspector,
             A::ToggleQuickLook,
             A::ToggleHidden,
-            A::Refresh,
             A::CdTerminalAndClose,
             A::SelectAll,
-            A::NewFile,
-            A::NewFolder,
             A::Rename,
             A::Copy,
             A::CopyPath,
             A::Cut,
             A::Paste,
             A::MoveToTrash,
-            A::Reveal,
-            A::OpenWithDefault,
             A::AppendText(String::new()),
         ];
         for action in all.iter().filter(|a| keyed(a)) {
@@ -6483,85 +6375,48 @@ mod tests {
         assert!(empty_dir.path().join("alpha.txt").exists());
 
         let (mut empty_app2, empty_dir2) = make_empty_dir_plugin();
-        let consumed_mkdir = run_handle_key(
-            &mut empty_app2,
-            vec![key_event(
-                Key::N,
-                Modifiers {
-                    command: true,
-                    shift: true,
-                    ..Default::default()
-                },
-            )],
-        );
-        assert!(
-            consumed_mkdir,
-            "Cmd+Shift+N must work in an empty directory"
-        );
-        assert!(empty_app2.in_palette);
-        assert_eq!(empty_app2.palette_query, "/new folder ");
-        assert!(
-            !empty_dir2.path().join("Untitled Folder").exists(),
-            "Cmd+Shift+N must prompt for folder name without creating Untitled Folder on disk first"
-        );
         run_handle_key(
             &mut empty_app2,
+            vec![key_event(Key::Slash, Modifiers::NONE)],
+        );
+        let consumed_mkdir = run_handle_key(
+            &mut empty_app2,
             vec![
-                Event::Text("created_dir".to_string()),
+                Event::Text("new folder created_dir".to_string()),
                 key_event(Key::Enter, Modifiers::default()),
             ],
         );
+        assert!(consumed_mkdir);
         assert!(empty_dir2.path().join("created_dir").is_dir());
     }
 
     #[test]
-    fn reveal_and_open_with_default_emit_os_modes_not_open_in_pane() {
+    fn slash_reveal_and_open_with_default_emit_os_modes() {
+        use crate::protocol::ArtifactOpenMode;
+
         let (mut app, dir) = make_file_only_dir_plugin();
         app.take_pending_commands();
-
-        let consumed_reveal = run_handle_key(
-            &mut app,
-            vec![key_event(
-                Key::Enter,
-                Modifiers {
-                    command: true,
-                    ..Default::default()
-                },
-            )],
-        );
-        assert!(consumed_reveal);
-        let cmds = app.take_pending_commands();
-        assert_eq!(cmds.len(), 1);
-        assert!(matches!(
-            &cmds[0],
-            ViewCommand::OpenArtifact {
-                path,
-                mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
-                ..
-            } if path == &dir.path().join("readme.txt").display().to_string()
-        ));
-
-        let consumed_open = run_handle_key(
-            &mut app,
-            vec![key_event(
-                Key::O,
-                Modifiers {
-                    command: true,
-                    ..Default::default()
-                },
-            )],
-        );
-        assert!(consumed_open);
-        let cmds = app.take_pending_commands();
-        assert_eq!(cmds.len(), 1);
-        assert!(matches!(
-            &cmds[0],
-            ViewCommand::OpenArtifact {
-                path,
-                mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
-                ..
-            } if path == &dir.path().join("readme.txt").display().to_string()
-        ));
+        let target = dir.path().join("readme.txt").display().to_string();
+        for (query, expected_mode) in [
+            ("reveal", ArtifactOpenMode::RevealInFinder),
+            ("open-default", ArtifactOpenMode::OpenWithDefault),
+        ] {
+            run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::NONE)]);
+            let consumed = run_handle_key(
+                &mut app,
+                vec![
+                    Event::Text(query.to_string()),
+                    key_event(Key::Enter, Modifiers::NONE),
+                ],
+            );
+            assert!(consumed);
+            let cmds = app.take_pending_commands();
+            assert!(matches!(
+                cmds.as_slice(),
+                [ViewCommand::OpenArtifact { path, mode, .. }]
+                    if path == &target && *mode == expected_mode
+            ));
+        }
     }
 
     #[test]
@@ -7175,7 +7030,7 @@ mod tests {
     }
 
     #[test]
-    fn r_and_f2_open_rename_modal_and_cmd_shift_r_refreshes() {
+    fn r_and_f2_open_rename_modal() {
         let (mut app, dir) = make_three_file_plugin();
         let consumed = run_handle_key(&mut app, vec![key_event(Key::R, Modifiers::default())]);
         assert!(consumed);
@@ -7185,22 +7040,6 @@ mod tests {
         let consumed_f2 = run_handle_key(&mut app, vec![key_event(Key::F2, Modifiers::default())]);
         assert!(consumed_f2);
         assert_eq!(app.rename_path, Some(dir.path().join("alpha.txt")));
-        app.cancel_rename_modal();
-
-        std::fs::write(dir.path().join("delta.txt"), b"d").expect("write delta");
-        let consumed_refresh = run_handle_key(
-            &mut app,
-            vec![key_event(
-                Key::R,
-                Modifiers {
-                    command: true,
-                    shift: true,
-                    ..Default::default()
-                },
-            )],
-        );
-        assert!(consumed_refresh);
-        assert!(app.entries.iter().any(|e| e.name == "delta.txt"));
     }
 
     #[test]
@@ -7766,44 +7605,9 @@ mod tests {
     }
 
     #[test]
-    fn cmd_n_and_palette_new_folder_slot_prompt_do_not_create_untitled_folder_first() {
+    fn slash_new_folder_prompts_for_a_name_before_creating() {
         let (mut app, dir) = make_three_file_plugin();
 
-        // 1. Pressing Cmd+Shift+N opens the palette pre-filled with `/new folder ` without touching disk.
-        let opened = run_handle_key(
-            &mut app,
-            vec![key_event(
-                Key::N,
-                Modifiers {
-                    command: true,
-                    shift: true,
-                    ..Default::default()
-                },
-            )],
-        );
-        assert!(opened);
-        assert!(app.in_palette);
-        assert_eq!(app.palette_query, "/new folder ");
-        assert!(
-            !dir.path().join("Untitled Folder").exists(),
-            "Cmd+Shift+N must not create Untitled Folder on disk before user enters a name"
-        );
-
-        // User types `specs` and presses Enter.
-        let created = run_handle_key(
-            &mut app,
-            vec![
-                Event::Text("specs".to_string()),
-                key_event(Key::Enter, Modifiers::default()),
-            ],
-        );
-        assert!(created);
-        assert!(!app.in_palette);
-        assert!(dir.path().join("specs").is_dir());
-        assert!(!dir.path().join("Untitled Folder").exists());
-        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("specs"));
-
-        // 2. Selecting `/new folder` without a name argument and pressing Enter pre-fills `/new folder `.
         run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
         assert_eq!(app.palette_query, "/");
         run_handle_key(
@@ -7829,6 +7633,10 @@ mod tests {
         );
         assert!(!app.in_palette);
         assert!(dir.path().join("design_docs").is_dir());
+        assert_eq!(
+            app.selected_entry().map(|e| e.name.as_str()),
+            Some("design_docs")
+        );
     }
 
     #[test]
@@ -7889,44 +7697,6 @@ mod tests {
                 "sort candidate subtitle must be human-readable, not identical to slash_syntax"
             );
         }
-    }
-
-    #[test]
-    fn cmd_n_opens_new_file_prompt_and_cmd_shift_n_opens_new_folder_prompt() {
-        let (mut app, _dir) = make_three_file_plugin();
-
-        let opened_file = run_handle_key(
-            &mut app,
-            vec![key_event(
-                Key::N,
-                Modifiers {
-                    command: true,
-                    shift: false,
-                    ..Default::default()
-                },
-            )],
-        );
-        assert!(opened_file);
-        assert!(app.in_palette);
-        assert_eq!(app.palette_query, "/new file ");
-
-        app.exit_palette();
-        assert!(!app.in_palette);
-
-        let opened_folder = run_handle_key(
-            &mut app,
-            vec![key_event(
-                Key::N,
-                Modifiers {
-                    command: true,
-                    shift: true,
-                    ..Default::default()
-                },
-            )],
-        );
-        assert!(opened_folder);
-        assert!(app.in_palette);
-        assert_eq!(app.palette_query, "/new folder ");
     }
 
     #[test]
@@ -8023,6 +7793,48 @@ mod tests {
             h.pane_count() >= 2,
             "CreateFile with open_in_editor must open hello.rs in a sibling editor pane"
         );
+    }
+
+    #[test]
+    fn host_harness_file_browser_overlay_keeps_new_pane_and_new_file_separate() {
+        let mut h = crate::testing::HostHarness::new();
+        let root = h.workspace_root();
+        let underlying = h.add_test_pane();
+        h.focus_pane(underlying).run_frames(2);
+        h.app.open_builtin_view_pane(
+            Box::new(FileBrowserView::new(root.clone())),
+            crate::app::permissions::PluginPermissions::builtin(),
+            root.clone(),
+            None,
+            Some("overlay"),
+            None,
+        );
+        h.run_frames(2);
+        let original_window = h.app.active_window;
+        let explorer = h.app.active_focused_pane_id().expect("focused overlay");
+        let view = h.app.windows[original_window].panes[&explorer]
+            .as_view()
+            .expect("focused pane is a view");
+        assert_eq!(view.runtime.type_id(), "file_browser");
+        assert!(view.overlay_replaced.is_some());
+        let window_count = h.window_count();
+
+        h.press_key(Key::N, Modifiers::COMMAND).run_frames(2);
+
+        assert_eq!(h.window_count(), window_count + 1);
+        assert_ne!(h.app.active_window, original_window);
+        let terminal = h.app.active_focused_pane_id().expect("new pane");
+        assert!(h.app.windows[h.app.active_window].panes[&terminal]
+            .as_terminal()
+            .is_some());
+
+        assert!(h.app.pane_navigate(explorer));
+        h.run_frames(2);
+        h.press_key(Key::Slash, Modifiers::NONE);
+        type_frame(&mut h, "new file t.md");
+        h.press_key(Key::Enter, Modifiers::NONE);
+
+        assert!(root.join("t.md").is_file(), "Explorer must create t.md");
     }
 
     /// A File Explorer pane in a real host, settled until it owns input.
@@ -8231,33 +8043,15 @@ mod tests {
     }
 
     #[test]
-    fn slash_and_cmd_k_enter_action_palette_not_search() {
+    fn slash_enters_action_palette() {
         let (mut app, _dir) = make_three_file_plugin();
 
-        // 1. Slash in normal mode opens action palette with "/"
         let consumed_slash =
             run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
         assert!(consumed_slash);
         assert!(app.in_palette);
         assert_eq!(app.palette_query, "/");
-        assert!(!app.in_search, "/ must enter palette, not search");
-        app.exit_palette();
-
-        // 2. Cmd+K in normal mode opens action palette with ""
-        let consumed_cmd_k = run_handle_key(
-            &mut app,
-            vec![key_event(
-                Key::K,
-                Modifiers {
-                    command: true,
-                    ..Default::default()
-                },
-            )],
-        );
-        assert!(consumed_cmd_k);
-        assert!(app.in_palette);
-        assert_eq!(app.palette_query, "");
-        assert!(!app.in_search, "Cmd+K must enter palette, not search");
+        assert!(!app.in_search);
     }
 
     #[test]
