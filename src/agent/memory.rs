@@ -107,29 +107,23 @@ fn decode_workspace_key<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<
 }
 
 impl ClaudeMemoryIdentity {
-    pub(crate) fn new(
+    pub(crate) fn from_canonical_workspace(
         definition: &AgentDefinition,
-        workspace: Option<&Path>,
+        canonical_workspace: Option<&Path>,
     ) -> Result<Self, String> {
         super::validate_agent_id(&definition.id)?;
         let scope = match definition.source {
             AgentSource::User | AgentSource::BuiltIn => ClaudeMemoryScope::Global,
             AgentSource::Workspace => {
-                let root = workspace.ok_or_else(|| {
+                let root = canonical_workspace.ok_or_else(|| {
                     format!(
                         "agent '{}' has no resolved workspace for Claude memory",
                         definition.id
                     )
                 })?;
-                let canonical = root.canonicalize().map_err(|error| {
-                    format!(
-                        "resolve Claude memory workspace {}: {error}",
-                        root.display()
-                    )
-                })?;
                 ClaudeMemoryScope::Workspace(format!(
                     "{:x}",
-                    Sha256::digest(canonical.as_os_str().as_encoded_bytes())
+                    Sha256::digest(root.as_os_str().as_encoded_bytes())
                 ))
             }
         };

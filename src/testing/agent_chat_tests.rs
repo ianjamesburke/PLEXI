@@ -97,7 +97,7 @@ fn write_agent(fx: &AgentFocusFixture, id: &str, harness: &str) {
 fn new_chat_archives_the_current_chat() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     let sessions = fx.home.path().join("pi-sessions");
     let _pi = seed_pi_session(&sessions, "sess-current");
     let current = start_agent(&mut h, &fx, "researcher", caller);
@@ -140,7 +140,7 @@ fn new_chat_archives_the_current_chat() {
 fn new_chat_archives_the_last_closed_chat_when_no_pane_holds_it() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     let sessions = fx.home.path().join("pi-sessions");
     let _pi = seed_pi_session(&sessions, "sess-closed");
     let closed = researcher_history_record(&fx.proj_dir, "sess-closed", "pi");
@@ -162,7 +162,7 @@ fn new_chat_archives_the_last_closed_chat_when_no_pane_holds_it() {
 fn new_chat_with_no_chat_yet_only_starts_one() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     let (pane_id, archived) = new_chat(&mut h, &fx, caller);
     assert_eq!(archived, None);
     assert_eq!(terminal_role(&h, pane_id).as_deref(), Some("researcher"));
@@ -182,7 +182,7 @@ fn new_chat_with_no_chat_yet_only_starts_one() {
 fn archived_chat_reopens_from_history() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     let sessions = fx.home.path().join("pi-sessions");
     let _pi = seed_pi_session(&sessions, "sess-archived");
     let current = start_agent(&mut h, &fx, "researcher", caller);
@@ -216,7 +216,7 @@ fn archived_chat_reopens_from_history() {
 fn new_chat_preserves_named_agent_memory_files() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     let memory = memory_dir("researcher");
     let first = start_agent(&mut h, &fx, "researcher", caller);
     assert!(
@@ -300,7 +300,7 @@ fn claude_standby_wake_binds_named_memory_for_resume_and_fallback() {
     std::fs::write(sessions.join("-proj").join("saved-claude.jsonl"), "{}\n").unwrap();
     let _sessions = crate::cli::agent::set_test_claude_projects_dir(sessions);
     let memory = memory_dir("researcher");
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
 
     for (session_id, cached_command, args) in [
         (
@@ -334,7 +334,7 @@ fn claude_reopen_keeps_the_launched_memory_after_workspace_shadowing() {
     let fx = AgentFocusFixture::new();
     write_agent(&fx, "researcher", "claude");
     let _shell = use_inert_agent_shell(fx.home.path());
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     let pane_id = start_agent(&mut h, &fx, "researcher", caller);
     let pane = terminal_mut(&mut h, pane_id);
     pane.agent_session_id = Some("saved-claude".into());
@@ -386,7 +386,7 @@ fn two_named_agents_never_share_memory_or_chats() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     write_agent(&fx, "writer", "pi");
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     let researcher = start_agent(&mut h, &fx, "researcher", caller);
     let writer = start_agent(&mut h, &fx, "writer", caller);
     assert_eq!(terminal_role(&h, writer).as_deref(), Some("writer"));
@@ -430,7 +430,7 @@ fn agent_open_after_restart_returns_the_new_chat_never_the_archived_one() {
     for new_chat_state in ["open", "closed_with_session", "closed_empty"] {
         let mut h = HostHarness::new();
         let fx = AgentFocusFixture::new();
-        let caller = h.add_focused_terminal();
+        let caller = fx.add_project_caller(&mut h);
         let sessions = fx.home.path().join("pi-sessions");
         let _old = seed_pi_session(&sessions, "sess-old");
         let _new = seed_pi_session(&sessions, "sess-new");
@@ -454,7 +454,7 @@ fn agent_open_after_restart_returns_the_new_chat_never_the_archived_one() {
 
         let log = crate::testing::test_log::capture();
         let mut restarted = HostHarness::from_profile_dir(&fx.profile_dir);
-        let caller = restarted.add_focused_terminal();
+        let caller = fx.add_project_caller(&mut restarted);
         // A closed chat records its pane's real directory, which the OS
         // reports resolved (`/private/var` for a `/var` temp dir).
         let cwd = fx.proj_dir.canonicalize().unwrap();
@@ -491,7 +491,7 @@ fn agent_open_after_restart_returns_the_new_chat_never_the_archived_one() {
 fn new_chat_from_the_pane_it_replaces_names_no_retired_parent() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let launcher = h.add_focused_terminal();
+    let launcher = fx.add_project_caller(&mut h);
     let _other = h.add_focused_terminal();
     let sessions = fx.home.path().join("pi-sessions");
     let _pi = seed_pi_session(&sessions, "sess-self");
@@ -531,7 +531,7 @@ fn new_chat_from_the_pane_it_replaces_names_no_retired_parent() {
 fn new_chat_that_cannot_launch_refuses_before_closing_the_chat() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let launcher = h.add_focused_terminal();
+    let launcher = fx.add_project_caller(&mut h);
     let sessions = fx.home.path().join("pi-sessions");
     let _pi = seed_pi_session(&sessions, "sess-keep");
     let current = start_agent(&mut h, &fx, "researcher", launcher);
@@ -545,6 +545,11 @@ fn new_chat_that_cannot_launch_refuses_before_closing_the_chat() {
         origin,
         crate::broker::caller::RequestOrigin::Socket(crate::broker::caller::SocketCaller::Pane(_))
     ));
+    let outside = h
+        .app
+        .new_named_agent_chat("researcher", fx.home.path(), None, &origin)
+        .expect_err("out-of-scope replacement must be refused before archive");
+    assert!(outside.contains("outside the caller workspace"), "{outside}");
     let refused = h.app.new_named_agent_chat("researcher", &fx.proj_dir, None, &origin);
     assert!(refused.is_err(), "{refused:?}");
     assert!(pane_exists(&h, current), "the current chat was closed for a launch that could not happen");
@@ -560,7 +565,7 @@ fn new_chat_that_cannot_launch_refuses_before_closing_the_chat() {
 fn admission_rejects_agent_id_aliases_before_lookup() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     let origin = crate::broker::caller::RequestOrigin::HostUi;
     for alias in ["researcher/", "./researcher", " researcher"] {
         let err = h
@@ -667,11 +672,63 @@ fn shadow_researcher(fx: &AgentFocusFixture, workspace: &std::path::Path, prompt
 
 #[cfg(unix)]
 #[test]
+fn completion_round_scoped_spawn_requires_cwd_inside_caller_workspace() {
+    use crate::pane_ops::create::AgentOrigin;
+
+    let mut h = HostHarness::new();
+    let caller = h.add_focused_terminal();
+    let root = h.workspace_root();
+    let child = root.join("child");
+    std::fs::create_dir(&child).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let alias = root.join("alias");
+    std::os::unix::fs::symlink(outside.path(), &alias).unwrap();
+    let placement = |pane, cwd| {
+        h.app
+            .resolve_agent_spawn_location(None, pane, Some(cwd), false, AgentOrigin::Active)
+    };
+
+    assert!(placement(Some(caller), child).is_ok());
+    assert!(placement(None, outside.path().to_path_buf()).is_ok());
+    for cwd in [outside.path().to_path_buf(), alias] {
+        let Err(error) = placement(Some(caller), cwd.clone()) else {
+            panic!(
+                "scoped launch accepted cwd {} outside the caller workspace",
+                cwd.display()
+            );
+        };
+        assert!(error.contains("outside the caller workspace"), "{error}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn completion_round_definition_lookup_uses_canonical_workspace() {
+    let fx = AgentFocusFixture::new();
+    let agent_dir = crate::agent::workspace_agents_dir(&fx.proj_dir).join("researcher");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    // A missing persona reports the actual path used for definition lookup.
+    let alias = fx.home.path().join("project-alias");
+    std::os::unix::fs::symlink(&fx.proj_dir, &alias).unwrap();
+    let error = crate::pane_ops::create::ConfiguredAgentLaunch::resolve_in(
+        "researcher",
+        &alias,
+        None,
+        None,
+        &fx.profile_dir,
+        &fx.stops(),
+    )
+    .unwrap_err();
+    let expected = agent_dir.canonicalize().unwrap();
+    assert!(error.contains(expected.to_str().unwrap()), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
 fn admission_builds_claude_argv_and_identity_from_the_same_definition() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let _shell = capture_claude_argv(fx.home.path());
-    let caller = h.add_focused_terminal();
     write_agent(&fx, "researcher", "claude");
     let payload = crate::cli::agent::agent_start_payload(
         "researcher",
@@ -691,6 +748,14 @@ fn admission_builds_claude_argv_and_identity_from_the_same_definition() {
         (&fx.proj_dir, "Workspace persona at admission"),
         (&second, "Second workspace persona"),
     ] {
+        if cwd == &second {
+            h.app.create_context_without_pty("second", None);
+            let win_idx = h.app.active_window;
+            let (tile, _) = h.app.add_view_pane_in_window(win_idx, "second");
+            h.app.windows[win_idx].navigate_to(tile);
+        }
+        h.app.set_context_root(cwd.clone(), None);
+        let caller = h.add_focused_terminal();
         let mut request = payload.clone();
         request["cwd"] = serde_json::json!(cwd);
         let pane_id = cli_launch(&mut h, &fx, caller, request);
@@ -733,7 +798,7 @@ fn admission_raw_claude_command_cannot_attest_named_memory() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let _shell = capture_claude_argv(fx.home.path());
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     write_agent(&fx, "researcher", "claude");
     let pane_id = cli_launch(
         &mut h,
@@ -767,7 +832,7 @@ fn admission_legacy_claude_paths_are_ignored_on_reopen_and_restart() {
     std::fs::create_dir_all(sessions.join("-proj")).unwrap();
     std::fs::write(sessions.join("-proj/legacy-claude.jsonl"), "{}\n").unwrap();
     let _sessions = crate::cli::agent::set_test_claude_projects_dir(sessions);
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     write_agent(&fx, "researcher", "claude");
     let payload = crate::cli::agent::agent_spawn_payload(
         "researcher",
@@ -846,7 +911,7 @@ fn admission_global_identity_survives_shadow_reopen_eager_restore_and_standby_wa
     let config = fx.profile_dir.join("config.toml");
     std::fs::write(&config, "[agents]\nrestore_mode = 'eager'\n").unwrap();
     let mut h = HostHarness::from_profile_dir(&fx.profile_dir);
-    let caller = h.add_focused_terminal();
+    let caller = fx.add_project_caller(&mut h);
     write_agent(&fx, "researcher", "claude");
     let eager = cli_launch(
         &mut h,

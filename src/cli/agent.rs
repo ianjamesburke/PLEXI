@@ -2963,18 +2963,21 @@ fn named_agent_cli(
     cwd: Option<&str>,
     mode: OutputMode,
 ) -> i32 {
-    let Some(name) = non_empty_string(agent_name) else {
-        eprintln!("error: agent name cannot be empty");
+    if let Err(error) = crate::agent::validate_agent_id(agent_name) {
+        eprintln!("error: {error}");
         return 1;
-    };
+    }
     let effective_cwd = match resolve_effective_cwd(cwd) {
         Ok(d) => d,
         Err(code) => return code,
     };
-    log::info!("{kind}:cli: name={name} cwd={}", effective_cwd.display());
+    log::info!(
+        "{kind}:cli: name={agent_name} cwd={}",
+        effective_cwd.display()
+    );
     let payload = serde_json::json!({
         "type": kind,
-        "name": name,
+        "name": agent_name,
         "cwd": effective_cwd.to_string_lossy(),
     });
     let content = match super::request(
@@ -4071,6 +4074,49 @@ fn backup_existing_file(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod agent_tests {
     use std::fs;
+
+    #[test]
+    fn completion_round_named_chat_cli_rejects_original_role() {
+        const CHILD: &str = "PLEXI_1786_NAMED_CHAT_CLI_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let tmp = tempfile::tempdir().unwrap();
+            let _profile = crate::config::set_test_profile_dir(tmp.path().to_path_buf());
+            for command in [super::agent_open_cli, super::agent_new_chat_cli] {
+                for name in [" writer", "writer ", "writer/"] {
+                    assert_eq!(command(name, None, super::OutputMode::Text), 1);
+                }
+            }
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cli::agent::agent_tests::completion_round_named_chat_cli_rejects_original_role",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("PLEXI_SOCKET", tmp.path().join("missing.sock"))
+            .current_dir(tmp.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = crate::app::registry::wait_for_home_lookup_test(child);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        for name in [" writer", "writer ", "writer/"] {
+            assert_eq!(
+                stderr
+                    .matches(&format!("invalid agent name '{name}'"))
+                    .count(),
+                2,
+                "{stderr}"
+            );
+        }
+    }
 
     #[test]
     fn workspace_not_found_error_uses_the_active_channel_directory() {
