@@ -1,9 +1,9 @@
 Stint: 1401
 Status: active
 
-# Core walkthrough: seven steps on an installed alpha
+# Core walkthrough on an installed alpha
 
-Release 0.6 Palette. The steps are 1 to 6 and 12 of `.stint/runs/workbench-plan/PLAN.md` section 1 (ledger row 176). Keys come from `KeyBindings::default` in `src/host/keys.rs`, the Explorer's `EXPLORER_KEYS` in `src/file_browser/mod.rs` and the palette's `picker_key` in `src/ui/picker.rs`.
+Step numbers follow `.stint/runs/workbench-plan/PLAN.md` section 1 (ledger row 176). Keys come from `KeyBindings::default` in `src/host/keys.rs`, the Explorer's `EXPLORER_KEYS` in `src/file_browser/mod.rs` and the palette's `picker_key` in `src/ui/picker.rs`.
 
 ## Before you start
 
@@ -15,7 +15,7 @@ Release 0.6 Palette. The steps are 1 to 6 and 12 of `.stint/runs/workbench-plan/
 
 Record each step as pass, fail or blocked, with what you saw. A step passes only if every expected result happens.
 
-## Steps
+## 0.6 Palette release gate
 
 | # | Do | Expect |
 |---|---|---|
@@ -24,7 +24,6 @@ Record each step as pass, fail or blocked, with what you saw. A step passes only
 | 3 | Focus the terminal. Cmd+E. Type `rea`. Press Cmd+Shift+. . | Explorer covers the terminal as an overlay, not a split. The field reads `rea` and the list shows only matching names, in order. Cmd+Shift+. toggles hidden files. Record whether the choice survives opening another folder; this build does not remember it. |
 | 4 | With `rea` still filtering, select `README.md` and press Enter. | The file opens in the editor. Record where it lands (beside, below or over the Explorer) and whether the text shows. |
 | 5 | Close the Explorer. Cmd+P. Tab (chip reads Files). Type `readme`. | The list shows files under the workspace folder with a preview on the right, and no Explorer is open. Enter opens the file in the editor beside the focused pane. Tab again is Agents, a third Tab is Commands, Shift+Tab goes back. The query stays across stops. |
-| 6 | Cmd+E. Cmd+N. Return to the original page and type `/new file t.md` in the Explorer. Press Enter. | Cmd+N opens a new terminal page to the right. The Explorer command creates `t.md` in the current folder and opens it in the editor. |
 | 12 | Type some text in the open editor and leave it unsaved. Cmd+Q. | A dialog asks about the unsaved text. Choose Save, then confirm Plexi quits. |
 | | Open Plexi again. | The layout returns: terminal, agent pane and editor where they were. |
 | | Cmd+P, Tab, Tab, `walker`, Enter. | The same chat resumes, with its earlier messages. |
@@ -38,4 +37,14 @@ Record each step as pass, fail or blocked, with what you saw. A step passes only
 
 ## Pass
 
-All seven steps pass for a tester on a clean profile and again for Ian. Failures go to the stint of the step's area, not into this file.
+Each step in the 0.6 gate must pass for a tester on a clean profile and again for Ian. Record new failures in the stint for the affected area.
+
+## 0.7 Workbench
+
+### Step 6. Create a file in Explorer
+
+On installed alpha.33, Cmd+N in Explorer opened a new pane during Ian’s file-creation check. This is a known failure for 0.6. Run this step after stint 1393 lands.
+
+Open a nested folder in Explorer. Press Cmd+P, choose **New File**, type `t.md`, and press Enter. Check that `t.md` exists in that folder and opens beside Explorer.
+
+Open **New File** again, type `cancel.md`, and press Esc. Check that the folder has no `cancel.md`. Try `t.md` again and check that Plexi reports the name already exists.
