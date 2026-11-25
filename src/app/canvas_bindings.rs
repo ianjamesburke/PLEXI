@@ -8,9 +8,7 @@
 
 use super::PlexiApp;
 use crate::host::pane::Pane;
-#[cfg(test)]
-use crate::protocol::ArtifactOpenMode;
-use crate::protocol::{PathTokenMode, PlexiEvent};
+use crate::protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::Tile;
@@ -279,7 +277,6 @@ impl PlexiApp {
     /// On non-macOS platforms `open` is unavailable; the host logs a
     /// warning and the request becomes a no-op rather than failing the
     /// frame.
-    #[cfg(test)]
     pub(crate) fn dispatch_open_artifact(
         &mut self,
         sender_pane_id: PaneId,
@@ -320,14 +317,16 @@ impl PlexiApp {
                         "OpenArtifact: pane {sender_pane_id} rejected — path {path:?} outside \
                          workspace {root:?}"
                     );
+                    self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, false);
                     return;
                 }
                 let checked = canonicalize_existing_prefix(&absolute);
                 if !within_canonical_root(root, &checked) {
                     log::warn!(
-                        "OpenArtifact: pane {sender_pane_id} rejected — real path of {path:?} \
-                         escapes workspace {root:?} (symlink)"
+                        "OpenArtifact: pane {sender_pane_id} rejected — {path:?} resolves to \
+                         {checked:?} outside workspace {root:?}"
                     );
+                    self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, false);
                     return;
                 }
                 checked
@@ -341,9 +340,8 @@ impl PlexiApp {
                 // shared `file.open` classification (`super::file_open`).
                 if target.is_dir() {
                     self.open_file_browser_at(target);
-                } else if let Some(request) = self.open_request(sender_pane_id, &target) {
-                    let prepared = super::file_open::prepare_open(request);
-                    self.finish_open(sender_pane_id, prepared);
+                } else {
+                    self.open_file_in_view(sender_pane_id, &target);
                 }
             }
             ArtifactOpenMode::RevealInFinder => {
@@ -353,6 +351,31 @@ impl PlexiApp {
                 let _logged = shell_open(&target, false);
             }
         }
+        self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, true);
+    }
+
+    fn report_artifact_guard_to_explorer(
+        &mut self,
+        sender_pane_id: PaneId,
+        path: &str,
+        mode: ArtifactOpenMode,
+        allowed: bool,
+    ) {
+        let Some((window, _)) = self.find_pane_in_any_window(sender_pane_id) else {
+            return;
+        };
+        let Some(pane) = self.windows[window]
+            .panes
+            .get_mut(&sender_pane_id)
+            .and_then(Pane::as_view_mut)
+        else {
+            return;
+        };
+        let crate::host::pane::ViewRuntime::Builtin(view) = &mut pane.runtime else {
+            return;
+        };
+        view.artifact_guard_finished(path, mode, allowed);
+        self.ctx.request_repaint();
     }
 
     /// Queue an outbound `PlexiEvent` to the view pane identified by
@@ -387,6 +410,22 @@ impl PlexiApp {
             Some("split_v"),
             Some(0.5),
         );
+    }
+
+    /// Explorer file activation: open `path` with the handler
+    /// `super::file_open::classify_open_target` picks in the sender's context
+    /// (`[file_handlers]`, manifest `file_types`, media players, text editor).
+    /// A manifest handler that fails to launch hands the file to the rest of
+    /// the cascade; any other unavailable handler, or a regular file no Plexi
+    /// handler claims, goes to the OS default opener. A special file (FIFO,
+    /// device, socket) is refused. `sender_pane_id` is the pane that requested
+    /// the open (the explorer, or the terminal behind it); the text-editor
+    /// lands as a split to its right.
+    pub(crate) fn open_file_in_view(&mut self, sender_pane_id: PaneId, target: &std::path::Path) {
+        if let Some(request) = self.open_request(sender_pane_id, target) {
+            let prepared = super::file_open::prepare_open(request);
+            self.finish_open(sender_pane_id, prepared);
+        }
     }
 
     /// The host-state half of opening `target` for `sender_pane_id`: its
@@ -735,7 +774,6 @@ pub(super) fn shell_open(path: &std::path::Path, reveal: bool) -> Result<(), Str
 /// canonicalized `workspace_root`. Complements the lexical `normalize_path`
 /// check: a symlink inside the workspace pointing outside it passes the lexical
 /// gate but fails here (#2242).
-#[cfg(test)]
 fn within_canonical_root(root: &std::path::Path, checked: &std::path::Path) -> bool {
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     checked.starts_with(&canonical_root)

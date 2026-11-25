@@ -3642,7 +3642,7 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::view_trait::ViewCommand) -> bool {
         | ViewCommand::RequestLinkedTerminal { .. }
         | ViewCommand::RunInLinkedTerminal { .. }
         | ViewCommand::InsertPathToken { .. }
-        | ViewCommand::ExplorerOpen { .. } => true,
+        | ViewCommand::OpenArtifact { .. } => true,
         ViewCommand::AssistantHostTool { name, .. } => !matches!(
             name.as_str(),
             "host.panes.list" | "host.panes.state" | "host.introspect"
@@ -3664,7 +3664,7 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::view_trait::ViewCommand) -> &'stati
         ViewCommand::RequestLinkedTerminal { .. } => "RequestLinkedTerminal",
         ViewCommand::RunInLinkedTerminal { .. } => "RunInLinkedTerminal",
         ViewCommand::InsertPathToken { .. } => "InsertPathToken",
-        ViewCommand::ExplorerOpen { .. } => "ExplorerOpen",
+        ViewCommand::OpenArtifact { .. } => "OpenArtifact",
         ViewCommand::AssistantHostTool { .. } => "AssistantHostTool",
         ViewCommand::DeliverNotifyAction { .. } => "DeliverNotifyAction(pane_focus)",
         _ => "unknown",

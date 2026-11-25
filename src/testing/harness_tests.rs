@@ -11445,7 +11445,6 @@ fn explorer_enter_opens_text_file_in_text_editor_split() {
     let doc = tmp.path().join("readme.md");
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
-    h.app.set_context_root(tmp.path().to_path_buf(), None);
     h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
@@ -11486,7 +11485,6 @@ fn explorer_open_deduplicates_already_open_text_editor_pane() {
     let doc = tmp.path().join("readme.md");
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
-    h.app.set_context_root(tmp.path().to_path_buf(), None);
     h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
@@ -11551,14 +11549,15 @@ fn explorer_open_deduplicates_already_open_text_editor_pane() {
 }
 
 /// Opening a file from the File Explorer must split the editor next to the
-/// explorer that requested it, even when a different pane is focused.
+/// explorer that requested it. The explorer emits `sender_pane_id: 0`; the
+/// drain has to stamp the real pane id. Without that stamp the host logs
+/// "anchor pane 0 not found" and splits whichever pane happens to be focused.
 #[test]
 fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let doc = tmp.path().join("readme.md");
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
-    h.app.set_context_root(tmp.path().to_path_buf(), None);
     h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),

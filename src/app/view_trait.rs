@@ -247,11 +247,14 @@ pub enum ViewCommand {
         terminal_pane_id: u64,
         command: String,
     },
-    /// Open a selection from the native Explorer through `file.open`.
-    ExplorerOpen {
-        path: std::path::PathBuf,
+    /// Canvas Terminal Binding Primitives (#78). Open a workspace
+    /// artifact via the host's pane router (OpenInPane → file browser
+    /// for dirs, Launch Services for files), or shell out to `open`
+    /// with `-R` (RevealInFinder) / no flag (OpenWithDefault) on macOS.
+    OpenArtifact {
+        sender_pane_id: u64,
+        path: String,
         mode: crate::protocol::ArtifactOpenMode,
-        emitter: Option<ViewEmitter>,
     },
     /// Query rolled-up ContextState for a context (#1518).
     /// Forwarded to the host because only it has the full context tree.
@@ -285,7 +288,7 @@ impl ViewCommand {
             Self::RunInLinkedTerminal { .. } => "RunInLinkedTerminal",
             Self::InsertPathToken { .. } => "InsertPathToken",
             Self::RequestCommandPreview { .. } => "RequestCommandPreview",
-            Self::ExplorerOpen { .. } => "ExplorerOpen",
+            Self::OpenArtifact { .. } => "OpenArtifact",
             Self::QueryContextState { .. } => "QueryContextState",
         }
     }
@@ -340,8 +343,14 @@ pub trait View: Send {
         vec![]
     }
 
-    /// The outcome of opening a selection through the host's `file.open`.
-    fn file_open_finished(&mut self, _path: &std::path::Path, _result: Result<(), String>) {}
+    /// Report the containment decision for a pending `OpenArtifact` command.
+    fn artifact_guard_finished(
+        &mut self,
+        _path: &str,
+        _mode: crate::protocol::ArtifactOpenMode,
+        _allowed: bool,
+    ) {
+    }
 
     /// Bind host-owned runtime identity before any external work is serviced.
     fn bind_host_identity(&mut self, _pane_id: u64, _context_id: u64) {}

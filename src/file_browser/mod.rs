@@ -467,7 +467,7 @@ pub struct FileBrowserView {
     columns: ColumnModel,
     font_size: f32,
     error: Option<String>,
-    open_error: Option<String>,
+    open_outside_folder: bool,
     // Image preview
     preview_texture: Option<egui::TextureHandle>,
     preview_texture_path: Option<PathBuf>,
@@ -498,6 +498,7 @@ pub struct FileBrowserView {
     directory_selection_memory: std::collections::HashMap<PathBuf, String>,
     // Fuzzy + deep search (stint 0814)
     in_search: bool,
+    pending_search_open: Option<String>,
     search_query: String,
     search_indices: Vec<usize>, // indices into `entries` that match the query
     search_session: crate::search::SearchSession,
@@ -727,7 +728,7 @@ impl FileBrowserView {
             columns: ColumnModel::default(),
             font_size: FONT_SIZE_DEFAULT,
             error: None,
-            open_error: None,
+            open_outside_folder: false,
             preview_texture: None,
             preview_texture_path: None,
             preview_size: None,
@@ -750,6 +751,7 @@ impl FileBrowserView {
             pending_scroll: false,
             directory_selection_memory: std::collections::HashMap::new(),
             in_search: false,
+            pending_search_open: None,
             search_query: String::new(),
             search_indices: Vec::new(),
             search_session: crate::search::SearchSession::new(),
@@ -933,6 +935,10 @@ impl FileBrowserView {
 
     /// Select a search hit by row as the user's explicit choice.
     fn pin_search_selection(&mut self, index: usize) {
+        if self.selected != index {
+            self.open_outside_folder = false;
+            self.pending_search_open = None;
+        }
         self.selected = index;
         self.search_pinned_path = self
             .search_session
@@ -941,8 +947,10 @@ impl FileBrowserView {
             .map(|hit| hit.path.clone());
     }
 
-    /// Refresh without moving the selection to a different file or scrolling.
-    fn refresh_preserving_selection(&mut self) {
+    /// Refresh after an external change, keeping the selected path selected
+    /// (the index alone would drift when a file lands above it) and the filter
+    /// intact. Does not scroll: the user may be looking elsewhere.
+    fn refresh_after_external_change(&mut self) {
         let selected_path = self.selected_entry_or_hit().map(|entry| entry.path);
         let scroll = self.pending_scroll;
         if self.in_search {
@@ -957,10 +965,6 @@ impl FileBrowserView {
             }
         }
         self.pending_scroll = scroll;
-    }
-
-    fn refresh_after_external_change(&mut self) {
-        self.refresh_preserving_selection();
         log::info!(
             "file_browser: listing refreshed after external change cwd={} entries={}",
             self.cwd.display(),
@@ -969,7 +973,8 @@ impl FileBrowserView {
     }
 
     fn navigate_into(&mut self, path: PathBuf) {
-        self.open_error = None;
+        self.open_outside_folder = false;
+        self.pending_search_open = None;
         if let Some(entry) = self.selected_entry() {
             self.directory_selection_memory
                 .insert(self.cwd.clone(), entry.name.clone());
@@ -982,21 +987,34 @@ impl FileBrowserView {
     }
 
     /// Open a file the user activated (Enter, double-click, search-Enter).
+    /// Hands the path to the host's single open resolver via `OpenArtifact`
+    /// (`OpenInPane`): the host consults `[file_handlers]`, manifest
+    /// `file_types`, builtin media players, and finally the OS default opener
+    /// (#2283). The File Explorer no longer routes by extension itself — that
+    /// logic lives in one place so terminal-driven and Explorer-driven opens
+    /// resolve identically.
     fn open_file(&mut self, path: &Path) {
         #[cfg(test)]
         self.opened_files.push(path.to_path_buf());
-        self.request_file_open(path, ArtifactOpenMode::OpenInPane);
+        if !cfg!(test) {
+            log::info!(
+                "file_browser: requesting host open-in-pane for '{}'",
+                path.display()
+            );
+        }
+        self.pending_cmds.push(ViewCommand::OpenArtifact {
+            sender_pane_id: 0, // dispatch.rs stamps the real pane_id
+            path: path.to_string_lossy().to_string(),
+            mode: ArtifactOpenMode::OpenInPane,
+        });
     }
 
-    fn request_file_open(&mut self, path: &Path, mode: ArtifactOpenMode) {
+    fn activate_file(&mut self, path: &Path) {
         if self.in_search {
             self.pin_search_selection(self.selected);
+            self.pending_search_open = Some(path.to_string_lossy().into_owned());
         }
-        self.pending_cmds.push(ViewCommand::ExplorerOpen {
-            path: path.to_path_buf(),
-            mode,
-            emitter: None,
-        });
+        self.open_file(path);
     }
 
     /// Explicit cwd handoff (#2145): the ONLY path that writes a `cd` into
@@ -1020,7 +1038,7 @@ impl FileBrowserView {
             return;
         }
         if let Some(parent) = self.cwd.parent().map(|p| p.to_path_buf()) {
-            self.open_error = None;
+            self.open_outside_folder = false;
             let leaving_name = self
                 .cwd
                 .file_name()
@@ -1154,6 +1172,9 @@ impl FileBrowserView {
         if self.in_search {
             self.pin_search_selection(visible_idx);
         } else {
+            if self.selected != visible_idx {
+                self.open_outside_folder = false;
+            }
             self.selected = visible_idx;
         }
         self.clear_multi_selection();
@@ -1215,7 +1236,8 @@ impl FileBrowserView {
     }
 
     fn refilter(&mut self) {
-        self.open_error = None;
+        self.open_outside_folder = false;
+        self.pending_search_open = None;
         let shallow = self.shallow_walk_entries();
         let hidden = crate::search::HiddenPolicy::from_show_hidden(self.columns.show_hidden);
         self.search_session
@@ -1236,7 +1258,8 @@ impl FileBrowserView {
 
     fn exit_search(&mut self) {
         if self.in_search {
-            self.open_error = None;
+            self.open_outside_folder = false;
+            self.pending_search_open = None;
             self.in_search = false;
             self.search_focus_pending = false;
             self.search_query.clear();
@@ -1403,11 +1426,21 @@ impl FileBrowserView {
                 Ok(())
             }
             FileExplorerIntent::OpenWithDefault { path } => {
-                self.request_file_open(&path, ArtifactOpenMode::OpenWithDefault);
+                log::info!("file_browser: open with default '{}'", path.display());
+                self.pending_cmds.push(ViewCommand::OpenArtifact {
+                    sender_pane_id: 0,
+                    path: path.to_string_lossy().to_string(),
+                    mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
+                });
                 Ok(())
             }
             FileExplorerIntent::Reveal { path } => {
-                self.request_file_open(&path, ArtifactOpenMode::RevealInFinder);
+                log::info!("file_browser: reveal '{}'", path.display());
+                self.pending_cmds.push(ViewCommand::OpenArtifact {
+                    sender_pane_id: 0,
+                    path: path.to_string_lossy().to_string(),
+                    mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
+                });
                 Ok(())
             }
             FileExplorerIntent::CdTerminal { path } => {
@@ -1465,7 +1498,8 @@ impl FileBrowserView {
         if new_cwd == self.cwd {
             return;
         }
-        self.open_error = None;
+        self.open_outside_folder = false;
+        self.pending_search_open = None;
         if let Some(entry) = self.selected_entry() {
             self.directory_selection_memory
                 .insert(self.cwd.clone(), entry.name.clone());
@@ -1673,12 +1707,10 @@ impl FileBrowserView {
                 })?;
         }
         log::info!("file_browser: created file '{}'", path.display());
+        self.refresh_preserving_filter();
+        self.select_path(&path);
         if open_in_editor {
-            self.refresh_preserving_selection();
             self.open_file(&path);
-        } else {
-            self.refresh_preserving_filter();
-            self.select_path(&path);
         }
         Ok(path)
     }
@@ -3799,7 +3831,8 @@ impl FileBrowserView {
         self.columns.show_hidden
     }
 
-    /// Queue the same `file.open` request as a user activation.
+    /// Queue the same `OpenArtifact` a user activation (Enter / double-click)
+    /// queues. The host stamps `sender_pane_id` when it drains the command.
     #[cfg(test)]
     pub(crate) fn request_open_for_test(&mut self, path: &Path) {
         self.open_file(path);
@@ -3903,10 +3936,11 @@ impl View for FileBrowserView {
                 }
 
                 ui.add_space(style::SPACE_XS);
-                if let Some(reason) = &self.open_error {
+                if self.open_outside_folder {
                     ui.colored_label(
                         colors.warning,
-                        egui::RichText::new(reason).size(self.font_size),
+                        egui::RichText::new("The selected file is outside this folder")
+                            .size(self.font_size),
                     );
                 }
 
@@ -4014,7 +4048,7 @@ impl View for FileBrowserView {
                         self.exit_search();
                         self.navigate_into(path);
                     } else {
-                        self.open_file(&path);
+                        self.activate_file(&path);
                     }
                 }
             });
@@ -4171,7 +4205,7 @@ impl View for FileBrowserView {
                         self.exit_search();
                         self.navigate_into(hit.path);
                     } else {
-                        self.open_file(&hit.path);
+                        self.activate_file(&hit.path);
                     }
                 }
                 KeyDisposition::Consumed
@@ -4334,11 +4368,13 @@ impl View for FileBrowserView {
         std::mem::take(&mut self.pending_cmds)
     }
 
-    fn file_open_finished(&mut self, path: &Path, result: Result<(), String>) {
-        self.open_error = result.err();
-        if self.open_error.is_none() {
-            self.exit_search();
-            self.select_path(path);
+    fn artifact_guard_finished(&mut self, path: &str, mode: ArtifactOpenMode, allowed: bool) {
+        self.open_outside_folder = !allowed;
+        if mode == ArtifactOpenMode::OpenInPane && self.pending_search_open.as_deref() == Some(path) {
+            self.pending_search_open = None;
+            if allowed {
+                self.exit_search();
+            }
         }
     }
 
@@ -5772,8 +5808,10 @@ mod tests {
 
     /// Regression for stint 0351: `plexi pane key <id> enter` must drive the
     /// same `handle_key` → `open_file` path a physical Enter press takes. In
-    /// production, `open_file` hands the path to the host's `file.open`
-    /// operation. This checks that the CLI key reaches it for a media file.
+    /// prod, `open_file` hands the path to the host's `OpenArtifact` resolver
+    /// (`open_file_in_view`, #2283) — that resolver has its own coverage; this
+    /// test proves the CLI key-string vocabulary reaches it for a selected
+    /// media file.
     #[test]
     fn cli_key_string_enter_opens_selected_media_file() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -5836,7 +5874,7 @@ mod tests {
     }
 
     #[test]
-    fn search_enter_on_file_opens_and_exits_search() {
+    fn search_enter_on_file_queues_open_and_keeps_search_pending() {
         let (mut app, _dir) = make_file_only_dir_plugin();
         // enter search mode via Cmd+F
         run_handle_key(
@@ -5858,13 +5896,7 @@ mod tests {
             1,
             "Enter in search mode on a file must call open_file"
         );
-        assert!(
-            app.in_search,
-            "search stays until the host reports the outcome"
-        );
-        let path = app.opened_files[0].clone();
-        app.file_open_finished(&path, Ok(()));
-        assert!(!app.in_search, "a successful open exits search");
+        assert!(app.in_search, "search must stay active during the guard check");
     }
 
     // ── Search mode: letter keys must append to query, not fire vim actions ──
@@ -6407,7 +6439,7 @@ mod tests {
 
         let (mut app, dir) = make_file_only_dir_plugin();
         app.take_pending_commands();
-        let target = dir.path().join("readme.txt");
+        let target = dir.path().join("readme.txt").display().to_string();
         for (query, expected_mode) in [
             ("reveal", ArtifactOpenMode::RevealInFinder),
             ("open-default", ArtifactOpenMode::OpenWithDefault),
@@ -6424,7 +6456,7 @@ mod tests {
             let cmds = app.take_pending_commands();
             assert!(matches!(
                 cmds.as_slice(),
-                [ViewCommand::ExplorerOpen { path, mode, .. }]
+                [ViewCommand::OpenArtifact { path, mode, .. }]
                     if path == &target && *mode == expected_mode
             ));
         }
@@ -7337,12 +7369,7 @@ mod tests {
         let entered_file =
             run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(entered_file);
-        assert!(app.in_search);
-        app.file_open_finished(&content_file, Ok(()));
-        assert!(
-            !app.in_search,
-            "a successful open from a content result exits search"
-        );
+        assert!(app.in_search, "search stays active until the guard check");
         assert_eq!(app.opened_files.last(), Some(&content_file));
     }
 
@@ -7528,10 +7555,9 @@ mod tests {
     }
 
     #[test]
-    fn execute_create_file_intent_selects_after_successful_open() {
+    fn execute_create_file_intent_creates_selects_and_queues_open_artifact() {
         let (mut app, dir) = make_three_file_plugin();
         app.take_pending_commands();
-        let previous_path = app.selected_entry().unwrap().path.clone();
 
         app.execute_intent(FileExplorerIntent::CreateFile {
             name: "hello.rs".to_string(),
@@ -7543,8 +7569,8 @@ mod tests {
         assert!(expected_path.is_file(), "hello.rs must be created in cwd");
         assert_eq!(
             app.selected_entry().map(|e| &e.path),
-            Some(&previous_path),
-            "the previous selection stays while the open is pending"
+            Some(&expected_path),
+            "created file must be selected in FileBrowserView"
         );
         assert_eq!(app.opened_files.last(), Some(&expected_path));
 
@@ -7552,18 +7578,16 @@ mod tests {
         assert_eq!(
             cmds.len(),
             1,
-            "CreateFile with open_in_editor must queue a file open"
+            "CreateFile with open_in_editor must queue OpenArtifact"
         );
         assert!(matches!(
             &cmds[0],
-            ViewCommand::ExplorerOpen {
+            ViewCommand::OpenArtifact {
                 path,
                 mode: crate::protocol::ArtifactOpenMode::OpenInPane,
                 ..
-            } if path == &expected_path
+            } if path == &expected_path.display().to_string()
         ));
-        app.file_open_finished(&expected_path, Ok(()));
-        assert_eq!(app.selected_entry().map(|e| &e.path), Some(&expected_path));
     }
 
     #[test]
@@ -7723,7 +7747,6 @@ mod tests {
         std::fs::write(dir.path().join(".secret"), b"hidden\n").expect("write .secret");
 
         let mut h = crate::testing::HostHarness::new();
-        h.app.set_context_root(dir.path().to_path_buf(), None);
         h.app.open_builtin_view_pane(
             Box::new(FileBrowserView::new(dir.path().to_path_buf())),
             crate::app::permissions::PluginPermissions::builtin(),
@@ -7923,125 +7946,114 @@ mod tests {
     }
 
     #[test]
-    fn explorer_parent_search_enter_opens_selected_sibling_or_preserves_denied_hit() {
+    fn search_enter_refusal_keeps_query_row_and_folder_and_hides_paths() {
         let mut h = crate::testing::HostHarness::new();
-        let parent = h.workspace_root().canonicalize().unwrap();
-        let project = parent.join("project");
-        let start = project.join("sub");
-        let inside = project.join("target.md");
-        let outside = parent.join("target.md");
-        std::fs::create_dir_all(&start).unwrap();
-        std::fs::write(&inside, "inside the project").unwrap();
-        std::fs::write(&outside, "outside the project").unwrap();
-        h.app.set_context_root(project.clone(), None);
+        let context_root = h.workspace_root().canonicalize().unwrap();
+        let launch_dir = context_root.join("launch-dir");
+        fs::create_dir(&launch_dir).unwrap();
+        for name in ["match-a.md", "match-b.md"] {
+            fs::write(context_root.join(name), "outside the launch folder").unwrap();
+        }
+        h.app.set_context_root(context_root.clone(), None);
         h.app.open_builtin_view_pane(
-            Box::new(FileBrowserView::new(start.clone())),
+            Box::new(FileBrowserView::new(launch_dir.clone())),
             crate::app::permissions::PluginPermissions::builtin(),
-            start,
+            launch_dir.clone(),
             None,
             None,
             None,
         );
         h.run_frames(2);
-        let (explorer, _) = explorer_in_harness(&mut h);
+        h.press_key(Key::ArrowLeft, Modifiers::NONE);
+        type_frame(&mut h, "match-");
+        let (pane, browser) = explorer_in_harness(&mut h);
+        assert_eq!(browser.cwd, context_root);
+        assert_eq!(browser.search_query, "match-");
+        assert_eq!(browser.search_session.hits().len(), 2);
+        h.press_key(Key::ArrowDown, Modifiers::NONE);
+        let (_, browser) = explorer_in_harness(&mut h);
+        let row = browser.selected;
+        assert_eq!(row, 1);
+        let selected = browser.selected_search_hit().unwrap().path.clone();
+        let before = h.pane_count();
 
-        let tap = |h: &mut crate::testing::HostHarness, key| {
-            h.press_key(key, Modifiers::NONE);
-            h.frame(RawInput {
-                events: vec![Event::Key {
-                    key,
-                    physical_key: None,
-                    pressed: false,
-                    repeat: false,
-                    modifiers: Modifiers::NONE,
-                }],
-                ..Default::default()
-            });
-        };
-        let search_for = |h: &mut crate::testing::HostHarness, folder: &Path, path: &Path| {
-            tap(h, Key::ArrowLeft);
-            assert_eq!(explorer_in_harness(h).1.cwd, folder);
-            type_frame(h, "target.md");
-            let began = std::time::Instant::now();
-            let target_row = loop {
-                h.run_frames(1);
-                let (_, browser) = explorer_in_harness(h);
-                if !browser.search_session.is_scanning() {
-                    if let Some(row) = browser
-                        .search_session
-                        .hits()
-                        .iter()
-                        .position(|hit| hit.path == path)
-                    {
-                        break row;
-                    }
+        h.inject_ipc(crate::protocol::HostRequest::KeyPane {
+            pane_id: pane,
+            key: "enter".into(),
+            response_file: None,
+        });
+        h.run_frames(3);
+
+        assert_eq!(h.pane_count(), before);
+        let (_, browser) = explorer_in_harness(&mut h);
+        assert!(browser.in_search, "refusal must leave search active");
+        assert_eq!(browser.search_query, "match-");
+        assert_eq!(browser.cwd, context_root);
+        assert_eq!(browser.selected, row);
+        assert_eq!(browser.selected_search_hit().unwrap().path, selected);
+        assert_painted_open_refusal(&h, [&selected, &launch_dir]);
+    }
+
+    #[test]
+    fn explorer_symlink_refusal_hides_resolved_path_and_launch_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().canonicalize().unwrap();
+        let folder = parent.join("launch-dir");
+        let resolved = parent.join("private-destination.md");
+        fs::create_dir(&folder).unwrap();
+        fs::write(&resolved, "outside the launch folder").unwrap();
+        std::os::unix::fs::symlink(&resolved, folder.join("link.md")).unwrap();
+        let mut h = explorer_harness(&folder);
+        let before = h.pane_count();
+
+        h.press_key(Key::Enter, Modifiers::NONE).run_frames(2);
+
+        assert_eq!(h.pane_count(), before);
+        assert_painted_open_refusal(&h, [&resolved, &folder]);
+    }
+
+    fn assert_painted_open_refusal(h: &crate::testing::HostHarness, paths: [&Path; 2]) {
+        let output = h.last_full_output.as_ref().unwrap();
+        let reason = "The selected file is outside this folder";
+        let mut painted_reason = false;
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                let label = text.galley.text();
+                painted_reason |= label == reason;
+                for path in paths {
+                    assert!(!label.contains(path.to_str().unwrap()), "{label}");
                 }
-                assert!(
-                    began.elapsed() < std::time::Duration::from_secs(5),
-                    "search never found {path:?}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            };
-            let selected = explorer_in_harness(h).1.selected;
-            let key = if selected < target_row {
-                Key::ArrowDown
-            } else {
-                Key::ArrowUp
-            };
-            for _ in 0..selected.abs_diff(target_row) {
-                tap(h, key);
             }
-            let (_, browser) = explorer_in_harness(h);
-            assert_eq!(browser.selected_search_hit().unwrap().path, path);
-            target_row
-        };
+        }
+        assert!(painted_reason, "Explorer should paint the generic refusal");
+    }
 
-        search_for(&mut h, &project, &inside);
-        tap(&mut h, Key::Enter);
-        h.run_frames(2);
+    #[test]
+    fn search_enter_opens_in_folder_and_exits_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().canonicalize().unwrap();
+        let path = folder.join("inside.md");
+        fs::write(&path, "inside the launch folder").unwrap();
+        let mut h = explorer_harness(&folder);
+        type_frame(&mut h, "inside");
+        assert_eq!(
+            explorer_in_harness(&mut h).1.selected_search_hit().unwrap().path,
+            path
+        );
+
+        h.press_key(Key::Enter, Modifiers::NONE).run_frames(2);
+
         let editor = h.app.windows[0]
             .panes
             .iter()
             .find_map(|(id, pane)| {
                 (pane.as_view()?.runtime.type_id() == "text-editor").then_some(*id)
             })
-            .expect("Enter should open the selected file inside the context above the launch directory");
+            .expect("Enter should open the selected file");
         let buffer = h.text_editor_mut(editor).open_buffer();
-        assert_eq!(Path::new(&buffer.path), inside.canonicalize().unwrap());
-        assert_eq!(buffer.text, "inside the project");
+        assert_eq!(Path::new(&buffer.path), path);
+        assert_eq!(buffer.text, "inside the launch folder");
         assert!(!explorer_in_harness(&mut h).1.in_search);
-
-        assert!(h.app.pane_navigate(explorer));
-        h.run_frames(2);
-        if explorer_in_harness(&mut h).1.in_search {
-            tap(&mut h, Key::Escape);
-        }
-        let row = search_for(&mut h, &parent, &outside);
-        let before = h.pane_count();
-        tap(&mut h, Key::Enter);
-        h.run_frames(2);
-        assert_eq!(
-            h.pane_count(),
-            before,
-            "no outside document opened without approval"
-        );
-        let (_, browser) = explorer_in_harness(&mut h);
-        assert!(browser.in_search);
-        assert_eq!(browser.cwd, parent);
-        assert_eq!(browser.search_query, "target.md");
-        assert_eq!(browser.selected, row);
-        assert_eq!(browser.selected_search_hit().unwrap().path, outside);
-        let reason = crate::app::file_open::FileOpenError::OutsideAuthority {
-            path: outside,
-            root: project,
-        }
-        .to_string();
-        assert!(
-            h.last_full_output.as_ref().unwrap().shapes.iter().any(
-                |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == reason)
-            ),
-            "Explorer should paint the refusal reason"
-        );
     }
 
     /// The egui id `draw_search_bar` gives the search TextEdit.
@@ -8206,19 +8218,13 @@ mod tests {
             dir.path().join("alpha.rs")
         );
 
-        // 3. Enter requests the open. Success returns to browsing mode.
+        // 3. Enter queues the open and keeps the search until the guard check.
         let consumed_enter =
             run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed_enter);
-        let path = dir.path().join("alpha.rs");
-        assert_eq!(app.opened_files.last(), Some(&path));
+        assert_eq!(app.opened_files.last(), Some(&dir.path().join("alpha.rs")));
         assert!(app.in_search);
-        app.file_open_finished(&path, Ok(()));
-        assert!(
-            !app.in_search,
-            "a successful open exits search"
-        );
-        assert_eq!(app.search_query, "");
+        assert_eq!(app.search_query, "alp");
     }
 
     #[test]

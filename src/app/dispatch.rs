@@ -1213,14 +1213,12 @@ impl PlexiApp {
                         command,
                     );
                 }
-                ViewCommand::ExplorerOpen {
+                ViewCommand::OpenArtifact {
+                    sender_pane_id,
                     path,
                     mode,
-                    emitter,
                 } => {
-                    if let Some(emitter) = emitter {
-                        self.serve_explorer_file_open(emitter, &path, mode);
-                    }
+                    self.dispatch_open_artifact(sender_pane_id, path, mode);
                 }
                 ViewCommand::QueryContextState {
                     sender_pane_id,
@@ -1525,11 +1523,16 @@ impl PlexiApp {
                     | ViewCommand::InsertPathToken { .. }
                     | ViewCommand::RequestCommandPreview { .. }
                     | ViewCommand::QueryContextState { .. } => deferred.push(cmd),
-                    ViewCommand::ExplorerOpen { path, mode, .. } => {
-                        deferred.push(ViewCommand::ExplorerOpen {
+                    // The file browser (and every other builtin) emits
+                    // `sender_pane_id: 0` because it does not know its pane id.
+                    // Stamp the real id here so `open_text_file_in_split` anchors
+                    // the editor on the requesting pane instead of logging
+                    // "anchor pane 0 not found".
+                    ViewCommand::OpenArtifact { path, mode, .. } => {
+                        deferred.push(ViewCommand::OpenArtifact {
+                            sender_pane_id: pane_id,
                             path,
                             mode,
-                            emitter: Some(emitter),
                         });
                     }
                     // Every SDK bridge that constructs these emits a

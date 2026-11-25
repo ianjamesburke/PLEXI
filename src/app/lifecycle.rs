@@ -1450,12 +1450,11 @@ impl PlexiApp {
                 response_file,
             } => {
                 let request = super::file_open::FileOpenRequest {
-                    path: std::path::Path::new(path),
+                    path,
                     cwd: cwd.as_deref().map(std::path::Path::new),
                     from_pane_id: *from_pane_id,
                     placement: *placement,
                     no_focus: *no_focus,
-                    mode: crate::protocol::ArtifactOpenMode::OpenInPane,
                 };
                 self.serve_file_open(&request, &origin, response_file);
             }

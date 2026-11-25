@@ -1,48 +1,6 @@
 use super::*;
 
 #[test]
-fn file_browser_paints_context_refusal_in_search_results() {
-    let mut h = PlexiUiHarness::new_sized(880.0, 520.0);
-    let parent = h.workspace_root().canonicalize().unwrap();
-    let root = parent.join("project");
-    let outside = parent.join("outside.md");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::write(&outside, "outside").unwrap();
-    h.with_app_mut(|app| app.set_context_root(root.clone(), None));
-    h.open_file_browser(parent);
-    h.run_steps(2);
-    let pane = h.with_app(|app| app.active_focused_pane_id().unwrap());
-
-    h.harness()
-        .input_mut()
-        .events
-        .push(egui::Event::Text("outside.md".to_string()));
-    h.run_steps(2);
-    h.harness().input_mut().events.push(egui::Event::Key {
-        key: egui::Key::Enter,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::NONE,
-    });
-    h.run_steps(3);
-
-    let reason = crate::app::file_open::FileOpenError::OutsideAuthority {
-        path: outside,
-        root,
-    }
-    .to_string();
-    assert!(h.pane_has_label(pane, &reason), "missing refusal: {reason}");
-    assert!(
-        h.harness().output().shapes.iter().any(|shape| {
-            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains("outside.md")
-                && text.galley.text() != reason)
-        }),
-        "the search result should still be painted"
-    );
-}
-
-#[test]
 fn screenshot_file_browser_middle_elision_distinguishes_suffixes() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = "Q3 Board Deck — FINAL (revised) v12 [approved by legal]";
@@ -775,7 +733,6 @@ fn file_browser_search_discoverable_and_interactive_in_harness() {
     let root_clone = root.clone();
     h.with_app_mut(|app| {
         app.sidebar_visible = false;
-        app.set_context_root(root_clone.clone(), None);
         app.open_builtin_view_pane(
             Box::new(crate::file_browser::FileBrowserView::new(
                 root_clone.clone(),
