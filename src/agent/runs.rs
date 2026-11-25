@@ -1478,7 +1478,17 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
         }
         "finish_run" => {
             let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if let Err(refused) = require_run_owner(id, caller) {
+            // Finishing only removes authority. A run whose owner left with an
+            // earlier host can be stopped by any admitted caller, as on alpha,
+            // so a restart never strands its agent (stint 1743). Reissuing its
+            // token still needs the host.
+            let ownerless = !run_owners()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(id);
+            if ownerless {
+                log::info!("agents_api: finish of ownerless run={id} admitted: its owner left with an earlier host");
+            } else if let Err(refused) = require_run_owner(id, caller) {
                 return refused;
             }
             finish_run(&workspace, id)
@@ -1550,7 +1560,7 @@ fn list_grants(workspace: &Path, caller: &AgentsCaller) -> Value {
         .filter(|rec| {
             rec.actor.kind() == ActorType::Agent
                 && (matches!(caller, AgentsCaller::Host { .. })
-                    || (!rec.actor.id().starts_with("pane:")
+                    || (!crate::broker::principal::is_legacy_pane_label(rec.actor.id())
                         && match &rec.run_requester_pane {
                             Some(crate::broker::RunRequester::Pane(pane)) => {
                                 caller.pane_owner() == Some(pane)
@@ -3108,7 +3118,7 @@ mod tests {
     /// gone) alpha's rules apply: no owner check. Durable ownership is stint
     /// 1716.
     #[test]
-    fn run_ownership_lives_with_the_host_and_ownerless_runs_require_host() {
+    fn run_ownership_lives_with_the_host_and_ownerless_runs_can_only_be_stopped() {
         let fix = Fixture::new();
         create(&fix, "worker", &["agents.ping=ask"]);
         let grants = crate::config::config_dir().join("grants.toml");
@@ -3151,12 +3161,21 @@ mod tests {
             stranger_retry["ok"], false,
             "orphaned run: {stranger_retry}"
         );
+        // Stopping it removes authority only, so a restart never strands
+        // the agent: any admitted caller may finish it (stint 1743).
         let finished = handle_request(
             "finish_run",
             &json!({"workspace": fix.ws(), "id": second_id}),
+            &stranger,
+        );
+        assert_eq!(finished["ok"], true, "{finished}");
+        assert!(!find_run(fix.ws(), &second_id).unwrap().active);
+        let next = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-after"}),
             &owner,
         );
-        assert_eq!(finished["ok"], false, "{finished}");
+        assert_eq!(next["ok"], true, "the cleared agent spawns again: {next}");
         assert_eq!(snapshot(), before, "no grant-store write");
     }
 

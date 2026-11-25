@@ -268,10 +268,17 @@ pub enum Principal {
     External,
 }
 
+/// An actor id that named a pane by number before pane lifetimes were
+/// principals: `pane:<n>`, or the MCP spelling `mcp:pane:<n>` (stint 1743).
+/// Such a row is host-visible history, never a requester's own.
+pub(crate) fn is_legacy_pane_label(id: &str) -> bool {
+    id.starts_with("pane:") || id.starts_with("mcp:pane:")
+}
+
 impl Principal {
     pub fn agent(agent_id: impl Into<String>) -> Option<Self> {
         let id = agent_id.into();
-        (!id.is_empty() && !id.starts_with("pane:")).then_some(Self::Agent(NamedAgent(id)))
+        (!id.is_empty() && !is_legacy_pane_label(&id)).then_some(Self::Agent(NamedAgent(id)))
     }
 
     pub fn label(&self) -> &str {

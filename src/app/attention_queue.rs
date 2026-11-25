@@ -764,21 +764,26 @@ impl PlexiApp {
                     )
                 },
                 command_text: cmd_text,
-                options: if is_secret || pending.owner.pane().is_some() {
+                options: {
+                    let options = if pending.tool == "pane.send" {
+                        pane_send_ask_options()
+                    } else if is_cli_operation {
+                        cli_operation_ask_options()
+                    } else if is_plugin_admission {
+                        plugin_admission_ask_options()
+                    } else {
+                        default_ask_options()
+                    };
                     // A pane lifetime ends with the pane or a host restart, so
                     // no standing grant is offered to it (stint 1743).
-                    default_ask_options()
-                        .into_iter()
-                        .filter(|o| o.key != "allow_always")
-                        .collect()
-                } else if pending.tool == "pane.send" {
-                    pane_send_ask_options()
-                } else if is_cli_operation {
-                    cli_operation_ask_options()
-                } else if is_plugin_admission {
-                    plugin_admission_ask_options()
-                } else {
-                    default_ask_options()
+                    if is_secret || pending.owner.pane().is_some() {
+                        options
+                            .into_iter()
+                            .filter(|o| o.key != "allow_always")
+                            .collect()
+                    } else {
+                        options
+                    }
                 },
                 created_at_ms: created_ms,
                 locked: false,
@@ -2901,6 +2906,69 @@ impl InputViewportRect for egui::InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stint 1743: a pane lifetime is offered once or deny, never a
+    /// standing allow, whatever it asks for; a named agent keeps Always.
+    #[test]
+    fn a_pane_owner_is_offered_no_standing_allow() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let root = crate::platform::path::canonical_or_self(&h.workspace_root());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+        let pane_owner =
+            crate::broker::principal::Principal::Pane(h.app.pane_principal(pane).unwrap());
+        let agent = crate::broker::principal::Principal::agent("agent:options-fixture").unwrap();
+        let mut asks = Vec::new();
+        for (principal, tool, target) in [
+            (
+                &pane_owner,
+                "agents.review",
+                crate::broker::TargetType::HostTool,
+            ),
+            (
+                &pane_owner,
+                "pane.send",
+                crate::broker::TargetType::HostTool,
+            ),
+            (&agent, "agents.review", crate::broker::TargetType::HostTool),
+        ] {
+            let call = format!("options-{tool}-{}", principal.actor_id());
+            let crate::broker::gate::Admission::Required { pending_request_id } =
+                monitor.admit(crate::broker::gate::AdmitRequest {
+                    call_id: &call,
+                    tool,
+                    input_json: &serde_json::json!({"marker": call}).to_string(),
+                    principal,
+                    actor_scope: crate::broker::ActorScope::Workspace,
+                    trust_origin: "host",
+                    workspace_root: &root,
+                    context_id: 0,
+                    package_id: "agents",
+                    instance_id: 0,
+                    target_type: target,
+                })
+            else {
+                panic!("{tool} must ask");
+            };
+            asks.push(pending_request_id);
+        }
+        h.app.sync_attention_queue();
+        let keys = |id: &str| -> Vec<String> {
+            h.app
+                .attention_queue
+                .items
+                .iter()
+                .find(|bar| bar.id == id)
+                .unwrap_or_else(|| panic!("no card for {id}"))
+                .options
+                .iter()
+                .map(|o| o.key.clone())
+                .collect()
+        };
+        assert_eq!(keys(&asks[0]), ["allow_once", "deny"]);
+        assert_eq!(keys(&asks[1]), ["allow_once", "deny"]);
+        assert_eq!(keys(&asks[2]), ["allow_once", "allow_always", "deny"]);
+    }
 
     #[test]
     fn pane_send_always_option_names_caller_breadth_and_expiry() {

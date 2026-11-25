@@ -214,7 +214,9 @@ fn decode_sealed<T: serde::de::DeserializeOwned>(
                         .ok_or("invalid sealed incarnation")?,
                 ),
                 _ if binding_owner.is_some() => binding_owner.expect("matched binding"),
-                _ if number.is_some() || label.starts_with("pane:") => RecordOwner::Legacy(label),
+                _ if number.is_some() || super::principal::is_legacy_pane_label(&label) => {
+                    RecordOwner::Legacy(label)
+                }
                 _ if label == super::principal::EXTERNAL_ID => {
                     RecordOwner::requester(&super::principal::Principal::External)
                 }

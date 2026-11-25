@@ -54,7 +54,22 @@ impl View for AgentsDashboardView {
             });
     }
 
+    /// `plexi pane state` is a socket read, so it names the workspace only.
+    /// The runs and pending requests painted here are host-wide; a requester
+    /// reads its own through `agents-dashboard list` (stint 1743).
     fn semantic_state(&self) -> Option<serde_json::Value> {
-        Some(crate::agent::runs::host_projection(&self.workspace))
+        Some(serde_json::json!({"workspace": self.workspace}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pane_state_carries_no_host_wide_runs_or_requests() {
+        let view = AgentsDashboardView::new(PathBuf::from("/ws"));
+        let state = view.semantic_state().unwrap();
+        assert_eq!(state, serde_json::json!({"workspace": "/ws"}));
     }
 }

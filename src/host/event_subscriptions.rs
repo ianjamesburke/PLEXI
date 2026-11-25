@@ -1004,9 +1004,12 @@ impl HostSubscriptionService {
             action,
         } = consent;
         // An outside process's grant lasts at most the session: its Always
-        // is this one use, never a standing row (stint 1285).
-        let choice = if subscriber_type == ActorType::External && choice == ConsentChoice::AllowAlways {
-            log::info!("event_subscriptions: outside process Always applied as once");
+        // is this one use, never a standing row (stint 1285). A pane lifetime
+        // ends with the pane or a restart, so the same holds (stint 1743).
+        let choice = if matches!(subscriber_type, ActorType::External | ActorType::Pane)
+            && choice == ConsentChoice::AllowAlways
+        {
+            log::info!("event_subscriptions: {subscriber_type:?} Always applied as once");
             ConsentChoice::AllowOnce
         } else {
             choice
@@ -1829,6 +1832,37 @@ mod tests {
             "persisted ALWAYS grant must answer inline, not re-prompt"
         );
         assert!(matches!(rx2.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+    }
+
+    /// Stint 1743: a pane lifetime ends with the pane or a restart, so its
+    /// Allow always covers this subscription only and is never written.
+    #[test]
+    fn a_pane_allow_always_is_held_for_the_session_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let timeline = timeline_with_stream();
+        let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
+        let admitted = pane_scope(7, &[]);
+        let (mut req, rx) =
+            subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        req.principal = Principal::Pane(admitted.authority.principal());
+        req.subscriber_authority = SubscriberAuthority::Pane(admitted);
+        let consent = svc
+            .classify_subscribe_request(req)
+            .expect("Ask must park a consent");
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        assert!(svc
+            .monitor()
+            .store()
+            .records()
+            .iter()
+            .all(|record| record.duration != crate::broker::GrantDuration::Always));
+        // A fresh load reads the disk, not the process cache.
+        let restored = crate::broker::gate::PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(
+            restored.store().records().is_empty(),
+            "no pane row is written to disk"
+        );
     }
 
     /// The rows `actor` holds in the service's live store.

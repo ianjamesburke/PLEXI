@@ -194,7 +194,7 @@ pub enum RunRequester {
 
 impl GrantRecord {
     pub(super) fn is_legacy_pane_history(&self) -> bool {
-        (self.actor.kind() == ActorType::Agent && self.actor.id().starts_with("pane:"))
+        (self.actor.kind() == ActorType::Agent && principal::is_legacy_pane_label(self.actor.id()))
             || matches!(self.run_requester_pane, Some(RunRequester::LegacyNumber(_)))
     }
 
@@ -1698,6 +1698,33 @@ mod tests {
         assert!(current.matches(&PermissionRequest::exact(&binding), 1));
         binding.actor = principal::Principal::Pane(principal::PanePrincipal::for_test(7)).into();
         assert!(!current.matches(&PermissionRequest::exact(&binding), 1));
+    }
+
+    /// Alpha's MCP spelling `mcp:pane:<n>` migrates like `pane:<n>`: kept
+    /// as host history, Once rows included, and never a requester's own.
+    #[test]
+    fn sealed_mcp_pane_grants_are_host_history_only() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut original = GrantStore::load_or_default(profile.path()).unwrap();
+        for (target, duration) in [("mcp-always", GrantDuration::Always), ("mcp-once", GrantDuration::Once)] {
+            let mut fields = serde_json::to_value(agent_grant(Decision::Allow, GrantSource::User)).unwrap();
+            fields["actor_id"] = "mcp:pane:7".into();
+            let mut row: GrantRecord = serde_json::from_value(fields).unwrap();
+            row.grant_id.clear();
+            row.duration = duration;
+            row.target_id = target.into();
+            original.record(row);
+        }
+        original.try_save().unwrap();
+        drop(original);
+        let restored = gate::PermissionMonitor::open_profile(profile.path()).unwrap();
+        let history: Vec<_> = restored.host_records().entries().into_iter()
+            .filter(|entry| entry.actor_id == "mcp:pane:7").collect();
+        assert_eq!(history.len(), 2, "{history:?}");
+        assert!(history.iter().all(|entry| entry.kind == "history"));
+        assert!(principal::Principal::agent("mcp:pane:7").is_none());
+        let pane = principal::Principal::Pane(principal::PanePrincipal::for_test(7));
+        assert!(restored.records_for(&pane).entries().is_empty());
     }
 
     #[test]

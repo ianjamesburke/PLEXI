@@ -5385,10 +5385,17 @@ impl PermissionMonitor {
         evidence: CoveredDecision<'_>,
     ) -> Result<String, String> {
         let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
+        // A pane lifetime ends with the pane or a host restart, so its
+        // standing choice is held for the session, never stored (stint 1743).
+        let pane = binding.actor.kind() == ActorType::Pane;
         let mut record = GrantRecord::from_binding(
             binding,
             decision,
-            GrantDuration::Always,
+            if pane {
+                GrantDuration::Session
+            } else {
+                GrantDuration::Always
+            },
             GrantSource::User,
             &grant_id,
         );
@@ -5399,7 +5406,7 @@ impl PermissionMonitor {
         }
         record.tool_scoped = true;
         record.expires_at = expires_at;
-        record.session_id = None;
+        record.session_id = pane.then(|| self.session_id().to_string());
         self.store().record_decided(record, evidence);
         if let Err(error) = self.save_durable() {
             self.store()
@@ -7897,6 +7904,39 @@ mod tests {
             admit_of(&restored, &base, args),
             Admission::Required { .. }
         ));
+    }
+
+    #[test]
+    fn pane_deny_always_holds_for_the_session_and_is_never_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let args = r#"{"operation_id":"shared","game_id":"game"}"#;
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.actor = crate::broker::principal::Principal::Pane(PanePrincipal::for_test(7)).into();
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+            panic!("first consent")
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::DenyAlways)
+            .unwrap();
+        assert!(
+            monitor
+                .store()
+                .records()
+                .iter()
+                .all(|record| record.duration == GrantDuration::Session),
+            "a pane's standing denial is held for the session"
+        );
+        assert!(matches!(
+            admit_of(&monitor, &base, args),
+            Admission::Denied { .. }
+        ));
+        drop(monitor);
+        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
+        assert!(
+            restored.store().records().is_empty(),
+            "no dead pane row survives a restart"
+        );
     }
 
     #[test]

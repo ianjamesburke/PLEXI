@@ -73,7 +73,11 @@ impl PlexiApp {
                 &root,
                 ctx.context_id,
             )?;
-            return crate::workspace::secrets::manager::inventory_for_context(&root);
+            let requester = origin
+                .socket_caller()
+                .and_then(crate::broker::caller::SocketCaller::principal)
+                .ok_or("permission_denied: an outside caller with no requester holds no secret inventory")?;
+            return crate::workspace::secrets::manager::inventory_for_context(&root, &requester);
         }
         // Every pane is admitted as its own principal; a pane the person
         // opened has no inventory shortcut (stint 1285).
@@ -107,7 +111,7 @@ impl PlexiApp {
             Admission::Proceed { grant_id, fingerprint, resource_id, .. } => {
                 let resource = resource_id.unwrap_or_default();
                 monitor.note_use(&crate::broker::principal::RecordOwner::requester(&principal), &call, &grant_id, &fingerprint, &resource, "")?;
-                let result = crate::workspace::secrets::manager::inventory_for_context(&root);
+                let result = crate::workspace::secrets::manager::inventory_for_context(&root, &principal);
                 monitor.note_outcome(None, &crate::broker::principal::RecordOwner::requester(&principal), &call, &grant_id, &fingerprint, &resource, "", if result.is_ok() { "ok" } else { "failed" }, "", "")?;
                 monitor.consume_once(&grant_id, None);
                 result
