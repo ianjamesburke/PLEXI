@@ -360,7 +360,7 @@ fn a_directory_opens_explorer_rooted_there() {
     );
 }
 
-/// The Explorer's `OpenArtifact` seams: the sender's workspace root is found
+/// For plugin `OpenArtifact` requests, the sender's workspace root is found
 /// in whichever window holds the sender, and the validated root-joined path
 /// is the one that opens.
 #[test]
@@ -369,6 +369,10 @@ fn open_artifact_checks_and_opens_the_root_joined_path_from_a_background_window(
     let sender = h.add_test_pane();
     let root = h.workspace_root();
     std::fs::write(root.join("inside.md"), "inside").unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("outside.md");
+    std::fs::write(&target, "outside").unwrap();
+    std::os::unix::fs::symlink(&target, root.join("link.md")).unwrap();
     let context_id = h.app.windows[0].context_id;
     let launch = h.app.test_terminal_launch(context_id, None, None);
     h.app.create_page_at(1, 0, context_id, launch);
@@ -384,6 +388,16 @@ fn open_artifact_checks_and_opens_the_root_joined_path_from_a_background_window(
         crate::protocol::ArtifactOpenMode::OpenInPane,
     );
     assert_eq!(pane_count(&h), before, "a path outside the root is refused");
+    h.app.dispatch_open_artifact(
+        sender,
+        "link.md".into(),
+        crate::protocol::ArtifactOpenMode::OpenInPane,
+    );
+    assert_eq!(
+        pane_count(&h),
+        before,
+        "a symlink outside the root is refused"
+    );
 
     h.app.dispatch_open_artifact(
         sender,

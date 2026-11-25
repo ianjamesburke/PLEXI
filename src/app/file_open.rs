@@ -1,7 +1,7 @@
 //! `file.open`: open one file or directory in the Plexi surface that handles it.
 //!
 //! One operation serves `plexi file open` and its shorthand `plexi open`; the
-//! Explorer's file activation shares its classification. Every open runs one
+//! Explorer's file activation uses the same operation. Every open runs one
 //! pipeline, in order: resolve, authorize, classify, deliver.
 //!
 //! - [`resolve_open_target`] resolves the caller's literal path once, against
@@ -24,8 +24,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::file_handlers::FileHandler;
+use super::view_trait::ViewEmitter;
 use super::PlexiApp;
-use crate::protocol::OpenPlacement;
+use crate::broker::caller::RequestOrigin;
+use crate::host::pane::ViewRuntime;
+use crate::protocol::{ArtifactOpenMode, OpenPlacement};
 use crate::spatial::tiling::PaneId;
 
 /// The operation id both CLI spellings and every in-host entry point share.
@@ -47,7 +50,7 @@ pub(crate) enum OpenHandler {
     /// A view launched with the path as its only argument: a built-in media
     /// player or a plugin that claims the file type.
     View(String),
-    /// The OS default opener. Only an explicit `os` association selects it.
+    /// The OS default opener, selected by an explicit association or action.
     System,
 }
 
@@ -67,6 +70,7 @@ impl OpenHandler {
 pub(crate) enum MatchedBy {
     Directory,
     UserOverride,
+    Explicit,
     Manifest,
     Media,
     Extension,
@@ -78,6 +82,7 @@ impl MatchedBy {
         match self {
             Self::Directory => "directory",
             Self::UserOverride => "user_override",
+            Self::Explicit => "explicit",
             Self::Manifest => "manifest",
             Self::Media => "media",
             Self::Extension => "extension",
@@ -197,18 +202,18 @@ impl FileOpenError {
 /// target. A missing file or a link to a missing target is an error here,
 /// before any handler is chosen.
 pub(crate) fn resolve_open_target(
-    path: &str,
+    path: impl AsRef<Path>,
     cwd: Option<&Path>,
 ) -> Result<PathBuf, FileOpenError> {
-    if path.is_empty() {
+    let literal = path.as_ref();
+    if literal.as_os_str().is_empty() {
         return Err(FileOpenError::EmptyPath);
     }
-    let literal = Path::new(path);
     let joined = if literal.is_absolute() {
         literal.to_path_buf()
     } else {
         cwd.ok_or_else(|| FileOpenError::CwdUnavailable {
-            path: path.to_string(),
+            path: literal.display().to_string(),
         })?
         .join(literal)
     };
@@ -241,17 +246,7 @@ fn lowercase_extension(target: &Path) -> String {
         .to_lowercase()
 }
 
-/// Choose the handler for `target`. See the module docs for the order.
-pub(crate) fn classify_open_target(
-    target: &Path,
-    associations: &OpenAssociations,
-) -> Result<Classified, FileOpenError> {
-    let classified = |handler, matched_by| {
-        Ok(Classified {
-            handler,
-            matched_by,
-        })
-    };
+fn open_target_is_dir(target: &Path) -> Result<bool, FileOpenError> {
     // Gate on the file type first, before any association can pick a
     // handler that would read it: a FIFO, device or socket is never opened.
     let meta = std::fs::metadata(target).map_err(|error| {
@@ -266,13 +261,27 @@ pub(crate) fn classify_open_target(
             }
         }
     })?;
-    if meta.is_dir() {
-        return classified(OpenHandler::Explorer, MatchedBy::Directory);
-    }
-    if !meta.is_file() {
+    if !(meta.is_dir() || meta.is_file()) {
         return Err(FileOpenError::SpecialFile {
             path: target.to_path_buf(),
         });
+    }
+    Ok(meta.is_dir())
+}
+
+/// Choose the handler for `target`. See the module docs for the order.
+pub(crate) fn classify_open_target(
+    target: &Path,
+    associations: &OpenAssociations,
+) -> Result<Classified, FileOpenError> {
+    let classified = |handler, matched_by| {
+        Ok(Classified {
+            handler,
+            matched_by,
+        })
+    };
+    if open_target_is_dir(target)? {
+        return classified(OpenHandler::Explorer, MatchedBy::Directory);
     }
     if let Some(spec) = &associations.user_override {
         match FileHandler::parse(spec) {
@@ -490,11 +499,12 @@ fn sample_is_text(target: &Path) -> Result<bool, FileOpenError> {
 /// One `HostRequest::FileOpen`, minus the host-stamped identity.
 #[derive(Clone, Copy)]
 pub(super) struct FileOpenRequest<'a> {
-    pub(super) path: &'a str,
+    pub(super) path: &'a Path,
     pub(super) cwd: Option<&'a Path>,
     pub(super) from_pane_id: Option<u64>,
     pub(super) placement: Option<OpenPlacement>,
     pub(super) no_focus: bool,
+    pub(super) mode: ArtifactOpenMode,
 }
 
 /// What `serve_file_open` delivered.
@@ -523,21 +533,55 @@ impl PlexiApp {
     }
 
     /// Serve `HostRequest::FileOpen` and write its one receipt.
-    ///
-    /// One pipeline, in order: identify the caller, choose the anchor,
-    /// resolve the canonical target, authorize it, classify it, deliver it.
-    /// Nothing reads the target's content or launches a handler before the
-    /// canonical path is authorized, and that path is the only one classified
-    /// and delivered.
     pub(super) fn serve_file_open(
         &mut self,
         request: &FileOpenRequest<'_>,
-        origin: &crate::broker::caller::RequestOrigin,
+        origin: &RequestOrigin,
         response_file: &str,
     ) {
-        let reply = match self.file_open(request, origin) {
-            Ok(receipt) => receipt,
-            Err(error) => {
+        let reply = self
+            .file_open(request, origin)
+            .unwrap_or_else(|error| error.reply());
+        crate::rpc::write_json_response(response_file, reply);
+    }
+
+    pub(super) fn serve_explorer_file_open(
+        &mut self,
+        emitter: ViewEmitter,
+        path: &Path,
+        mode: ArtifactOpenMode,
+    ) {
+        if !self.view_instance_mut(emitter).is_some_and(|pane| {
+            matches!(&pane.runtime, ViewRuntime::Builtin(view) if view.type_id() == EXPLORER)
+        }) {
+            return;
+        }
+        let request = FileOpenRequest {
+            path,
+            cwd: None,
+            from_pane_id: Some(emitter.pane_id),
+            placement: None,
+            no_focus: false,
+            mode,
+        };
+        let result = self
+            .file_open(&request, &RequestOrigin::HostUi)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        if let Some(pane) = self.view_instance_mut(emitter) {
+            if let ViewRuntime::Builtin(view) = &mut pane.runtime {
+                view.file_open_finished(path, result);
+            }
+        }
+    }
+
+    fn file_open(
+        &mut self,
+        request: &FileOpenRequest<'_>,
+        origin: &RequestOrigin,
+    ) -> Result<serde_json::Value, FileOpenError> {
+        self.resolve_and_deliver_file(request, origin)
+            .inspect_err(|error| {
                 log::info!(
                     "{OPERATION_ID}: refused path={:?} cwd={:?} caller={} from={:?} \
                      error_code={} error={error}",
@@ -547,24 +591,23 @@ impl PlexiApp {
                     request.from_pane_id,
                     error.code()
                 );
-                error.reply()
-            }
-        };
-        crate::rpc::write_json_response(response_file, reply);
+            })
     }
 
-    fn file_open(
+    /// Resolve, authorize, classify, and deliver the same canonical path.
+    fn resolve_and_deliver_file(
         &mut self,
         request: &FileOpenRequest<'_>,
-        origin: &crate::broker::caller::RequestOrigin,
+        origin: &RequestOrigin,
     ) -> Result<serde_json::Value, FileOpenError> {
-        use crate::broker::caller::{RequestOrigin, SocketCaller};
+        use crate::broker::caller::SocketCaller;
         let FileOpenRequest {
             path,
             cwd,
             from_pane_id,
             placement,
             no_focus,
+            mode,
         } = *request;
         let window_of = |app: &Self, pane| {
             app.find_pane_in_any_window(pane)
@@ -618,13 +661,31 @@ impl PlexiApp {
         if !self.scope_may_access(&root, &target) {
             return Err(FileOpenError::OutsideAuthority { root, path: target });
         }
-        let associations = self.open_associations(context_id, &target);
         let Classified {
             handler,
             matched_by,
-        } = classify_open_target(&target, &associations)?;
+        } = match mode {
+            ArtifactOpenMode::OpenInPane => {
+                let associations = self.open_associations(context_id, &target);
+                classify_open_target(&target, &associations)?
+            }
+            ArtifactOpenMode::OpenWithDefault | ArtifactOpenMode::RevealInFinder => {
+                open_target_is_dir(&target)?;
+                Classified {
+                    handler: OpenHandler::System,
+                    matched_by: MatchedBy::Explicit,
+                }
+            }
+        };
 
-        let delivered = self.deliver_file_open(&target, &handler, anchor, placement, no_focus)?;
+        let delivered = self.deliver_file_open(
+            &target,
+            &handler,
+            anchor,
+            placement,
+            no_focus,
+            mode == ArtifactOpenMode::RevealInFinder,
+        )?;
         let focused = delivered
             .pane_id
             .is_some_and(|pane| self.pane_is_shown_focused(pane));
@@ -685,13 +746,14 @@ impl PlexiApp {
         anchor: PaneId,
         placement: Option<OpenPlacement>,
         no_focus: bool,
+        reveal: bool,
     ) -> Result<Delivered, FileOpenError> {
         // Every handler gets a fresh instance carrying the target: a plugin's
         // `[launch] on_launch` reuse cannot deliver arguments to a running
         // instance, so honoring it here would report a file that never opened.
         let (id, args, cwd_override) = match handler {
             OpenHandler::System => {
-                super::canvas_bindings::shell_open(target, false)
+                super::canvas_bindings::shell_open(target, reveal)
                     .map_err(|reason| FileOpenError::ExternalOpenFailed { reason })?;
                 return Ok(Delivered {
                     status: "external_dispatched",
