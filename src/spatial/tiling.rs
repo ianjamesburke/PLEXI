@@ -477,6 +477,7 @@ impl Default for PortalPreview {
 pub struct PlexiBehavior<'a> {
     pub(crate) panes: &'a mut crate::host::context::PaneMap,
     pub child_agent_strips: HashMap<PaneId, Vec<crate::agent::fleet::AgentRow>>,
+    pub child_agent_dive_targets: HashSet<PaneId>,
     pub pane_lineage: HashMap<PaneId, String>,
     pub child_agent_dive: Option<PaneId>,
     pub theme: TerminalTheme,
@@ -650,6 +651,7 @@ impl PlexiBehavior<'_> {
         }
 
         if let Some(children) = self.child_agent_strips.get(pane_id) {
+            let can_dive = self.child_agent_dive_targets.contains(pane_id);
             ui.horizontal(|ui| {
                 ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                 for child in children {
@@ -671,6 +673,12 @@ impl PlexiBehavior<'_> {
                         break;
                     }
                     let response = crate::ui::badge::badge(ui, &label, color, &self.colors);
+                    if !can_dive {
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text)
+                        });
+                        continue;
+                    }
                     let button = ui.interact(
                         response.rect,
                         ui.id().with(("child-agent", child.pane_id)),

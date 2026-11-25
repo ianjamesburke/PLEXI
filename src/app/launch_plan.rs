@@ -102,6 +102,8 @@ pub(crate) struct LaunchCaller {
     /// names). Only a verified pane supplies parent authority; a claimed
     /// pane id from the wire never does.
     pub(crate) caller_pane: Option<PaneId>,
+    /// The pane a desktop gesture chose as its placement anchor.
+    pub(crate) anchor_pane: Option<PaneId>,
     /// The source the new pane's grant is admitted from.
     pub(crate) source: crate::broker::pane_authority::GrantSource,
     pub(crate) spawned_by: String,
@@ -458,8 +460,8 @@ impl PlexiApp {
     /// Resolve who submitted a launch from its origin (stint 1285). A socket
     /// caller in a pane bounds the new pane by that pane's grant; an outside
     /// process is an outside process; an unidentified caller is refused.
-    /// Host-owned input acts on the person's own gesture: the pane it names
-    /// is placement and tree parent, never a grant to inherit.
+    /// Desktop input acts for the person. The pane it names is a placement
+    /// anchor, with no lineage or authority over the launch.
     pub(crate) fn resolve_launch_source(
         &self,
         origin: &crate::broker::caller::RequestOrigin,
@@ -467,7 +469,7 @@ impl PlexiApp {
     ) -> Result<LaunchCaller, String> {
         use crate::broker::caller::{RequestOrigin, SocketCaller};
         use crate::broker::pane_authority::GrantSource;
-        let (caller_pane, grant_source) = match origin {
+        let (caller_pane, anchor_pane, grant_source) = match origin {
             RequestOrigin::Socket(SocketCaller::Unidentified(reason)) => {
                 return Err(refused(format!(
                     "the launch's caller could not be identified: {reason}"
@@ -475,15 +477,17 @@ impl PlexiApp {
             }
             RequestOrigin::Socket(SocketCaller::Pane(pane)) => (
                 Some(pane.terminal_pane),
+                None,
                 self.caller_grant_source(pane.terminal_pane),
             ),
             RequestOrigin::Socket(SocketCaller::External(_)) => {
-                (None, GrantSource::OutsideProcess)
+                (None, None, GrantSource::OutsideProcess)
             }
-            RequestOrigin::HostUi => (claimed, GrantSource::DesktopInput),
-            RequestOrigin::HostSystem => (claimed, GrantSource::HostSystem),
-            RequestOrigin::SpawnQueue => (None, GrantSource::SpawnQueue),
+            RequestOrigin::HostUi => (None, claimed, GrantSource::DesktopInput),
+            RequestOrigin::HostSystem => (claimed, None, GrantSource::HostSystem),
+            RequestOrigin::SpawnQueue => (None, None, GrantSource::SpawnQueue),
             RequestOrigin::PluginGuest(instance) => (
+                None,
                 None,
                 GrantSource::PluginInstance {
                     pane_id: instance.instance_id.unwrap_or_default(),
@@ -492,11 +496,12 @@ impl PlexiApp {
         };
         let spawned_by = self.spawned_by_for(&grant_source);
         log::info!(
-            "launch_plan: resolved origin={} claimed={claimed:?} -> caller={caller_pane:?} spawned_by={spawned_by}",
+            "launch_plan: resolved origin={} claimed={claimed:?} -> caller={caller_pane:?} anchor={anchor_pane:?} spawned_by={spawned_by}",
             origin.class()
         );
         Ok(LaunchCaller {
             caller_pane,
+            anchor_pane,
             source: grant_source,
             spawned_by,
         })
@@ -1269,6 +1274,7 @@ impl PlexiApp {
         let mut placement = self.resolve_agent_spawn_location(
             subcontext,
             plan.child_parent,
+            None,
             Some(cwd),
             true,
             AgentOrigin::Window {
@@ -3001,6 +3007,161 @@ mod tests {
         assert!(error.contains("could not be identified"), "{error}");
     }
 
+    #[test]
+    fn host_ui_agent_spawn_uses_focused_pane_for_placement_only() {
+        use crate::app::agent_open::admit_agent_mesh_route;
+        use crate::broker::caller::RequestOrigin;
+
+        let _features =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        let other = h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let focused = spawn_tester(&mut h, &root);
+        assert!(h.app.pane_navigate(focused));
+        let win = window_of(&h, focused);
+        // The palette captures the anchor when it opens. Focus can move
+        // before the captured action is dispatched.
+        assert!(h.app.pane_navigate(other));
+        write_role_settings(
+            &root,
+            "reviewer",
+            "[permissions]\ndefault_posture='ask'\ndeny=['reviewer.only']\n",
+        );
+        let request = HostRequest::AgentSpawn {
+            anchor_pane: None,
+            role: "reviewer".into(),
+            harness: "pi".into(),
+            command: "sleep 30".into(),
+            task: None,
+            subcontext: None,
+            ephemeral: true,
+            name: None,
+            cwd: Some(root.to_string_lossy().into_owned()),
+            worktree: None,
+            result_schema: None,
+            initial_slots: Vec::new(),
+            focus: true,
+            response_file: String::new(),
+        };
+        let reply = h.app.agent_spawn_reply_admitted(
+            &RequestOrigin::HostUi,
+            Some(focused),
+            &request,
+            admit_agent_mesh_route("AgentOpen").unwrap(),
+        );
+        let opened = reply["pane_id"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{reply}"));
+        assert_eq!(reply["parent_pane_id"], Value::Null, "{reply}");
+        assert_eq!(
+            h.app.terminal_incarnation(opened).unwrap().parent_pane_id,
+            None
+        );
+        let grant = grant_of(&h, opened);
+        assert_eq!(grant.parent, None);
+        assert_eq!(grant.provenance, Provenance::DesktopInput);
+        assert_eq!(grant.spawned_by, "human");
+        assert!(!grant.secrets.workspace_terminal_env && !grant.secrets.folder);
+        let posture = grant.posture().unwrap().unwrap();
+        assert!(posture.denies("reviewer.only"));
+        assert!(!posture.denies("tool.secret"));
+        assert!(!h.app.child_agent_strips().contains_key(&focused));
+        assert_eq!(window_of(&h, opened), win);
+        assert_eq!(placed_after(&h, opened), Some(focused));
+        assert_eq!(h.app.active_focused_pane_id(), Some(opened));
+
+        let pid = h
+            .app
+            .terminal_incarnation(focused)
+            .unwrap()
+            .backend
+            .child_pid();
+        let origin = h.app.socket_origin_for_pids(&[pid]);
+        let reply = h.app.agent_spawn_reply(&origin, &request);
+        let child = reply["pane_id"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{reply}"));
+        assert_eq!(reply["parent_pane_id"], focused, "{reply}");
+        assert_eq!(
+            h.app.terminal_incarnation(child).unwrap().parent_pane_id,
+            Some(focused)
+        );
+        let grant = grant_of(&h, child);
+        assert_eq!(grant.parent, Some(focused));
+        assert_eq!(
+            grant.provenance,
+            Provenance::VerifiedPane { pane_id: focused }
+        );
+        assert!(grant
+            .posture()
+            .unwrap()
+            .is_some_and(|p| p.denies("tool.secret")));
+        assert!(h.app.child_agent_strips().contains_key(&focused));
+
+        for (pane, parent) in [(opened, None), (child, Some(focused))] {
+            let response_file = root.join(format!("ask-{pane}.json"));
+            h.inject_from_pane(
+                pane,
+                HostRequest::AgentAsk {
+                    pane_id: pane,
+                    question: "Which revision?".into(),
+                    response_file: response_file.to_string_lossy().into_owned(),
+                },
+            );
+            h.hidden_frame();
+            let reply: Value =
+                serde_json::from_slice(&std::fs::read(response_file).unwrap()).unwrap();
+            assert_eq!(reply["ok"], true, "{reply}");
+            assert_eq!(
+                reply["parent_pane_id"],
+                serde_json::json!(parent),
+                "{reply}"
+            );
+        }
+
+        let response_file = root.join("child-result.json");
+        h.inject_ipc(HostRequest::AgentDone {
+            pane_id: child,
+            result: Some(r#"{"decision":"approved"}"#.into()),
+            summary: Some("Review complete".into()),
+            response_file: response_file.to_string_lossy().into_owned(),
+        });
+        h.hidden_frame();
+        assert_eq!(h.app.child_parent_panes.get(&child), Some(&focused));
+        assert!(h
+            .app
+            .terminal_incarnation(focused)
+            .unwrap()
+            .pending_child_results
+            .iter()
+            .any(|item| item.child_pane_id == child));
+        h.app.sync_attention_queue();
+        let result = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|item| item.id == format!("child-result-{child}"))
+            .expect("child result in attention queue");
+        assert_eq!(
+            h.app.resolve_attention_destination(result),
+            crate::app::attention_queue::AttentionDestination::LiveParent(focused)
+        );
+        h.inject_ipc(HostRequest::SetAgentState {
+            pane_id: focused,
+            state: crate::protocol::AgentState::Idle,
+            agent: "pi".into(),
+            detail: None,
+            session_id: None,
+            event: Some("Stop".into()),
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+        assert!(h.app.delivered_child_batches[&focused][0].contains("Review complete"));
+    }
+
     /// Round 3 item 8: a spawn-queue launch has no verifiable identity, so it
     /// resolves no secret of either class; and an app or path `spawn_pane`
     /// is refused on an unverified source exactly as a terminal is.
@@ -3294,6 +3455,7 @@ mod tests {
                     parent_context_id: elsewhere,
                 }),
                 Some(parent),
+                None,
                 None,
                 false,
                 AgentOrigin::Active,
@@ -4128,12 +4290,11 @@ mod tests {
             slots: HashMap::new(),
             closed_at: 0,
         };
-        let reply = h.app.reopen_agent_record(
-            &record,
-            None,
-            None,
-            crate::broker::pane_authority::GrantSource::OutsideProcess,
-        );
+        let caller = h
+            .app
+            .resolve_launch_source(&crate::broker::caller::RequestOrigin::outside_for_test(), None)
+            .unwrap();
+        let reply = h.app.reopen_agent_record(&record, None, caller);
         let reopened = reply["pane_id"].as_u64().expect("reopened");
         let grant = grant_of(&h, reopened);
         assert!(
@@ -4226,6 +4387,41 @@ mod tests {
             window_of(&h, focused),
             "placed beside the focused pane"
         );
+
+        // Exercise the named resume path used by the palette, with a saved
+        // Pi session and a probe that stops before the real harness starts.
+        h.app.close_pane_by_id(reopened);
+        let sessions = root.join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::write(sessions.join("host-ui-resume.jsonl"), "{}\n").unwrap();
+        let _sessions = crate::cli::agent::set_test_pi_sessions_dir(sessions);
+        let mut record = record;
+        record.session_id = Some("host-ui-resume".into());
+        h.app.fleet_history.borrow_mut().push(record);
+        let entered = std::rc::Rc::new(std::cell::Cell::new(false));
+        let reached_backend = entered.clone();
+        let _probe = crate::pane_ops::construct::probes::on_backend_entry(move |settings| {
+            reached_backend.set(true);
+            assert!(settings
+                .args
+                .iter()
+                .any(|arg| arg.contains("host-ui-resume")));
+            assert!(!settings.env.contains_key("PLEXI_PARENT_PANE"));
+            assert_eq!(
+                settings.env.get("PLEXI_SPAWNED_BY").map(String::as_str),
+                Some("human")
+            );
+            Err("fixture stops before starting Pi".into())
+        });
+        h.app
+            .open_named_agent(
+                "helper",
+                &root,
+                Some(focused),
+                &crate::broker::caller::RequestOrigin::HostUi,
+            )
+            .expect_err("the resume probe stopped construction");
+        assert!(entered.get(), "the palette resume reached backend entry");
     }
 
     /// Round 4, verified CLI subscription: a raw CLI subscribe from a

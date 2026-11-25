@@ -119,20 +119,25 @@ impl PlexiApp {
         strips
     }
 
-    pub(crate) fn dive_into_agent_children(&mut self, parent: u64) -> bool {
-        let Some(ctx_id) = self.conjoined_contexts.iter().find_map(|(&ctx, &id)| {
-            (id == parent
-                && self
+    pub(crate) fn conjoined_child_context_index(&self, parent: u64) -> Option<usize> {
+        self.conjoined_contexts.iter().find_map(|(&ctx, &id)| {
+            if id != parent
+                || !self
                     .windows
                     .iter()
-                    .any(|w| w.context_id == ctx && !w.panes.is_empty()))
-            .then_some(ctx)
-        }) else {
+                    .any(|w| w.context_id == ctx && !w.panes.is_empty())
+            {
+                return None;
+            }
+            self.router.position(|c| c.context_id == ctx)
+        })
+    }
+
+    pub(crate) fn dive_into_agent_children(&mut self, parent: u64) -> bool {
+        let Some(index) = self.conjoined_child_context_index(parent) else {
             return false;
         };
-        let Some(index) = self.router.position(|c| c.context_id == ctx_id) else {
-            return false;
-        };
+        let ctx_id = self.router.get(index).context_id;
         if self.router.active().context_id != ctx_id {
             let win = &self.windows[self.active_window];
             self.router

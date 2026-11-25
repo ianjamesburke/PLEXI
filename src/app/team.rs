@@ -842,6 +842,7 @@ impl PlexiApp {
             let placement = self.resolve_agent_spawn_location(
                 None,
                 Some(run.root_pane),
+                None,
                 Some(run.execution_cwd.clone()),
                 false,
                 crate::pane_ops::create::AgentOrigin::Active,

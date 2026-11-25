@@ -1,5 +1,130 @@
 use super::*;
 
+fn child_agent_chip_fixture(conjoined: bool) -> (PlexiUiHarness, u64, u64) {
+    let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+    h.step();
+    let (parent, child, child_context) = h.with_app_mut(|app| {
+        let (parent, _) = app
+            .spawn_agent_worker_pane(
+                "lead",
+                "pi",
+                "printf 'Lead: review evidence\\n'; sleep 120",
+                "Coordinate review",
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let (child, context) = app
+            .spawn_agent_worker_pane(
+                "researcher",
+                "pi",
+                "printf 'Researcher: checking evidence\\n'; sleep 120",
+                "Review evidence",
+                conjoined.then_some("Agent tools"),
+                true,
+                Some(parent),
+                None,
+                None,
+                None,
+                conjoined,
+                None,
+            )
+            .unwrap();
+        (parent, child, context)
+    });
+    wait_for_lineage_fixture(&mut h, &[parent, child]);
+    h.focus_pane(parent).unwrap();
+    h.run_steps(3);
+    (h, parent, child_context)
+}
+
+fn hover_child_agent_chip(h: &mut PlexiUiHarness) -> egui::Pos2 {
+    h.with_app(|app| {
+        app.ctx.global_style_mut(|style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+    });
+    let chip = painted_rect(&painted_texts(h), "researcher · ").center();
+    h.harness().hover_at(chip);
+    h.run_steps(3);
+    chip
+}
+
+#[test]
+fn child_agent_chip_offers_navigation_only_for_conjoined_children() {
+    for conjoined in [false, true] {
+        let (mut h, parent, child_context) = child_agent_chip_fixture(conjoined);
+        let parent_context = h.with_app(|app| app.router.active().context_id);
+        let expected_context = if conjoined {
+            child_context
+        } else {
+            parent_context
+        };
+        let chip = hover_child_agent_chip(&mut h);
+        let shows_hint = painted_texts(&mut h)
+            .iter()
+            .any(|(_, text)| text.starts_with("Open child agents ("));
+        assert_eq!(shows_hint, conjoined, "hint on parent pane {parent}");
+        let offers_navigation = h
+            .harness()
+            .query_all_by(|node| {
+                node.role() == egui::accesskit::Role::Button
+                    && node
+                        .label()
+                        .is_some_and(|label| label.starts_with("researcher · "))
+            })
+            .next()
+            .is_some();
+        assert_eq!(offers_navigation, conjoined, "parent pane {parent}");
+        h.harness().drag_at(chip);
+        h.step();
+        h.harness().drop_at(chip);
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|app| app.router.active().context_id),
+            expected_context
+        );
+        if conjoined {
+            h.harness()
+                .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
+            h.run_steps(3);
+            assert_eq!(
+                h.with_app(|app| app.router.active().context_id),
+                parent_context
+            );
+        }
+
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
+        h.run_steps(3);
+        assert_eq!(
+            h.with_app(|app| app.conjoined_parent()),
+            conjoined.then_some(parent)
+        );
+        assert_eq!(
+            h.with_app(|app| app.router.active().context_id),
+            expected_context
+        );
+    }
+}
+
+#[test]
+fn screenshot_child_agent_chip_navigation() {
+    for conjoined in [false, true] {
+        let (mut h, _, _) = child_agent_chip_fixture(conjoined);
+        hover_child_agent_chip(&mut h);
+        let suffix = if conjoined { "_conjoined" } else { "_split" };
+        h.save_screenshot(&evidence_png!(suffix)).unwrap();
+    }
+}
+
 #[test]
 fn screenshot_pane_corners_themes_scale_and_override() {
     for theme in ["catppuccin-mocha", "catppuccin-latte"] {

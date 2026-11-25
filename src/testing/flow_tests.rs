@@ -480,6 +480,7 @@ fn agent_subcontext_portal_insert_leaves_parent_window_settled() {
             )),
             None,
             None,
+            None,
             false,
             crate::pane_ops::create::AgentOrigin::Active,
         )

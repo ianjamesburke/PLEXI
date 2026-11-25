@@ -8,8 +8,7 @@
 //! pick is a local edit: [`PlexiApp::running_named_agent_pane`] (which pane
 //! counts as running) and [`PlexiApp::last_named_agent_chat`] (which history
 //! record is the last chat). A resumed or started pane opens beside its
-//! authenticated caller, or for a caller with no pane beside the focused pane,
-//! which is placement only (stint 1632).
+//! authenticated caller or beside a placement anchor from the desktop.
 
 use std::path::Path;
 
@@ -123,7 +122,6 @@ impl PlexiApp {
         admitted: AdmittedAgentMeshRoute,
     ) -> Result<AgentOpenOutcome, String> {
         let launch_caller = self.resolve_launch_source(origin, caller)?;
-        let verified_caller = launch_caller.caller_pane;
         if let Some(pane_id) = self.running_named_agent_pane(name) {
             // A standby pane is focused and left in Standby: it resumes only
             // on Enter or `pane send` (src/cli/AGENTS.md, owner rule).
@@ -143,13 +141,10 @@ impl PlexiApp {
         if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, &harness, cwd))
         {
             let session_id = record.session_id.clone().unwrap_or_default();
-            // A reopen is admitted under the authenticated caller only. An
-            // outside caller's run opens beside the focused pane (placement)
-            // with no parent and no borrowed authority.
-            let reply =
-                self.reopen_agent_record(&record, None, verified_caller, launch_caller.source);
+            let focus_from = launch_caller.caller_pane.or(launch_caller.anchor_pane);
+            let reply = self.reopen_agent_record(&record, None, launch_caller);
             let pane_id = spawned_pane_id(&reply)?;
-            self.focus_started_agent_pane(pane_id, verified_caller);
+            self.focus_started_agent_pane(pane_id, focus_from);
             log::info!(
                 "agent_open: name={name} outcome=resumed pane={pane_id} run_id={} session_id={session_id}",
                 record.run_id

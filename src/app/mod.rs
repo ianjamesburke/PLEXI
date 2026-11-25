@@ -4280,15 +4280,11 @@ impl eframe::App for PlexiApp {
         // Cmd+Down belongs to editors unless the focused pane has tool children.
         // Use the normal binding poller so both edges and overlay capture retain
         // the same ownership rules as other host chords.
-        if self.visual_owner_pane().is_some_and(|parent| {
-            self.conjoined_contexts.iter().any(|(context, id)| {
-                *id == parent
-                    && self
-                        .windows
-                        .iter()
-                        .any(|window| window.context_id == *context && !window.panes.is_empty())
-            })
-        }) {
+        if self
+            .visual_owner_pane()
+            .and_then(|parent| self.conjoined_child_context_index(parent))
+            .is_some()
+        {
             poll_actions_result.extend(keys::poll_actions(
                 &mut router_input,
                 &[keys::BindingEntry {

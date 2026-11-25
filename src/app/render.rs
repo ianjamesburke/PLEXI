@@ -605,6 +605,11 @@ impl PlexiApp {
                 let mut pending_pane_clicks = std::mem::take(&mut self.pending_pane_clicks);
 
                 let child_agent_strips = self.child_agent_strips();
+                let child_agent_dive_targets = child_agent_strips
+                    .keys()
+                    .copied()
+                    .filter(|&parent| self.conjoined_child_context_index(parent).is_some())
+                    .collect();
                 let pane_lineage = self.pane_lineage();
                 let lineage_log_id = egui::Id::new("visible_pane_lineage");
                 if ui.ctx().data(|d| d.get_temp::<HashMap<PaneId, String>>(lineage_log_id)).as_ref() != Some(&pane_lineage) {
@@ -782,6 +787,7 @@ impl PlexiApp {
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     child_agent_strips,
+                    child_agent_dive_targets,
                     pane_lineage,
                     child_agent_dive: None,
                     theme: self.theme.clone(),

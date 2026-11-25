@@ -564,13 +564,12 @@ impl PlexiApp {
 
     /// Continue a spawn owned by an already admitted request. Consuming the
     /// proof avoids a second config read and trace during `AgentOpen`.
-    /// `host_parent` places the worker under a pane host code chose (the
-    /// palette's focused pane); it is honored only for host origins and is
-    /// never a grant (`resolve_launch_source`).
+    /// `host_pane` is the pane host code chose. Desktop input uses it as
+    /// the worker's placement anchor (`resolve_launch_source`).
     pub(crate) fn agent_spawn_reply_admitted(
         &mut self,
         origin: &crate::broker::caller::RequestOrigin,
-        host_parent: Option<crate::spatial::tiling::PaneId>,
+        host_pane: Option<crate::spatial::tiling::PaneId>,
         request: &crate::protocol::HostRequest,
         _admitted: super::agent_open::AdmittedAgentMeshRoute,
     ) -> serde_json::Value {
@@ -595,9 +594,10 @@ impl PlexiApp {
         };
         let super::launch_plan::LaunchCaller {
             caller_pane: effective_parent,
+            anchor_pane: desktop_anchor,
+            source,
             spawned_by,
-            ..
-        } = match self.resolve_launch_source(origin, host_parent) {
+        } = match self.resolve_launch_source(origin, host_pane) {
             Ok(resolved) => resolved,
             Err(error) => {
                 log::warn!("pane_ipc: agent_spawn refused: {error}");
@@ -619,7 +619,12 @@ impl PlexiApp {
         let result = self.spawn_agent_worker_attributed(
             crate::pane_ops::create::WorkerAttribution {
                 spawned_by: Some(spawned_by.clone()),
-                anchor_pane: *anchor_pane,
+                anchor_pane: anchor_pane.or(desktop_anchor),
+                source: matches!(
+                    source,
+                    crate::broker::pane_authority::GrantSource::DesktopInput
+                )
+                .then_some(source),
             },
             crate::pane_ops::create::WorkerSpawn {
                 role,
@@ -640,7 +645,8 @@ impl PlexiApp {
             Ok((new_pane_id, target_ctx_id)) => {
                 self.record_pane_provenance(new_pane_id);
                 if *focus {
-                    self.focus_started_agent_pane(new_pane_id, effective_parent);
+                    let focus_from = effective_parent.or(desktop_anchor);
+                    self.focus_started_agent_pane(new_pane_id, focus_from);
                 }
                 if let Some(ref custom_name) = name {
                     if !custom_name.is_empty() {
@@ -689,18 +695,25 @@ impl PlexiApp {
     /// Resume one closed agent run from its history record in a new pane, with
     /// the harness resume command, and return the JSON reply. Shared by
     /// `plexi agent reopen` and `agent open` (stint 1396).
-    /// A reopen is a new admission under the authenticated `caller` and its
-    /// `source`, narrowed by the restrictions the record kept (stint 1632).
-    /// The record's own parent is history, never authority: with no
-    /// authenticated caller the run opens beside the focused pane with no
-    /// parent.
+    /// A reopen is a new admission under the current launch source, narrowed
+    /// by the restrictions the record kept (stint 1632).
     pub(crate) fn reopen_agent_record(
         &mut self,
         record: &crate::workspace::AgentHistoryRecord,
         subcontext: Option<&str>,
-        caller: Option<u64>,
-        source: crate::broker::pane_authority::GrantSource,
+        caller: super::launch_plan::LaunchCaller,
     ) -> serde_json::Value {
+        let super::launch_plan::LaunchCaller {
+            caller_pane,
+            anchor_pane,
+            source,
+            spawned_by,
+        } = caller;
+        let desktop_spawner = matches!(
+            source,
+            crate::broker::pane_authority::GrantSource::DesktopInput
+        )
+        .then_some(spawned_by);
         let resume_cmd = match record.session_id.as_deref() {
             Some(sid) if !sid.trim().is_empty() => {
                 if let Some(adapter) = crate::cli::agent::harness_adapter(&record.harness) {
@@ -733,7 +746,8 @@ impl PlexiApp {
         let result = self
             .resolve_agent_spawn_location(
                 subcontext.map(crate::pane_ops::create::SubcontextTarget::Named),
-                caller,
+                caller_pane,
+                anchor_pane,
                 Some(record.cwd.clone()),
                 false,
                 crate::pane_ops::create::AgentOrigin::Active,
@@ -756,7 +770,7 @@ impl PlexiApp {
                             recorded,
                         },
                         pane_id: None,
-                        spawned_by: None,
+                        spawned_by: desktop_spawner,
                         role: &role,
                         harness: &record.harness,
                         command: &resume_cmd,
@@ -6008,12 +6022,7 @@ impl PlexiApp {
                     return;
                 };
                 let payload = match self.resolve_launch_source(&origin, None) {
-                    Ok(caller) => self.reopen_agent_record(
-                        &record,
-                        subcontext.as_deref(),
-                        caller.caller_pane,
-                        caller.source,
-                    ),
+                    Ok(caller) => self.reopen_agent_record(&record, subcontext.as_deref(), caller),
                     Err(error) => serde_json::json!({ "ok": false, "error": error }),
                 };
                 write_json_response(response_file, payload);

@@ -2158,10 +2158,19 @@ impl PlexiApp {
         &self,
         subcontext: Option<SubcontextTarget<'_>>,
         from_pane_id: Option<u64>,
+        anchor_pane: Option<u64>,
         cwd_override: Option<std::path::PathBuf>,
         conjoined: bool,
         origin: AgentOrigin,
     ) -> Result<AgentPlacement, String> {
+        let anchor_at = anchor_pane.and_then(|pane| {
+            let (window, _) = self.find_pane_in_any_window(pane)?;
+            Some((pane, window, self.windows[window].context_id))
+        });
+        let origin = match (origin, anchor_at) {
+            (AgentOrigin::Active, Some((_, _, context_id))) => AgentOrigin::Context(context_id),
+            _ => origin,
+        };
         let AgentSpawnParent {
             pane_id: parent_pane_id,
             win_idx: parent_win_idx,
@@ -2171,7 +2180,7 @@ impl PlexiApp {
         } = self.agent_spawn_parent(from_pane_id, origin)?;
         let effective_cwd = cwd_override.unwrap_or_else(|| parent_root.clone());
 
-        let target = if let Some(target) = subcontext {
+        let mut target = if let Some(target) = subcontext {
             let sub_name = target.name();
             let existing = self.agent_subcontext_under(parent_ctx_id, sub_name);
             // An admitted sub-context is the incarnation the caller saw: a
@@ -2237,6 +2246,20 @@ impl PlexiApp {
                 split_at: self.agent_split_at(parent_win_idx, parent_pane_id),
             }
         };
+        if let (
+            Some((pane, anchor_window, anchor_context)),
+            AgentTarget::Window {
+                win_idx,
+                context_id,
+                split_at,
+            },
+        ) = (anchor_at, &mut target)
+        {
+            if *context_id == anchor_context {
+                *win_idx = anchor_window;
+                *split_at = self.agent_split_at(anchor_window, Some(pane));
+            }
+        }
         Ok(AgentPlacement {
             parent_pane_id,
             effective_cwd,
@@ -2450,6 +2473,7 @@ impl PlexiApp {
             WorkerAttribution {
                 spawned_by: None,
                 anchor_pane: None,
+                source: None,
             },
             WorkerSpawn {
                 role,
@@ -2468,8 +2492,8 @@ impl PlexiApp {
         )
     }
 
-    /// [`Self::spawn_agent_worker_pane`] with the attribution and placement
-    /// anchor its admission already decided. Neither grants anything.
+    /// [`Self::spawn_agent_worker_pane`] with the attribution, placement
+    /// anchor and source its admission already decided.
     pub(crate) fn spawn_agent_worker_attributed(
         &mut self,
         attribution: WorkerAttribution,
@@ -2478,6 +2502,7 @@ impl PlexiApp {
         let WorkerAttribution {
             spawned_by,
             anchor_pane,
+            source,
         } = attribution;
         let WorkerSpawn {
             role,
@@ -2493,35 +2518,22 @@ impl PlexiApp {
             conjoined,
             origin_context_id,
         } = spawn;
-        let anchor_at = anchor_pane.and_then(|pane| {
-            let (window, _) = self.find_pane_in_any_window(pane)?;
-            Some((pane, window, self.windows[window].context_id))
-        });
-        let origin = origin_context_id
-            .or(anchor_at.map(|(_, _, context_id)| context_id))
-            .map_or(AgentOrigin::Active, AgentOrigin::Context);
-        let mut placement = self.resolve_agent_spawn_location(
+        let origin = origin_context_id.map_or(AgentOrigin::Active, AgentOrigin::Context);
+        let placement = self.resolve_agent_spawn_location(
             subcontext.map(SubcontextTarget::Named),
             from_pane_id,
+            anchor_pane,
             cwd_override,
             conjoined,
             origin,
         )?;
-        if let (Some((pane, anchor_window, anchor_context)), AgentTarget::Window { win_idx, context_id, split_at }) =
-            (anchor_at, &mut placement.target)
-        {
-            if *context_id == anchor_context {
-                *win_idx = anchor_window;
-                *split_at = self.agent_split_at(anchor_window, Some(pane));
-            }
-        }
-        // The worker's source is its verified parent's grant, a team run, or
-        // an outside caller; a named role must resolve or nothing starts.
-        let source = match (run_token, placement.parent_pane_id) {
+        // Direct worker spawns derive their source from the verified parent
+        // or run. A named role must resolve before the worker starts.
+        let source = source.unwrap_or_else(|| match (run_token, placement.parent_pane_id) {
             (_, Some(parent)) => self.caller_grant_source(parent),
             (Some(_), None) => crate::broker::pane_authority::GrantSource::Team,
             (None, None) => crate::broker::pane_authority::GrantSource::OutsideProcess,
-        };
+        });
         // A raw spawn names its command; its role is a label unless a
         // definition of it exists, which must then resolve. A team
         // coordinator is no exception: a defined role keeps its ceiling.
@@ -4692,11 +4704,11 @@ fn sanitize_wasm_path_component(input: &str) -> String {
     }
 }
 
-/// Who an agent worker is attributed to and where its admission placed it,
-/// both decided before the spawn. Neither grants anything.
+/// The worker's display attribution, placement anchor and admitted source.
 pub(crate) struct WorkerAttribution {
     pub(crate) spawned_by: Option<String>,
     pub(crate) anchor_pane: Option<u64>,
+    pub(crate) source: Option<crate::broker::pane_authority::GrantSource>,
 }
 
 /// What agent worker to start, and from where.
