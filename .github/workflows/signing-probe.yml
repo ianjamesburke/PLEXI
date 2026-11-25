@@ -3,8 +3,7 @@ name: Developer ID signing probe
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   PLEXI_BUILD_TEST_CHANNEL: pr-9971
@@ -15,6 +14,8 @@ defaults:
 
 jobs:
   build:
+    permissions:
+      contents: read
     runs-on: macos-15
     timeout-minutes: 60
     env:
@@ -71,6 +72,37 @@ jobs:
           name: developer-id-probe-unsigned
           path: ${{ env.PROBE_ROOT }}/input
 
+      - name: Extract unsigned package
+        run: ditto -x -k "$PROBE_ROOT/input/unsigned.zip" "$PROBE_ROOT/dist"
+
+      - name: Validate extracted unsigned package
+        run: |
+          package="$PROBE_ROOT/dist/package-macos-arm64-$PLEXI_BUILD_TEST_CHANNEL"
+          if [[ ! -d "$PROBE_ROOT/dist" || -L "$PROBE_ROOT/dist" || ! -d "$package" || -L "$package" ]]; then
+            echo "::error::Expected a real extracted package directory at $package"
+            exit 1
+          fi
+          shopt -s nullglob dotglob
+          apps=("$package/"*.app)
+          if [[ ${#apps[@]} != 1 || ! -d "${apps[0]}" || -L "${apps[0]}" ]]; then
+            echo "::error::Expected exactly one real .app directory in $package"
+            exit 1
+          fi
+          root="$(cd -P -- "$package" && pwd -P)"
+          find -P "$root" -type l -print0 |
+            while IFS= read -r -d '' link; do
+              # Preserve trailing newlines in link targets during command substitution.
+              if ! target="$(/usr/bin/readlink -fn "$link" && printf '.')"; then
+                printf 'Cannot resolve package symlink %q\n' "$link" >&2
+                exit 1
+              fi
+              target="${target%.}"
+              case "$target" in
+                "$root"|"$root/"*) ;;
+                *) printf 'Package symlink escapes package root: %q -> %q\n' "$link" "$target" >&2; exit 1 ;;
+              esac
+            done
+
       - name: Import and sign with Developer ID on the disposable runner
         timeout-minutes: 8
         env:
@@ -104,7 +136,6 @@ jobs:
           }
           trap 'cleanup || exit 1' EXIT
           mkdir -p "$credentials" "$PROBE_ROOT/evidence" "$PROBE_ROOT/signed"
-          ditto -x -k "$PROBE_ROOT/input/unsigned.zip" "$PROBE_ROOT/dist"
           package="$PROBE_ROOT/dist/package-macos-arm64-$PLEXI_BUILD_TEST_CHANNEL"
 
           # Persist the original list for the always() cleanup. Parse the quoted
@@ -135,6 +166,7 @@ jobs:
             awk -v expected="$expected" '$2 == expected && /Developer ID Application:/ { found = 1 } END { exit !found }'
           printf 'Commit %s\nDeveloper ID identity fingerprint matched\n' "$GITHUB_SHA" > "$PROBE_ROOT/evidence/summary.txt"
 
+          shopt -s dotglob
           for variant in none allow-jit allow-unsigned-executable-memory; do
             mkdir -p "$PROBE_ROOT/$variant"
             ditto "$package" "$PROBE_ROOT/$variant/package"
@@ -196,6 +228,7 @@ jobs:
           path: ${{ env.PROBE_ROOT }}/signed/*.zip
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
       - name: Upload signature evidence
         if: always()
@@ -369,6 +402,7 @@ jobs:
           esac
           mkdir -p "$PROBE_ROOT/evidence"
           ditto -x -k "$PROBE_ROOT/signed/$PROBE_WINNER.zip" "$PROBE_ROOT/winner"
+          shopt -s dotglob
           apps=("$PROBE_ROOT/winner/package/"*.app)
           [[ ${#apps[@]} == 1 && -d "${apps[0]}" && ! -L "${apps[0]}" ]]
           app="${apps[0]}"
@@ -396,6 +430,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: developer-id-probe-notarization
-          path: ${{ env.PROBE_ROOT }}/evidence
+          path: |
+            ${{ env.PROBE_ROOT }}/evidence/summary.txt
+            ${{ env.PROBE_ROOT }}/evidence/notarization.json
+            ${{ env.PROBE_ROOT }}/evidence/stapler.txt
+            ${{ env.PROBE_ROOT }}/evidence/gatekeeper.txt
           if-no-files-found: warn
           compression-level: 0
