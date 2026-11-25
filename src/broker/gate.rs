@@ -5859,23 +5859,22 @@ impl PermissionMonitor {
         for line in history.lines().rev().take(AUDIT_MEM_CAP) {
             let envelope: super::seal::AuditEnvelope = match serde_json::from_str(line) {
                 Ok(envelope) => envelope,
-                Err(error) => {
-                    log::warn!(
-                        "permission_monitor: could not decode verified audit envelope: {error}"
-                    );
+                Err(_) => {
+                    log::warn!("permission_monitor: could not decode verified audit envelope");
                     continue;
                 }
             };
-            let decode = || -> Result<AuditFact, String> {
+            // Serde errors can include values from the sealed record.
+            let decode = || -> Result<AuditFact, &'static str> {
                 let mut fact: serde_json::Map<String, serde_json::Value> =
-                    serde_json::from_str(&envelope.fact).map_err(|error| error.to_string())?;
+                    serde_json::from_str(&envelope.fact).map_err(|_| "invalid fact object")?;
                 let owner = match fact.remove("owner") {
                     Some(owner) => owner,
                     None => {
                         let actor = fact
                             .get("actor")
                             .and_then(serde_json::Value::as_str)
-                            .ok_or("missing or non-string `actor`")?
+                            .ok_or("missing or invalid legacy actor")?
                             .to_owned();
                         // The seal layer wrote these markers without action metadata.
                         if actor == "host"
@@ -5900,12 +5899,12 @@ impl PermissionMonitor {
                     }
                 };
                 fact.insert("actor".into(), owner);
-                serde_json::from_value(fact.into()).map_err(|error| error.to_string())
+                serde_json::from_value(fact.into()).map_err(|_| "unknown record shape")
             };
             match decode() {
                 Ok(fact) => recent.push_front(fact),
-                Err(error) => log::warn!(
-                    "permission_monitor: skipped undecodable sealed audit fact seq={}: {error}",
+                Err(reason) => log::warn!(
+                    "permission_monitor: skipped undecodable sealed audit fact seq={}: {reason}",
                     envelope.seq
                 ),
             }
@@ -8052,7 +8051,7 @@ mod tests {
     }
 
     #[test]
-    fn sealed_audit_restore_warns_with_sequence_and_decode_error() {
+    fn sealed_audit_restore_warns_with_sequence_and_reason() {
         let profile = tempfile::tempdir().unwrap();
         let path = profile.path().join("permission-audit.jsonl");
         let before = PermissionMonitor::open_profile(profile.path()).unwrap();
@@ -8083,10 +8082,51 @@ mod tests {
             records
                 .iter()
                 .any(|(level, message)| *level == log::Level::Warn
-                    && message.contains("seq=2")
-                    && message.contains("missing field `call_id`")),
+                    && message == "permission_monitor: skipped undecodable sealed audit fact seq=2: unknown record shape"),
             "missing decode warning for the second sealed row: {records:?}"
         );
+    }
+
+    #[test]
+    fn sealed_audit_restore_does_not_log_decision_values() {
+        const SENTINEL_DECISION: u64 = 983_476_251;
+
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("permission-audit.jsonl");
+        let before = PermissionMonitor::open_profile(profile.path()).unwrap();
+        before.note_denial(
+            &RecordOwner::Host("host".into()),
+            "valid-call",
+            "",
+            "",
+            "deny",
+        );
+        let mut malformed = serde_json::to_value(&before.audit_records()[0]).unwrap();
+        malformed["decision"] = serde_json::json!(SENTINEL_DECISION);
+        super::super::seal::append_audit(TEST_HOST, &path, &malformed).unwrap();
+        super::super::seal::verify_audit(TEST_HOST, &path).unwrap();
+        super::super::integrity::mark_clean_shutdown(profile.path());
+        drop(before);
+
+        let logs = crate::testing::test_log::capture();
+        let restored = PermissionMonitor::open_profile(profile.path()).unwrap();
+        let rows = restored.host_records().audit();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].call_id, "valid-call");
+
+        let records = logs.records();
+        let sentinel = SENTINEL_DECISION.to_string();
+        assert!(
+            records
+                .iter()
+                .all(|(_, message)| !message.contains(&sentinel)),
+            "restore logs disclosed the decision value"
+        );
+        assert!(records.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message
+                    .starts_with("permission_monitor: skipped undecodable sealed audit fact seq=2:")
+        }));
     }
 
     #[test]
