@@ -26,6 +26,8 @@ class QueueTests(unittest.TestCase):
         for path, needed in (("src/host/plugin_server.rs", "testing::socket_policy_tests"),
                              ("src/cli/mod.rs", "testing::socket_policy_tests"),
                              ("src/cli/mod.rs", "testing::permission_gate_tests::"),
+                             ("src/app/mod.rs", "testing::socket_policy_tests"),
+                             ("src/app/mod.rs", "testing::permission_gate_tests::"),
                              ("src/ui/foo.rs", "ui::"),
                              ("src/app/quit.rs", "ui_tests::tests::")):
             with self.subTest(path=path):
@@ -186,6 +188,41 @@ class QueueTests(unittest.TestCase):
                 self.assertIn(1, train.skipped)
                 self.assertFalse(any(call.args[0] == "just" for call in runner.run.call_args_list))
 
+    def test_admission_and_landing_refuse_non_green_pr(self):
+        for change, reason in (("review required", "review is required"),
+                               ("pending check", "pending"),
+                               ("stale approval", "approval at the pinned head")):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                runner = Mock()
+                train = queue.Queue(Path(tmp), Path(tmp), runner)
+                original, unrecorded = "a" * 40, "b" * 40
+                info = dict(headRefName="feature/fixture", headRefOid=original, state="OPEN",
+                            isDraft=False, baseRefName="alpha", isCrossRepository=False,
+                            labels=[], body="Candidate filters:\n- app::", reviewDecision="APPROVED",
+                            reviews=[dict(state="APPROVED", author={"login": "reviewer"},
+                                          commit={"oid": original})])
+                train.view = Mock(return_value=info)
+                train.lane = Mock()
+                train.git = Mock(return_value="scripts/merge_queue.py")
+                runner.run.return_value = subprocess.CompletedProcess([], 0, "[]")
+                pr = train.admit(1, "base")
+                if change == "review required":
+                    info["reviewDecision"] = "REVIEW_REQUIRED"
+                elif change == "pending check":
+                    runner.run.return_value = subprocess.CompletedProcess([], 8, '[{"bucket":"pending"}]')
+                else:
+                    info["headRefOid"] = unrecorded
+                with self.subTest(phase="admission"), self.assertRaisesRegex(queue.Refusal, reason):
+                    train.admit(1, "base")
+                if change == "stale approval":
+                    with self.assertRaisesRegex(queue.LandingAdmissionRefusal, "changed since admission"):
+                        train.readmit(pr, "base", original)
+                    info["headRefOid"] = original
+                    info["reviews"][0]["commit"]["oid"] = unrecorded
+                with self.subTest(phase="landing"), self.assertRaisesRegex(
+                        queue.LandingAdmissionRefusal, reason):
+                    train.readmit(pr, "base", original)
+
     def test_rebased_head_keeps_original_approval_and_rechecks_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             runner = Mock()
@@ -193,7 +230,7 @@ class QueueTests(unittest.TestCase):
             original, rebased = "a" * 40, "b" * 40
             info = dict(headRefName="feature/fixture", headRefOid=original, state="OPEN",
                         isDraft=False, baseRefName="alpha", isCrossRepository=False,
-                        labels=[], body="Candidate filters:\n- app::", reviewDecision="REVIEW_REQUIRED",
+                        labels=[], body="Candidate filters:\n- app::", reviewDecision="APPROVED",
                         reviews=[dict(state="APPROVED", author={"login": "reviewer"},
                                       commit={"oid": original})])
             train.view = Mock(return_value=info)
@@ -288,7 +325,7 @@ class QueueTests(unittest.TestCase):
             self.assertEqual([call.args[:2] for call in train.land.call_args_list],
                              [("base", entries), ("after-first", tail)])
 
-    def test_checks_accept_no_checks_and_pending_and_refuse_failures(self):
+    def test_checks_accept_no_checks_and_green_checks_and_refuse_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
             runner = Mock()
             train = queue.Queue(Path(tmp), Path(tmp), runner)
@@ -296,7 +333,7 @@ class QueueTests(unittest.TestCase):
             train.view = Mock(return_value={"state": "OPEN", "isDraft": False, "headRefOid": "pinned",
                                             "baseRefName": "alpha", "reviewDecision": "APPROVED"})
             for code, output in ((1, "no checks reported on the 'feature/fixture' branch"),
-                                 (8, '[{"bucket":"pending"},{"bucket":"skipping"}]')):
+                                 (0, '[{"bucket":"pass"},{"bucket":"neutral"},{"bucket":"skipping"}]')):
                 runner.run.return_value = subprocess.CompletedProcess([], code, output)
                 train.check_head(pr, pr.head)
             runner.run.return_value = subprocess.CompletedProcess([], 1, '[{"bucket":"fail"}]')

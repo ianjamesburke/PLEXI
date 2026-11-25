@@ -26,7 +26,7 @@ FILTER_RULES = (
     (("src/ui/*", "src/overlays/*"), ("ui::layout_guard_tests::", "ui_tests::tests::")),
     (("src/app/quit.rs",), ("app::", "ui_tests::tests::")),
     (("src/broker/*", "src/host/plugin*", "src/plexi_ai/*", "src/pane_ops/create.rs",
-      "src/*socket*", "src/*caller*", "src/host/ipc*", "src/cli/ipc*", "src/cli/mod.rs"),
+      "src/*socket*", "src/*caller*", "src/host/ipc*", "src/cli/ipc*", "src/cli/mod.rs", "src/app/mod.rs"),
      ("testing::permission_gate_tests::", "testing::socket_policy_tests")),
 )
 VISIBLE_PATHS = ("website/*", "plugins/*", "src/ui/*", "src/overlays/*",
@@ -217,18 +217,26 @@ class Queue:
             rows = json.loads(result.stdout)
         else:
             raise Refusal("could not establish GitHub check state")
-        if not isinstance(rows, list) or any(row["bucket"] not in {"pass", "pending", "skipping", "neutral"} for row in rows):
+        if result.returncode == 8 or (isinstance(rows, list) and any(row["bucket"] == "pending" for row in rows)):
+            raise Refusal("GitHub reported a pending check")
+        if not isinstance(rows, list) or any(row["bucket"] not in {"pass", "skipping", "neutral"} for row in rows):
             raise Refusal("GitHub reported a failing or unknown check")
         current = self.view(number, fields)
+        if current["reviewDecision"] == "REVIEW_REQUIRED":
+            raise Refusal("GitHub review is required")
         if current.get("autoMergeRequest"):
             raise Refusal("PR has a GitHub auto-merge request")
         if (current["state"] != "OPEN" or current["isDraft"] or current["headRefOid"] != head
                 or current["baseRefName"] != "alpha" or current["reviewDecision"] == "CHANGES_REQUESTED"):
             raise Refusal("PR is no longer open and ready at the pinned head")
 
-    def admit(self, number, base, *, reviewed_head=None):
+    def admit(self, number, base, *, expected_head=None, reviewed_head=None):
         info = self.view(number, "headRefName,headRefOid,baseRefName,state,isDraft,isCrossRepository,body,labels,reviews,reviewDecision")
         branch, head = info["headRefName"], info["headRefOid"]
+        if expected_head is not None and head != expected_head:
+            raise Refusal("PR head changed since admission")
+        if info["reviewDecision"] == "REVIEW_REQUIRED":
+            raise Refusal("GitHub review is required")
         if info["state"] != "OPEN" or info["isDraft"] or info["baseRefName"] != "alpha":
             raise Refusal("PR must be open, ready, and target alpha")
         if info["isCrossRepository"] or not OID.fullmatch(head) or not branch.startswith("feature/"):
@@ -254,7 +262,7 @@ class Queue:
                 labels.add("risk-high")
         if "risk-high" in labels:
             raise Refusal("risk-high requires independent exact-head evidence outside the queue")
-        approval_head = reviewed_head or head
+        approval_heads = {head, reviewed_head} if reviewed_head is not None else {head}
         reviews = {}
         if len(info["reviews"]) >= 100:
             raise Refusal("too many GitHub reviews to establish current approval")
@@ -262,7 +270,7 @@ class Queue:
             if review["state"] != "COMMENTED":
                 reviews[review["author"]["login"]] = review
         if (info["reviewDecision"] == "CHANGES_REQUESTED"
-                or not any(r["state"] == "APPROVED" and (r.get("commit") or {}).get("oid") == approval_head
+                or not any(r["state"] == "APPROVED" and (r.get("commit") or {}).get("oid") in approval_heads
                            for r in reviews.values())):
             raise Refusal("no current GitHub approval at the pinned head")
         pr = PR(number, branch, head, block(body, "Candidate filters"),
@@ -389,7 +397,7 @@ class Queue:
         # The queue lead ruled that the identical range-diff preserves approval
         # across the rebase, so GitHub reviews still refer to the original SHA.
         try:
-            current = self.admit(pr.number, base, reviewed_head=pr.head)
+            current = self.admit(pr.number, base, expected_head=head, reviewed_head=pr.head)
             if current != replace(pr, head=head):
                 raise Refusal("PR head, branch, or candidate requirements changed since admission")
         except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
