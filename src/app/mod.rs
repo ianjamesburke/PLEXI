@@ -6,6 +6,7 @@ pub(crate) mod agents_view;
 pub(crate) mod approval_keyboard;
 pub(crate) mod assistant_host_tools;
 pub mod attention_queue;
+pub(crate) mod claude_question;
 pub mod audio_player_view;
 pub(crate) mod authority_import;
 pub(crate) mod canvas_bindings;
@@ -706,6 +707,7 @@ pub struct PlexiApp {
         HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
     pub zoom: zoom::ZoomState,
     pub attention_queue: attention_queue::AttentionQueueState,
+    claude_questions: claude_question::ClaudeQuestions,
     approval_keyboard: approval_keyboard::ApprovalKeyboard,
     /// Consent input guards for the event-consent, raw WASM review and
     /// keychain recovery dialogs (stints 1498, 1560); the capability prompt
@@ -937,19 +939,20 @@ pub(crate) fn handle_socket_line_in(
                 return;
             }
             let mut reply_token = crate::rpc::extract_response_file_token(line);
-            // Only the host assigns these registry keys. The client continues
-            // reading its original socket, even if two callers used the same label.
+            // Protected replies use host-issued registry keys. The client
+            // continues reading its original socket using its local label.
             const SECRET_STREAM: &str = "host-secret-stream";
+            const CLAUDE_STREAM: &str = "host-claude-stream";
             if reply_token
                 .as_deref()
                 .and_then(|s| std::path::Path::new(s).file_name())
                 .and_then(|s| s.to_str())
-                .is_some_and(|s| s.starts_with(SECRET_STREAM))
+                .is_some_and(|s| s.starts_with(SECRET_STREAM) || s.starts_with(CLAUDE_STREAM))
             {
                 log::warn!("pane_ipc: refused a reserved reply token");
                 return;
             }
-            let secret_token = match &mut cmd {
+            let protected_reply = match &mut cmd {
                 crate::protocol::HostRequest::SecretGet { response_file, .. }
                 | crate::protocol::HostRequest::SecretSet { response_file, .. }
                 | crate::protocol::HostRequest::SecretDelete { response_file, .. }
@@ -958,13 +961,24 @@ pub(crate) fn handle_socket_line_in(
                 | crate::protocol::HostRequest::FolderSecretRead { response_file, .. }
                 | crate::protocol::HostRequest::FolderSecretSet { response_file, .. }
                 | crate::protocol::HostRequest::FolderSecretRm { response_file, .. } => {
-                    Some(response_file)
+                    Some((response_file, SECRET_STREAM))
+                }
+                crate::protocol::HostRequest::NeedsYouApi { op, response_file, .. }
+                    if op == "claude_hook" =>
+                {
+                    Some((response_file, CLAUDE_STREAM))
                 }
                 _ => None,
             };
-            let secret_stream = secret_token.is_some();
-            if let Some(token) = secret_token.filter(|_| ack_writer.requires_reply_stream()) {
-                *token = crate::rpc::response_file_in(profile, SECRET_STREAM, "json");
+            let protected_stream = protected_reply.is_some();
+            if let Some((token, prefix)) =
+                protected_reply.filter(|_| ack_writer.requires_reply_stream())
+            {
+                if prefix == CLAUDE_STREAM && reply_token.is_none() {
+                    log::warn!("pane_ipc: refusing Claude hook without a reply label");
+                    return;
+                }
+                *token = crate::rpc::response_file_in(profile, prefix, "json");
                 reply_token = Some(token.clone());
             }
             if peer.is_none() {
@@ -990,9 +1004,15 @@ pub(crate) fn handle_socket_line_in(
             }
             if let Some(ref token) = reply_token {
                 if let Some(reply_stream) = ack_writer.clone_reply_stream() {
-                    crate::rpc::ReplyRegistry::register(token.clone(), reply_stream);
+                    if !crate::rpc::ReplyRegistry::register(token.clone(), reply_stream) {
+                        log::warn!("pane_ipc: refusing duplicate reply registration");
+                        if let Err(error) = ack_writer.write_all(br#"{"error":"a reply is already pending for this correlation label","error_code":"duplicate_reply_registration"}"#) {
+                            log::warn!("pane_ipc: could not report duplicate reply registration: {error}");
+                        }
+                        return;
+                    }
                 } else if ack_writer.requires_reply_stream()
-                    && (secret_stream
+                    && (protected_stream
                         || matches!(cmd, crate::protocol::HostRequest::SendToPane { .. }))
                 {
                     log::warn!("pane_ipc: refusing request without a retained reply stream");
@@ -2081,6 +2101,7 @@ impl PlexiApp {
                     pending_pane_pointer_frames: HashMap::new(),
                     zoom: zoom::ZoomState::default(),
                     attention_queue: attention_queue::AttentionQueueState::default(),
+                    claude_questions: Default::default(),
                     approval_keyboard: Default::default(),
                     event_consent_guard: Default::default(),
                     raw_wasm_review_guard: Default::default(),
@@ -2380,6 +2401,7 @@ impl PlexiApp {
             pending_pane_pointer_frames: HashMap::new(),
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
+            claude_questions: Default::default(),
             approval_keyboard: Default::default(),
             event_consent_guard: Default::default(),
             raw_wasm_review_guard: Default::default(),
@@ -3355,6 +3377,7 @@ impl PlexiApp {
             pending_pane_pointer_frames: HashMap::new(),
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
+            claude_questions: Default::default(),
             approval_keyboard: Default::default(),
             event_consent_guard: Default::default(),
             raw_wasm_review_guard: Default::default(),
@@ -3903,6 +3926,7 @@ impl eframe::App for PlexiApp {
             }
         }
         if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(&profile) {
+            self.service_claude_questions(&monitor, ctx);
             monitor.expire_needs_you();
         }
 

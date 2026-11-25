@@ -1,0 +1,31 @@
+{
+  "session_id": "c52730d8-8348-4e29-8ff2-2dc2030d623a",
+  "transcript_path": "/tmp/claude-question/fixture.jsonl",
+  "cwd": "/tmp/claude-question",
+  "prompt_id": "65eeb351-01df-4423-9fe1-61cbc7fb9271",
+  "permission_mode": "default",
+  "effort": {
+    "level": "low"
+  },
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Which color do you pick?",
+        "header": "Color",
+        "options": [
+          {
+            "label": "Red",
+            "description": "Red"
+          },
+          {
+            "label": "Blue",
+            "description": "Blue"
+          }
+        ],
+        "multiSelect": false
+      }
+    ]
+  }
+}

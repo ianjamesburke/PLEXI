@@ -1,4 +1,4 @@
-Stint: 1390 (design), built by 1391, 1392, 1396, the Agents view stint
+Stint: 1390 (design), built by 1391, 1392, 1396, the Agents view stint, 1770
 Status: active
 
 # The palette: commands, then files, then agents
@@ -14,7 +14,7 @@ The things you do every day live on shortcuts. The palette is for everything pas
 | Stop | Shows | Order | Preview |
 |---|---|---|---|
 | Commands (Cmd+P) | Today's rows: host commands, user commands, contexts, plugins, notes, update ready. Plugin commands from stint 1151 join, labelled with their plugin. Files and agents never appear here. | as today (`score_candidate`, group order) | none |
-| Files (Tab) | Files under the active context root, walked with `ScopedWalker` and its prune list | match score, then usage; empty query: usage, then newest modified | always: `text` or `image` |
+| Files (Tab) | Files under the active context root, respecting Git ignore rules and the shared search prune list | filename relevance and depth, then match score and usage. Empty query: usage, then newest modified | always: `text` or `image` |
 | Agents (Tab again) | Every agent, waiting on you first | waiting on you, then last interaction | always: `text` |
 
 Tab past Agents returns to Commands; Shift+Tab goes back. The query is kept across stops. Nothing here is configured: no palette table in `config.toml`, no pins, no per-view settings. The Explorer, the notes picker and Cmd+O are untouched in 0.6.
@@ -83,7 +83,8 @@ A row carries: `key` (`<source id>:<stable id>`, split on the first `:`), title,
 ## Files
 
 - One index per context root, kept by the host and refreshed in the background when the palette opens. A file row's stable id is its canonical absolute path. The Explorer keeps its own `SearchSession` until it moves onto the picker.
-- Usage: every `Activate` records the row key. With a query, usage breaks ties after match score; with an empty query it is the order, then newest modified. "Reset ranking" removes one row's entry.
+- Exact filenames and stems lead. Within the same basename match tier, shallower paths lead, and shorter completions lead among prefixes at the same depth.
+- Every `Activate` records usage for the row key. "Reset ranking" removes one row's entry.
 - Usage lives in one file, `palette-usage.json` in `shared_dir()` (`~/.plexi`, channel-neutral, as `src/host/AGENTS.md` requires of user data), holding row key, pick count and last pick time; entries unused for `USAGE_FORGET_AFTER` drop out. Only `src/host/picker` reads or writes it, off the UI thread, debounced, by atomic replace. Two channels running at once can overwrite each other's latest picks; that only changes order.
 
 ## Preview

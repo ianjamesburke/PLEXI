@@ -1,5 +1,5 @@
 //! The palette's Files source: one file index per context root, walked with
-//! `ScopedWalker` on a background thread and kept for the next open, so
+//! `ignore` on a background thread and kept for the next open, so
 //! cached rows answer at once while a fresh walk runs
 //! (`docs/palette-picker.md`, Files). Queries are scored on the worker too;
 //! the UI thread only installs answers, in `App::logic`.
@@ -7,8 +7,10 @@
 use super::preview::classify;
 use super::usage::{UsageBook, UsageEntry};
 use super::{usage_rank_key, PreviewRef, RowKey, FILES_SOURCE, MAX_SOURCE_ROWS};
-use crate::search::{score_candidate, CandidateInput, ScopedWalker, WalkConfig};
-use std::collections::{HashMap, HashSet};
+use crate::search::{normalize_rel_path, score_candidate, CandidateInput, MatchScore, WalkConfig};
+use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -32,33 +34,164 @@ pub(crate) struct IndexEntry {
 /// a walk they can hold open.
 pub(crate) type WalkFn = Arc<dyn Fn(&Path) -> Result<Vec<IndexEntry>, String> + Send + Sync>;
 
-/// The production walk: the canonical root, files only, through
-/// `ScopedWalker` and its prune list. The walker never follows a symlink,
-/// so nothing outside the root is listed.
+/// Index regular files under the canonical root, applying Git's ignore rules
+/// and the shared search prune list and budgets.
 pub(crate) fn walk_root(root: &Path) -> Result<Vec<IndexEntry>, String> {
     let root = root
         .canonicalize()
         .map_err(|err| format!("resolve context root {}: {err}", root.display()))?;
-    let outcome = ScopedWalker::walk(&WalkConfig::new(&root).with_include_dirs(false));
-    if outcome.budget_hit {
+    Ok(walk_files(&WalkConfig::new(&root)))
+}
+
+fn walk_files(config: &WalkConfig<'_>) -> Vec<IndexEntry> {
+    let root = config.root;
+    let mut matcher = ignore::WalkBuilder::new(root)
+        .build_matchers()
+        .pop()
+        .expect("one ignore matcher for the context root");
+    let mut queue = VecDeque::from([(PathBuf::new(), 0)]);
+    let mut entries = Vec::new();
+    let mut dirs_visited = 0;
+    let mut budget_hit = false;
+    'walk: while let Some((dir, depth)) = queue.pop_front() {
+        if depth >= config.max_depth {
+            continue;
+        }
+        if dirs_visited >= config.max_dirs || entries.len() >= config.max_files {
+            budget_hit = true;
+            break;
+        }
+        dirs_visited += 1;
+
+        let path = root.join(&dir);
+        let Ok(children) = fs::read_dir(&path).inspect_err(|err| {
+            log::warn!("palette files: read directory {}: {err}", path.display())
+        }) else {
+            continue;
+        };
+        let mut children: Vec<_> = children
+            .filter_map(|child| {
+                child
+                    .inspect_err(|err| {
+                        log::warn!("palette files: read entry in {}: {err}", path.display());
+                    })
+                    .ok()
+            })
+            .collect();
+        children.sort_by_cached_key(fs::DirEntry::file_name);
+
+        for child in children {
+            let Ok(name) = child.file_name().into_string() else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            let Ok(kind) = child.file_type().inspect_err(|err| {
+                log::warn!(
+                    "palette files: file type for {}: {err}",
+                    child.path().display()
+                );
+            }) else {
+                continue;
+            };
+            let is_dir = kind.is_dir();
+            if is_dir {
+                if depth + 1 >= config.max_depth || config.is_pruned_dir(&name) {
+                    continue;
+                }
+            } else if !kind.is_file() {
+                continue;
+            }
+
+            let relative_path = dir.join(&name);
+            let (matched, err) = matcher.matched_with_errors(&relative_path, is_dir);
+            if let Some(err) = err {
+                log::warn!(
+                    "palette files: ignore rules for {}: {err}",
+                    child.path().display()
+                );
+            }
+            if matched.is_ignore() {
+                continue;
+            }
+            if is_dir {
+                // Queue only directories that passed ignore checks. Their
+                // contents are opened once, when they reach the queue front.
+                queue.push_back((relative_path, depth + 1));
+                continue;
+            }
+
+            let metadata = child
+                .metadata()
+                .inspect_err(|err| {
+                    log::warn!(
+                        "palette files: metadata for {}: {err}",
+                        child.path().display()
+                    );
+                })
+                .ok();
+            entries.push(IndexEntry {
+                rel_path: normalize_rel_path(&relative_path),
+                file_name: name,
+                depth: depth + 1,
+                path: child.path(),
+                size: metadata.as_ref().map(fs::Metadata::len),
+                modified: metadata.and_then(|meta| meta.modified().ok()),
+            });
+            if entries.len() == config.max_files {
+                budget_hit = true;
+                break 'walk;
+            }
+        }
+    }
+    if budget_hit {
         log::info!(
             "palette files: walk of {} stopped at its budget ({} files)",
             root.display(),
-            outcome.files_seen
+            entries.len()
         );
     }
-    Ok(outcome
-        .entries
-        .into_iter()
-        .map(|entry| IndexEntry {
-            path: entry.path,
-            rel_path: entry.rel_path,
-            file_name: entry.file_name,
-            depth: entry.depth,
-            size: entry.size_bytes,
-            modified: entry.modified,
+    entries
+}
+
+/// How a query matches the filename, before recency and usage are compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FileMatchRank {
+    exact_name_or_stem: bool,
+    basename_tier: u8,
+    depth: Reverse<usize>,
+    unmatched_prefix_tail: Reverse<usize>,
+}
+
+impl FileMatchRank {
+    fn for_match(entry: &IndexEntry, score: &MatchScore) -> Option<Self> {
+        if score.basename_tier == 0 {
+            return None;
+        }
+        let name_len = entry.file_name.len();
+        let stem_len = Path::new(&entry.file_name)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map_or(name_len, str::len);
+        let prefix_end = match score.primary_ranges.as_slice() {
+            [range] if range.start == 0 => Some(range.end),
+            _ => None,
+        };
+        let unmatched_prefix_tail = prefix_end.map_or(0, |end| {
+            if end <= stem_len {
+                stem_len - end
+            } else {
+                name_len - end
+            }
+        });
+        Some(Self {
+            exact_name_or_stem: prefix_end == Some(stem_len) || prefix_end == Some(name_len),
+            basename_tier: score.basename_tier,
+            depth: Reverse(entry.depth),
+            unmatched_prefix_tail: Reverse(unmatched_prefix_tail),
         })
-        .collect())
+    }
 }
 
 /// A file row of an answer, ranked.
@@ -69,6 +202,7 @@ pub(crate) struct FileHit {
     pub rel_path: String,
     pub file_name: String,
     pub score: Option<i64>,
+    pub file_match: Option<FileMatchRank>,
     pub usage: Option<UsageEntry>,
     pub modified: Option<u64>,
     pub preview: PreviewRef,
@@ -296,12 +430,15 @@ fn rank(entries: &[IndexEntry], query: &Query) -> Vec<FileHit> {
                     .with_relative_path(&entry.rel_path)
                     .with_mtime(entry.modified)
                     .with_depth(entry.depth);
-                Some(score_candidate(text, &candidate, now)?.total)
+                Some(score_candidate(text, &candidate, now)?)
             };
             let usage = query.usage.get(key.as_str());
             Some(FileHit {
                 usage,
-                score,
+                file_match: score
+                    .as_ref()
+                    .and_then(|score| FileMatchRank::for_match(entry, score)),
+                score: score.map(|score| score.total),
                 modified: entry
                     .modified
                     .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
@@ -314,7 +451,9 @@ fn rank(entries: &[IndexEntry], query: &Query) -> Vec<FileHit> {
             })
         })
         .collect();
-    hits.sort_by_cached_key(|hit| usage_rank_key(hit.score, hit.usage, hit.modified));
+    hits.sort_by_cached_key(|hit| {
+        usage_rank_key(hit.file_match, hit.score, hit.usage, hit.modified)
+    });
     hits.truncate(MAX_SOURCE_ROWS);
     hits
 }
@@ -355,6 +494,92 @@ mod tests {
             .iter()
             .map(|hit| hit.rel_path.as_str())
             .collect()
+    }
+
+    fn readme_workspace() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("workspace");
+        let root = dir.path();
+        for path in ["a/b", "ignored", "worktrees/feature", ".git/info"] {
+            std::fs::create_dir_all(root.join(path)).expect("fixture directory");
+        }
+        for path in [
+            "README.md",
+            "a/b/README.md",
+            "readfile.tcl",
+            "readme-guide.md",
+            "ignored/README.md",
+            "worktrees/feature/README.md",
+        ] {
+            std::fs::write(root.join(path), "fixture").expect("fixture file");
+        }
+        std::fs::write(root.join(".gitignore"), "/ignored/\n").expect("gitignore");
+        std::fs::write(root.join(".git/info/exclude"), "/worktrees/\n").expect("git exclude");
+        std::fs::File::open(root.join("README.md"))
+            .expect("open root README")
+            .set_modified(UNIX_EPOCH + Duration::from_secs(1))
+            .expect("make root README older than the other files");
+        dir
+    }
+
+    #[test]
+    fn files_rank_shallow_short_names_first() {
+        let dir = readme_workspace();
+        let entries = walk_root(dir.path()).expect("walk");
+        for text in ["read", "readme"] {
+            let hits = rank(
+                &entries,
+                &Query {
+                    root: dir.path().to_path_buf(),
+                    text: text.to_owned(),
+                    generation: 1,
+                    usage: UsageBook::default(),
+                },
+            );
+            let names: Vec<_> = hits.iter().map(|hit| hit.rel_path.as_str()).collect();
+            assert_eq!(names.first(), Some(&"README.md"), "{text}: {names:?}");
+            if text == "readme" {
+                assert_eq!(names, ["README.md", "a/b/README.md", "readme-guide.md"]);
+            }
+        }
+    }
+
+    #[test]
+    fn files_honour_gitignore_and_git_exclude() {
+        let dir = readme_workspace();
+        let entries = walk_root(dir.path()).expect("walk");
+        let mut names: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.rel_path.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "README.md",
+                "a/b/README.md",
+                "readfile.tcl",
+                "readme-guide.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn files_index_shallow_siblings_before_deep_files_under_budget() {
+        let dir = tempfile::tempdir().expect("workspace");
+        let root = dir.path().canonicalize().expect("canonical root");
+        std::fs::create_dir_all(root.join("a/deep")).expect("deep directory");
+        std::fs::create_dir(root.join("z")).expect("later directory");
+        for n in 0..8 {
+            std::fs::write(root.join(format!("a/deep/{n}.txt")), "deep").expect("deep file");
+        }
+        std::fs::write(root.join("z/README.md"), "shallow").expect("shallow file");
+
+        let entries = walk_files(&WalkConfig::new(&root).with_max_files(2));
+        let names: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.rel_path.as_str())
+            .collect();
+        assert_eq!(names, ["z/README.md", "a/deep/0.txt"]);
     }
 
     #[test]
