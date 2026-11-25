@@ -43,7 +43,7 @@ impl PlexiApp {
             })
     }
 
-    /// Close the surviving members of the selection captured by the command.
+    /// Close the captured selection while it is still focused and visible.
     /// Returns false when Cmd+W should fall back to a focused-pane close.
     pub(crate) fn start_close_captured_selection(
         &mut self,
@@ -63,36 +63,22 @@ impl PlexiApp {
         {
             return false;
         }
-        let Some(win_idx) = self.windows.iter().position(|w| w.window_id == window_id) else {
+        if self.windows[self.active_window].window_id != window_id {
             return false;
-        };
+        }
         let Some(selection) = selection else {
             return false;
         };
-        let window = &self.windows[win_idx];
-        let panes: Vec<_> = selection
-            .panes
-            .iter()
-            .copied()
-            .filter(|id| window.panes.contains_key(id) && window.tree.tiles.find_pane(id).is_some())
-            .collect();
-        if panes.len() < 2 {
+        let Some(targets) = self.resolve_pane_targets(action).filter(|targets| {
+            targets.source == PaneTargetSource::Selection
+                && targets.panes.len() >= 2
+                && targets.panes == selection.panes
+                && self.host.pane_selection(window_id) == Some(selection)
+        }) else {
+            log::info!("close_batch: {action} ignored, captured selection is no longer active");
             return false;
-        }
-        let anchor = if panes.contains(&selection.anchor) {
-            selection.anchor
-        } else {
-            panes[0]
         };
-        self.start_selected_close_batch(
-            win_idx,
-            PaneTargets {
-                anchor,
-                panes,
-                source: PaneTargetSource::Selection,
-            },
-            action,
-        );
+        self.start_selected_close_batch(self.active_window, targets, action);
         true
     }
 

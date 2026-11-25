@@ -4309,7 +4309,7 @@ impl eframe::App for PlexiApp {
             log::info!("ui: Escape dismissed native popup before pane key dispatch");
         }
         self.suppress_approval_decision_repeats(&mut router_input);
-        let mut poll_actions_result = keys::poll_actions(
+        let mut shortcut_actions = keys::poll_actions(
             &mut router_input,
             filtered_bindings.as_deref().unwrap_or(&self.binding_table),
             &mut self.claimed_host_key_releases,
@@ -4338,7 +4338,6 @@ impl eframe::App for PlexiApp {
             }
             Some(input_owner::OverlaySurface::Layer(_)) | None => {}
         }
-        router_input.give_back(ctx);
 
         // Plugins only receive key input when no overlay holds focus. Double-check
         // input_captured_by_overlay() after the re-syncs above — an overlay may
@@ -4348,14 +4347,8 @@ impl eframe::App for PlexiApp {
         if overlay_key_disposition == crate::app::view_trait::KeyDisposition::Passthrough
             && !self.input_captured_by_overlay()
         {
-            // Ownership-transfer (stint 0387): take this frame's input-intent
-            // events out of `ctx`, hand them to the focused view pane's
-            // `handle_key`, then give back whatever it didn't claim so the
-            // pane's own render pass (a focused `TextEdit`) still sees typed
-            // text. Mirrors the overlay and `poll_actions` router pairs.
-            let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+            // Keep the original event positions for the view fallback pass.
             self.dispatch_plugin_key_events(ctx, &mut router_input);
-            router_input.give_back(ctx);
         }
         // Stint 0688: plugin-command servicing moved to `App::logic` — see
         // `service_view_commands`. Only the modal-render follow-up stays here,
@@ -4395,9 +4388,8 @@ impl eframe::App for PlexiApp {
                 // browser) is still in this frame's input queue. The restored
                 // terminal renders later this same frame and would forward it
                 // to its PTY — swallow all key/text events before closing.
-                ctx.input_mut(|i| {
-                    i.events
-                        .retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+                router_input.retain_events(|event| {
+                    !matches!(event, egui::Event::Key { .. } | egui::Event::Text(_))
                 });
                 self.close_focused_view();
             }
@@ -4456,8 +4448,7 @@ impl eframe::App for PlexiApp {
         // Focused TextInputs and plugins own bare Escape first; the dispatch gate
         // removes it when it exits a field so CloseView cannot fire in the same
         // frame. Global and Normal host chords were already removed above.
-        let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
-        poll_actions_result.extend(keys::poll_actions(
+        shortcut_actions.extend(keys::poll_actions(
             &mut router_input,
             filtered_bindings.as_deref().unwrap_or(&self.binding_table),
             &mut self.claimed_host_key_releases,
@@ -4467,7 +4458,9 @@ impl eframe::App for PlexiApp {
             self.show_shortcuts,
         ));
         router_input.give_back(ctx);
-        for action in poll_actions_result {
+        // The two ownership passes can claim interleaved key presses.
+        shortcut_actions.sort_unstable_by_key(|&(position, _)| position);
+        for (_, action) in shortcut_actions {
             self.dispatch_host_action(action, ctx);
         }
 
@@ -4599,6 +4592,9 @@ impl PlexiApp {
         ctx: &egui::Context,
         origin: crate::host::picker::InputOrigin,
     ) {
+        // Earlier shortcuts in this delivery may have changed focus or hidden
+        // a selection. Capture the target from the state they left behind.
+        self.reconcile_pane_selections();
         let invocation = self.keyboard_command_invocation(&action);
         let input = self.capture_command_activation(origin, action == Action::SetContextRootFromCwd);
         self.dispatch_registered_action(action, ctx, &invocation, input);

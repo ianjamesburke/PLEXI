@@ -2309,7 +2309,8 @@ impl PlexiApp {
             true,
             self.show_shortcuts,
         )
-        .contains(&crate::host::keys::Action::ToggleCommandPalette)
+        .iter()
+        .any(|(_, action)| *action == crate::host::keys::Action::ToggleCommandPalette)
     }
 
     /// Whether `event` continues a gesture pressed before the palette owned
@@ -2405,7 +2406,9 @@ impl PlexiApp {
             true,
             self.show_shortcuts,
         );
-        single.is_empty().then_some(actions)
+        single
+            .is_empty()
+            .then(|| actions.into_iter().map(|(_, action)| action).collect())
     }
 
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {

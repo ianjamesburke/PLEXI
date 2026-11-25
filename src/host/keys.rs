@@ -784,6 +784,8 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 /// bindings afterward. Thus host chords are structurally removed before a
 /// guest runtime can see them, while a plugin or focused text field still owns
 /// bare Escape before CloseView.
+/// The result retains each action's original input position. The dispatcher
+/// captures its target after applying preceding actions in delivery order.
 pub fn poll_actions(
     input: &mut crate::app::input_router::PlexiInput,
     table: &[BindingEntry],
@@ -792,12 +794,12 @@ pub fn poll_actions(
     keyboard_capture_active: bool,
     overlay_open: bool,
     shortcuts_overlay_open: bool,
-) -> Vec<Action> {
+) -> Vec<(usize, Action)> {
     let mut actions = Vec::new();
 
     // Resolve the most specific binding for each press in delivery order.
     // The table's order breaks ties for a single event.
-    input.retain_events(|event| {
+    input.retain_positioned_events(|position, event| {
         let egui::Event::Key {
             key,
             pressed,
@@ -859,9 +861,9 @@ pub fn poll_actions(
                 | Action::UiScaleUp
                 | Action::UiScaleDown
                 | Action::UiScaleReset
-        ) || !actions.contains(&entry.action)
+        ) || !actions.iter().any(|(_, action)| action == &entry.action)
         {
-            actions.push(entry.action.clone());
+            actions.push((position, entry.action.clone()));
         }
         false
     });
@@ -1209,7 +1211,10 @@ mod tests {
                 /* keyboard_capture */ false,
                 /* overlay_open */ false,
                 /* shortcuts_overlay_open */ false,
-            );
+            )
+            .into_iter()
+            .map(|(_, action)| action)
+            .collect();
         });
         actions
     }
@@ -1246,7 +1251,10 @@ mod tests {
                         /* keyboard_capture */ false,
                         overlay_open,
                         /* shortcuts_overlay_open */ false,
-                    );
+                    )
+                    .into_iter()
+                    .map(|(_, action)| action)
+                    .collect::<Vec<_>>();
                     remaining_events = input.events().len();
                 });
                 (actions, remaining_events)
@@ -1454,7 +1462,10 @@ mod tests {
                     /* keyboard_capture */ false,
                     /* overlay_open */ false,
                     /* shortcuts_overlay_open */ false,
-                );
+                )
+                .into_iter()
+                .map(|(_, action)| action)
+                .collect();
                 remaining_events = input.events().len();
             });
             assert_eq!(actions, vec![expected]);
