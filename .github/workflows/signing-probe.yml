@@ -245,6 +245,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       winner: ${{ steps.variants.outputs.winner }}
+      sip_enabled: ${{ steps.provenance.outputs.sip_enabled }}
     steps:
       - name: Set probe workspace
         run: echo "PROBE_ROOT=$RUNNER_TEMP/plexi-signing-probe" >> "$GITHUB_ENV"
@@ -255,16 +256,27 @@ jobs:
           path: ${{ env.PROBE_ROOT }}/signed
 
       - name: Record smoke runner provenance
+        id: provenance
         run: |
           mkdir -p "$PROBE_ROOT/evidence"
+          sip_status="$(csrutil status)"
+          if [[ "$sip_status" == 'System Integrity Protection status: enabled.' ]]; then
+            sip_enabled=true
+          else
+            sip_enabled=false
+          fi
           {
             printf 'Commit %s\n\n' "$GITHUB_SHA"
             sw_vers
             uname -m
-            csrutil status
+            printf '%s\n' "$sip_status"
+            printf 'sip_enabled=%s\n' "$sip_enabled"
+            if [[ "$sip_enabled" != true ]]; then
+              printf 'Smoke results on a SIP-disabled runner do not prove hardened-runtime enforcement.\n'
+            fi
           } | tee "$PROBE_ROOT/evidence/summary.txt"
+          echo "sip_enabled=$sip_enabled" >> "$GITHUB_OUTPUT"
           [[ "$(uname -m)" == arm64 ]]
-          csrutil status | grep -Fx 'System Integrity Protection status: enabled.'
 
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
