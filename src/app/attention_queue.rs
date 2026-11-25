@@ -463,7 +463,7 @@ impl PlexiApp {
         };
         if self.synthetic_input_frame {
             log::info!(
-                "decision_overlay: rejected synthetic decision ask_id={} option_idx={option_idx}",
+                "decision_overlay: rejected synthetic decision ask_id={}",
                 overlay.ask_id
             );
             return;
@@ -2303,13 +2303,16 @@ impl PlexiApp {
             option_key: option.key.clone(),
             option_label: option.label.clone(),
         };
-        log::info!(
-            "decision_overlay: host decision recorded ask_id={} pane_id={} option={}:{}",
-            verdict.ask_id,
-            verdict.pane_id,
-            verdict.option_idx,
-            verdict.option_key
-        );
+        // The broker already logs the Needs You outcome without the answer.
+        if !matches!(overlay.source, QueueSource::NeedsYou { .. }) {
+            log::info!(
+                "decision_overlay: host decision recorded ask_id={} pane_id={} option={}:{}",
+                verdict.ask_id,
+                verdict.pane_id,
+                verdict.option_idx,
+                verdict.option_key
+            );
+        }
         self.attention_queue.verdicts.push(verdict);
         self.record_agent_interaction(overlay.pane_id, "answer");
         self.attention_queue.decision_overlay = None;
@@ -6318,6 +6321,55 @@ mod tests {
             assert!(
                 records.iter().all(|(_, line)| !line.contains(content)),
                 "desktop answer leaked into logs"
+            );
+        }
+
+        let desktop_choice = "desktop overlay choice canary";
+        let desktop_id = monitor
+            .file_needs_you_with_details(
+                NeedsYouFile {
+                    kind: NeedsYouKind::Question,
+                    actor: crate::broker::principal::RecordOwner::Pane(
+                        h.app.pane_principal(pane).unwrap(),
+                    ),
+                    resource: format!("pane:{pane}"),
+                    summary: "Choose a branch".into(),
+                    expires_at: None,
+                    run_tag: None,
+                },
+                Some(crate::broker::gate::NeedsYouDetails {
+                    choices: vec![desktop_choice.into(), "another branch".into()],
+                    pane_id: Some(pane),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        assert!(h.app.open_decision_overlay_for_ask(&desktop_id));
+        h.app.arm_decision_overlay_for_test();
+        let before_answer = capture.records().len();
+        h.app.request_decision_overlay_option(0);
+        assert_eq!(
+            monitor
+                .host_records()
+                .question(&desktop_id)
+                .unwrap()
+                .answer
+                .as_deref(),
+            Some(desktop_choice)
+        );
+        let records = capture.records();
+        let decision_logs = &records[before_answer..];
+        let outcome = format!("needs_you: resolved {desktop_id} answered");
+        assert!(decision_logs
+            .iter()
+            .any(|(level, line)| *level == log::Level::Info && line == &outcome));
+        for (_, line) in decision_logs {
+            assert!(
+                !line.contains("option=")
+                    && !line.contains("option_idx=")
+                    && !line.contains("choice_1")
+                    && !line.contains(desktop_choice),
+                "desktop overlay answer leaked into logs: {line}"
             );
         }
     }
