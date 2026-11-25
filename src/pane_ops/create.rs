@@ -2238,31 +2238,6 @@ impl PlexiApp {
             .map(|c| c.context_id)
     }
 
-    /// Resolve a launch directory under the live caller's host-owned scope.
-    pub(crate) fn resolve_agent_spawn_cwd(
-        &self,
-        caller: Option<PaneId>,
-        cwd: PathBuf,
-    ) -> Result<PathBuf, String> {
-        let Some(caller) = caller else {
-            return Ok(cwd);
-        };
-        let root = self.pane_context_authority_root(caller).ok_or_else(|| {
-            format!("permission_denied: no workspace root for caller pane {caller}")
-        })?;
-        let resolved = cwd
-            .canonicalize()
-            .map_err(|error| format!("resolve agent launch cwd {}: {error}", cwd.display()))?;
-        if !resolved.starts_with(&root) {
-            return Err(format!(
-                "permission_denied: agent launch cwd '{}' is outside the caller workspace '{}'",
-                resolved.display(),
-                root.display()
-            ));
-        }
-        Ok(resolved)
-    }
-
     /// Where a spawned agent pane lands, resolved without changing anything.
     /// Every check an admitted sub-context needs happens here; a sub-context
     /// that must be created is only described, and exists once the worker is
@@ -2282,8 +2257,7 @@ impl PlexiApp {
             root: parent_root,
             depth: parent_depth,
         } = self.agent_spawn_parent(from_pane_id, origin)?;
-        let effective_cwd =
-            self.resolve_agent_spawn_cwd(parent_pane_id, cwd_override.unwrap_or(parent_root))?;
+        let effective_cwd = cwd_override.unwrap_or_else(|| parent_root.clone());
 
         let target = if let Some(target) = subcontext {
             let sub_name = target.name();

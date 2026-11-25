@@ -18526,7 +18526,6 @@ mod agent_state_restoration_tests {
             "[agent]\nid = \"auditor\"\ndisplay_name = \"auditor\"\n\n[harness]\ncli = \"pi\"\nflags = [\"--verbose\"]\n",
         )
         .expect("write active auditor settings");
-        h.app.set_context_root(tmp.path().to_path_buf(), None);
         let master_pane = h.add_focused_terminal();
 
         let spawn_reply = temp_response(tmp.path(), "spawn-worker");
@@ -20360,11 +20359,6 @@ impl AgentFocusFixture {
         vec![self.home.path().to_path_buf()]
     }
 
-    pub(super) fn add_project_caller(&self, h: &mut HostHarness) -> PaneId {
-        h.app.set_context_root(self.proj_dir.clone(), None);
-        h.add_focused_terminal()
-    }
-
     pub(super) fn request(&self, mut payload: serde_json::Value) -> HostRequest {
         payload["harness"] = serde_json::json!("pi");
         payload["command"] = serde_json::Value::String("sleep 30".into());
@@ -20414,7 +20408,7 @@ pub(super) fn agent_spawn_reply(req: &HostRequest) -> String {
 fn agent_start_from_focused_terminal_focuses_new_pane_and_routes_typed_input() {
     let fx = AgentFocusFixture::new();
     let mut h = HostHarness::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     assert_eq!(
         h.app.host_input_owner(),
         crate::app::input_owner::InputOwner::Pane(caller)
@@ -20470,7 +20464,7 @@ fn agent_start_from_focused_terminal_focuses_new_pane_and_routes_typed_input() {
 fn agent_spawn_background_worker_preserves_caller_focus() {
     let fx = AgentFocusFixture::new();
     let mut h = HostHarness::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let req = fx.spawn();
     let reply = agent_spawn_reply(&req);
     h.inject_from_pane(caller, req);
@@ -20505,7 +20499,7 @@ fn agent_start_with_stale_caller_preserves_focus() {
 fn agent_start_from_background_context_caller_preserves_active_focus() {
     let fx = AgentFocusFixture::new();
     let mut h = HostHarness::new();
-    let background_caller = fx.add_project_caller(&mut h);
+    let background_caller = h.add_focused_terminal();
     let active_ctx = h.app.create_context_without_pty("front", None);
     let front_idx = h.app.windows.len() - 1;
     let (tile, front_pane) = h.app.add_view_pane_in_window(front_idx, "front");
@@ -20525,7 +20519,7 @@ fn agent_start_from_background_context_caller_preserves_active_focus() {
 fn agent_start_unknown_agent_fails_before_launch_and_preserves_focus() {
     let fx = AgentFocusFixture::new();
     let mut h = HostHarness::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let before = h.app.windows[0].panes.len();
     let mut request = crate::cli::agent::agent_start_payload(
         "no-such-agent", &fx.proj_dir, None, &fx.stops(),
@@ -20921,7 +20915,6 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
     let dir = tempfile::tempdir().expect("tempdir");
     let _profile_guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
     let mut h = HostHarness::new();
-    h.app.set_context_root(dir.path().to_path_buf(), None);
     let human_shell_id = h.add_focused_terminal();
 
     let spawn_reply = temp_response(dir.path(), "human-spawn-worker");
@@ -21075,7 +21068,6 @@ allow = ["pane.send"]
     let stops = vec![fake_home.path().to_path_buf()];
 
     let mut h = HostHarness::new();
-    h.app.set_context_root(proj_dir.clone(), None);
     let human_shell = h.add_focused_terminal();
 
     // 2. Start-without-message with human parent provenance:
@@ -22094,7 +22086,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
     let mut h = HostHarness::new();
     let human_shell = h.add_focused_terminal();
     let ws_dir = tempfile::tempdir().unwrap();
-    h.app.set_context_root(ws_dir.path().to_path_buf(), None);
+    h.app.windows[0].path = ws_dir.path().to_path_buf();
 
     if let Some(pane) = h.app.windows[0].panes.get_mut(&human_shell) {
         if let Some(t) = pane.as_terminal_mut() {
@@ -25066,7 +25058,7 @@ fn named_agent_focuses_when_running() {
     // resolver finds `researcher` through `config_dir()`.
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let req = fx.start();
     let reply = agent_spawn_reply(&req);
     h.inject_from_pane(caller, req);
@@ -25115,7 +25107,7 @@ fn named_agent_resumes_last_chat_when_stopped() {
     // resolver finds `researcher` through `config_dir()`.
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let sessions = fx.home.path().join("pi-sessions");
     let _pi = seed_pi_session(&sessions, "sess-new");
     {
@@ -25180,7 +25172,7 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
     for busy in [false, true] {
         let mut h = HostHarness::new();
         let fx = AgentFocusFixture::new();
-        let caller = fx.add_project_caller(&mut h);
+        let caller = h.add_focused_terminal();
         let sessions = fx.home.path().join("pi-sessions");
         let _pi = seed_pi_session(&sessions, "sess-old");
         let _new_pi = seed_pi_session(&sessions, "sess-new");
@@ -25234,8 +25226,7 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
         );
         let resumed = terminal(&h, pane_id);
         assert!(resumed.agent_launch.is_some());
-        let expected_cwd = fx.proj_dir.canonicalize().unwrap();
-        assert_eq!(resumed.initial_cwd.as_ref(), Some(&expected_cwd));
+        assert_eq!(resumed.initial_cwd.as_ref(), Some(&fx.proj_dir));
         assert_eq!(resumed.agent_session_id.as_deref(), Some("sess-new"));
         assert!(resumed
             .last_resumed_command
@@ -25270,7 +25261,7 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
 fn named_agent_exited_chat_selects_newest_eligible_pane() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let sessions = fx.home.path().join("pi-sessions");
     let _pi = seed_pi_session(&sessions, "older");
     let _new_pi = seed_pi_session(&sessions, "newer");
@@ -25389,7 +25380,7 @@ fn named_agent_starts_new_when_never_run() {
     // resolver finds `researcher` through `config_dir()`.
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     // Not a last chat: another workspace, a different harness, an ephemeral
     // run, and a session the harness no longer has.
     let other = fx.home.path().join("other");
@@ -25458,7 +25449,7 @@ fn cli_agent_open_matches_palette() {
     // resolver finds `researcher` through `config_dir()`.
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let req = fx.start();
     let reply = agent_spawn_reply(&req);
     h.inject_from_pane(caller, req);
@@ -25598,7 +25589,7 @@ fn tile_slot(h: &HostHarness, pane: PaneId) -> (egui_tiles::TileId, usize) {
 fn named_agent_focuses_most_recently_focused_of_several() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let older = start_researcher(&mut h, &fx, caller);
     let newer = start_researcher(&mut h, &fx, caller);
     assert!(newer > older, "the tie-break alone would pick {newer}");
@@ -25629,7 +25620,7 @@ fn named_agent_focuses_most_recently_focused_of_several() {
 fn named_agent_skips_exited_pane() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let dead = start_researcher(&mut h, &fx, caller);
     let sessions = fx.home.path().join("pi-sessions");
     let _pi = seed_pi_session(&sessions, "dead-session");
@@ -25667,7 +25658,7 @@ fn named_agent_skips_exited_pane() {
 fn named_agent_resumes_beside_unfocused_caller() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let focused = h.add_focused_terminal();
     assert_eq!(h.app.active_focused_pane_id(), Some(focused));
     let sessions = fx.home.path().join("pi-sessions");
@@ -25706,7 +25697,7 @@ fn named_agent_resumes_beside_unfocused_caller() {
 fn named_agent_resume_uses_verified_caller_not_claimed() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let verified = fx.add_project_caller(&mut h);
+    let verified = h.add_focused_terminal();
     let claimed = h.add_focused_terminal();
     let verified_pid = h.app.windows[0].panes[&verified]
         .as_terminal()
@@ -25957,7 +25948,7 @@ fn named_agent_counts_detected_agent_after_launch_ended() {
 fn named_agent_back_to_back_opens_start_one_pane() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let before = pane_total(&h);
     h.app.pane_navigate(caller);
     palette_queue_open_researcher(&mut h, &fx);
@@ -25979,6 +25970,47 @@ fn named_agent_back_to_back_opens_start_one_pane() {
         before + 1,
         "the second open found the first"
     );
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires-pty"]
+fn named_agent_palette_launch_uses_shell_cwd_after_cd() {
+    use crate::app::palette_agents::AgentTarget;
+    use crate::host::shell::{get_pid_cwd_fresh, set_test_shell_override, shell_quote};
+
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = {
+        let _shell = set_test_shell_override("/bin/sh");
+        h.add_focused_terminal()
+    };
+    let project = fx.proj_dir.canonicalize().unwrap();
+    std::fs::create_dir(project.join(".git")).unwrap();
+    assert!(!project.starts_with(h.workspace_root().canonicalize().unwrap()));
+
+    write_to_terminal(
+        &mut h,
+        caller,
+        &format!("cd {}\r", shell_quote(project.to_str().unwrap())),
+    );
+    tick_until(
+        &mut h,
+        caller,
+        "shell cd to the other project",
+        |terminal| get_pid_cwd_fresh(terminal.backend.child_pid()).as_ref() == Some(&project),
+    );
+
+    let _shell = use_inert_agent_shell(fx.home.path());
+    h.app.begin_palette_agents_session();
+    h.app
+        .queue_palette_agent_activation(AgentTarget::Definition("researcher".into()), "focus");
+    h.app.service_palette_agent_activation();
+
+    let pane = h.app.active_focused_pane_id().expect("focused pane");
+    assert_ne!(pane, caller, "the palette must launch the agent");
+    assert_eq!(terminal_role(&h, pane).as_deref(), Some("researcher"));
+    assert_eq!(terminal(&h, pane).initial_cwd.as_ref(), Some(&project));
 }
 
 /// A pane whose agent launch is a resume typed into its interactive shell (a
@@ -26106,7 +26138,7 @@ fn assert_agent_mesh_ipc_gate_enabled(route: &str, enabled: bool) {
     } else {
         &[]
     });
-    let caller = fx.add_project_caller(&mut h);
+    let caller = h.add_focused_terminal();
     let response = temp_response(fx.home.path(), route);
     let request = match route {
         "AgentOpen" => HostRequest::AgentOpen {

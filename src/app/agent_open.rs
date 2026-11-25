@@ -138,12 +138,11 @@ impl PlexiApp {
             return Ok(outcome);
         }
 
-        let cwd = self.resolve_agent_spawn_cwd(verified_caller, cwd.to_path_buf())?;
-        let (request, launch) = named_agent_start(self, name, &cwd, verified_caller)?;
+        let (request, launch) = named_agent_start(name, cwd)?;
         let harness = launch.harness.as_str();
 
-        let open_chat = self.exited_named_agent_chat(name, harness, &cwd);
-        if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, harness, &cwd)) {
+        let open_chat = self.exited_named_agent_chat(name, harness, cwd);
+        if let Some(record) = open_chat.or_else(|| self.last_named_agent_chat(name, harness, cwd)) {
             let session_id = record.session_id.clone().unwrap_or_default();
             // A reopen is admitted under the authenticated caller only. An
             // outside caller's run opens beside the focused pane (placement)
@@ -201,14 +200,12 @@ impl PlexiApp {
         // caller as it will be once that chat's pane is gone (a new chat
         // asked for from inside the chat it replaces). A launch that could
         // not proceed is refused here, with the current chat untouched.
-        let verified_caller = self.resolve_launch_source(origin, caller)?.caller_pane;
-        let cwd = self.resolve_agent_spawn_cwd(verified_caller, cwd.to_path_buf())?;
-        let (request, launch) = named_agent_start(self, name, &cwd, verified_caller)?;
+        let (request, launch) = named_agent_start(name, cwd)?;
         let harness = launch.harness.as_str();
-        let chat_pane = self.chat_pane_to_archive(name, harness, &cwd);
+        let chat_pane = self.chat_pane_to_archive(name, harness, cwd);
         let (launch_origin, launch_caller) = self.origin_without_pane(origin, caller, chat_pane);
         self.resolve_launch_source(&launch_origin, launch_caller)?;
-        let archived_run_id = self.archive_named_agent_chat(name, harness, &cwd, chat_pane)?;
+        let archived_run_id = self.archive_named_agent_chat(name, harness, cwd, chat_pane)?;
         let pane_id = self.start_named_agent_chat(
             &request,
             &launch,
@@ -533,10 +530,8 @@ impl PlexiApp {
 /// is launched. No pane id in the payload names a caller: the spawn it
 /// becomes resolves its caller from the request's origin (stint 1285).
 fn named_agent_start(
-    app: &PlexiApp,
     name: &str,
     cwd: &Path,
-    caller: Option<PaneId>,
 ) -> Result<
     (
         crate::protocol::HostRequest,
@@ -546,18 +541,8 @@ fn named_agent_start(
 > {
     let stops = crate::app::registry::workspace_walk_stops()?;
     let payload = crate::cli::agent::agent_start_payload(name, cwd, None, &stops)?;
-    let mut request = serde_json::from_value(payload)
+    let request = serde_json::from_value(payload)
         .map_err(|error| format!("agent open: invalid launch request for '{name}': {error}"))?;
-    if let crate::protocol::HostRequest::AgentSpawn {
-        cwd: Some(path), ..
-    } = &mut request
-    {
-        // Validate the project cwd before New chat can archive anything.
-        *path = app
-            .resolve_agent_spawn_cwd(caller, path.as_str().into())?
-            .to_string_lossy()
-            .into_owned();
-    }
     let launch = crate::pane_ops::create::ConfiguredAgentLaunch::resolve_in(
         name,
         cwd,
