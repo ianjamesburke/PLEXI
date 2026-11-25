@@ -1,8 +1,6 @@
-## Purpose
+`CLAUDE.md` is a symlink to this AGENTS.md.
 
-`CLAUDE.md` is a symlink to this file. Cross-cutting rules for all agents. Domain-specific contracts live in each directory's own `AGENTS.md`.
-
-Plexi is an agent operating system. Judge every change by whether it moves an agent closer to operating the machine *through* Plexi: native surfaces instead of OS apps, brokered capability instead of raw access, structured state instead of scraped output. An agent inside a pane reaches for the Plexi surface first and treats the OS as the fallback.
+Plexi is an ai-agent native work environment. An agent inside a pane reaches for the Plexi surface first and treats the OS as the fallback.
 
 Before editing any file, read the `AGENTS.md` in its directory if one exists. Child rules add to this file; they never override it.
 
@@ -138,7 +136,7 @@ Every fact lives in exactly one place. Other files reference it; they never rest
 
 ## Traps
 
-- **macOS child PID lookup:** `proc_listchildpids` returns `EFAULT` on Sonoma. Use `pgrep -P <pid>` instead.
+Use `pgrep -P <pid>` instead of proc_listchildpids
 - **Auto-committing scripts:** `cargo run -p gen_config_docs > website/src/content/docs/config.md` to regenerate config docs without `just`'s auto-commit/push.
 - **Stale git index:** Run `git update-index --refresh` if `git status --porcelain` shows false-dirty files.
 - **macOS platform timing:** Add a throwaway `log::info!()` to observe actual runtime values on the first frame instead of guessing callback order.
@@ -182,8 +180,7 @@ Use `plexi host screenshot [--pane <id>] [--output <path>]` to capture real host
 
 ## General Rules
 
-- When the user reports a bug, fix what they asked for first.
 - App/host state is reached through SDK tools or CLI, never a `~/.plexi*` path.
-- Never use `#[allow(dead_code)]` or `#[allow(unused)]`. Delete or wire up.
+- avoid `#[allow(dead_code)]` or `#[allow(unused)]`. Delete or wire up.
 - Follow the mandatory self-validation contract above after work; bare `cargo build` is not an installable-build gate.
 - **Failed PR reset:** close the PR, revert worktree, comment on the issue, re-label `ready`, start fresh.
