@@ -203,6 +203,13 @@ fn action_ids_slot(modal: &str) -> egui::Id {
     egui::Id::new(("plexi_action_modal_ids", modal))
 }
 
+#[derive(Clone, Default)]
+struct ModalHeldKeys {
+    pass: u64,
+    focused: bool,
+    keys: std::collections::HashSet<egui::Key>,
+}
+
 /// The arm-delay guard of each modal's destructive actions, by modal id.
 type DestructiveGuards = std::collections::HashMap<String, crate::broker::consent::ConsentGuard>;
 
@@ -378,26 +385,56 @@ impl<'a> ActionModal<'a> {
                 .find(|(_, id)| *id == focused)
                 .and_then(|(name, _)| self.actions.iter().find(|a| a.id == name))
         });
-        // egui tracks held keys across frames, including across modal changes.
-        // Drop repeats before either shortcut dispatch or egui button activation.
-        // A field can still repeat typing, including spaces and newlines.
+        // egui clears keys_down on blur, and egui-winit supplies no native
+        // repeat bit. Keep the modal's known held keys until a release arrives,
+        // so a repeat cannot become an activation at either dispatch path.
+        let key_slot = egui::Id::new(("plexi_action_modal_held_keys", ctx.viewport_id(), self.id));
+        let pass = ctx.cumulative_pass_nr();
+        let mut held = ctx
+            .data_mut(|d| d.remove_temp::<ModalHeldKeys>(key_slot))
+            .unwrap_or_default();
         ctx.input_mut(|input| {
+            // A gap in drawing usually means the modal closed. Preserve held
+            // keys when focus changed, since eframe can skip painting on blur.
+            if pass.saturating_sub(held.pass) > 1
+                && held.focused
+                && input.focused
+                && !input
+                    .raw
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::WindowFocused(_)))
+            {
+                held.keys.clear();
+            }
+            held.pass = pass;
+            held.focused = input.focused;
+
             input.events.retain(|event| {
                 let egui::Event::Key {
                     key,
-                    pressed: true,
-                    repeat: true,
+                    pressed,
+                    repeat,
                     modifiers,
                     ..
                 } = event
                 else {
                     return true;
                 };
+                if !pressed {
+                    held.keys.remove(key);
+                    return true;
+                }
+                if held.keys.insert(*key) && !repeat {
+                    return true;
+                }
+
+                // A field can still repeat typing, including spaces and newlines.
                 let button_activation = matches!(key, egui::Key::Enter | egui::Key::Space)
                     && (field_id.is_none() || focused_action.is_some());
                 let default_activation =
                     self.default_action.is_some() && default_shortcut.matches(*key, *modifiers);
-                !(button_activation
+                let activation = button_activation
                     || default_activation
                     || self.actions.iter().any(|action| {
                         action
@@ -407,9 +444,19 @@ impl<'a> ActionModal<'a> {
                             .any(|shortcut| {
                                 action_shortcut(action, *shortcut).matches(*key, *modifiers)
                             })
-                    }))
+                    });
+                if activation && !repeat {
+                    log::info!(
+                        "ui: modal {} ignored held key {key:?} until release",
+                        self.id
+                    );
+                }
+                !activation
             });
+            // This also picks up keys already held when the modal opened.
+            held.keys.extend(input.keys_down.iter().copied());
         });
+        ctx.data_mut(|d| d.insert_temp(key_slot, held));
         // Only a modal that traps focus explicitly routes Enter or Space to
         // the focused action.
         let mut selected = focused_action
@@ -890,6 +937,71 @@ mod adoption_tests {
             pressed,
             repeat: false,
             modifiers,
+        }
+    }
+
+    #[test]
+    fn refocus_requires_release_before_modal_keys_can_activate() {
+        use egui::{Event, Key, Modifiers};
+
+        for (held, expected) in [(Key::Enter, "save"), (Key::Escape, "cancel")] {
+            let ctx = egui::Context::default();
+            crate::ui::theme::setup_fonts(&ctx);
+            let colors =
+                Colors::from_config(&crate::ui::theme::preset_colors("plexi-dusk").unwrap());
+            let actions = [
+                DialogAction::new("save", "Save", ButtonKind::Primary),
+                DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                    .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape).exact()),
+            ];
+            let frame = |focused, shown: bool, events| {
+                let mut selected = None;
+                let _ = ctx.run_ui(
+                    egui::RawInput {
+                        focused,
+                        events,
+                        ..Default::default()
+                    },
+                    |_| {
+                        if !shown {
+                            return;
+                        }
+                        let response = ActionModal::new("refocus", "Save changes?", &actions)
+                            .default_action("save")
+                            .show(&ctx, &colors, |_| {});
+                        assert!(!response.dismissed);
+                        selected = response.selected;
+                    },
+                );
+                selected
+            };
+
+            let key_edge = |pressed| key(held, Modifiers::NONE, pressed);
+            let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+            // Open the modal while the key is down. eframe can skip drawing
+            // the modal on the blur pass, so cover that path too.
+            assert_eq!(frame(true, false, vec![key_edge(true)]), None);
+            assert_eq!(frame(true, true, vec![]), None);
+            assert_eq!(
+                frame(false, held == Key::Enter, vec![Event::WindowFocused(false)]),
+                None
+            );
+            // egui-winit sends repeat=false on every press. After blur, egui
+            // has forgotten the held key and treats the first repeat as fresh.
+            assert_eq!(
+                frame(
+                    true,
+                    true,
+                    vec![Event::WindowFocused(true), key_edge(true)]
+                ),
+                None,
+                "{held:?} repeated across window focus"
+            );
+            assert_eq!(frame(true, true, vec![key_edge(true)]), None);
+            assert_eq!(
+                frame(true, true, vec![key_edge(false), key_edge(true)]),
+                Some(expected)
+            );
         }
     }
 
