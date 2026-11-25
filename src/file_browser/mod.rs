@@ -7828,6 +7828,43 @@ mod tests {
             .as_terminal()
             .is_some());
 
+        h.frame(RawInput {
+            events: vec![Event::Key {
+                key: Key::N,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            ..Default::default()
+        });
+        assert!(h.app.pane_navigate(explorer));
+        h.run_frames(2);
+        assert_eq!(h.app.active_focused_pane_id(), Some(explorer));
+        let context_count = h.app.router.len();
+        let original_context = h.app.router.active().context_id;
+        let new_context_modifiers = Modifiers::COMMAND | Modifiers::SHIFT;
+
+        h.press_key(Key::N, new_context_modifiers).run_frames(2);
+
+        let (_, browser) = explorer_in_harness(&mut h);
+        assert!(
+            !browser.in_palette,
+            "Cmd+Shift+N must leave Explorer Actions closed"
+        );
+        assert_eq!(h.app.router.len(), context_count + 1);
+        assert_ne!(h.app.router.active().context_id, original_context);
+        // Host dispatch can hide a duplicate binding from the focused view.
+        assert_eq!(
+            classify_events(
+                vec![key_event(Key::N, new_context_modifiers)],
+                new_context_modifiers,
+                false,
+            ),
+            None,
+            "Cmd+Shift+N must have no Explorer binding"
+        );
+
         assert!(h.app.pane_navigate(explorer));
         h.run_frames(2);
         h.press_key(Key::Slash, Modifiers::NONE);

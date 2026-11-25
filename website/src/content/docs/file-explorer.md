@@ -20,11 +20,11 @@ Press `⌘E` from any focused terminal pane. The overlay opens over your current
 | Move up | `k` or `↑` |
 | Open file / enter directory | `Enter`, `l`, or `→` |
 | Go up one directory | `h`, `Backspace`, or `←` |
-| Search by name | `/` |
+| Search by name | `⌘F` |
+| Open Actions | `/` |
 | Toggle recent/name sort | `s` |
 | Toggle inspector | `i` |
 | Quick Look selected item | `Space` |
-| Refresh listing | `r` |
 | Close | `Escape` |
 
 Files open in the focused terminal pane. Directories are entered in place, and the overlay stays open until you press `Escape`.
@@ -36,20 +36,26 @@ Use `Shift+↑` and `Shift+↓` to extend the current selection, or `⌘A` to se
 | Action | Key |
 |--------|-----|
 | Select all visible items | `⌘A` |
-| New folder | `⌘N` |
-| Rename selected item | `⌘R` |
+| Rename selected item | `F2` or `r` |
 | Copy selected items | `⌘C` |
 | Cut selected items | `⌘X` |
 | Paste into current folder | `⌘V` |
 | Move selected items to trash | `⌘Backspace` |
-| Reveal selected items with the system opener | `⌘Enter` |
-| Open selected items in their default macOS app | `⌘O` |
+
+Press `/` to open Actions. Type a command and press `Enter`.
+
+| Command | Action |
+|---------|--------|
+| `/new file <name>` | Create a file in the current folder. |
+| `/new folder <name>` | Create a folder in the current folder. |
+| `/reveal` | Show the selected item in Finder. |
+| `/open-default` | Open the selected item in its default macOS app. |
 
 Moving items to trash opens a confirmation modal before changing the filesystem. File operations log success and failure details to the Plexi log.
 
 ## Search
 
-Press `/` to enter search mode. Type to filter the current directory listing by filename. Press `Escape` to exit search and return to normal navigation, or `Enter` to open the highlighted match.
+Press `⌘F` to enter search mode. Type to filter the current directory listing by filename. Press `Escape` to exit search and return to normal navigation, or `Enter` to open the highlighted match.
 
 ## Details Columns
 
