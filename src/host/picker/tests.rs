@@ -39,6 +39,7 @@ fn row(source: &str, id: &str, group_rank: u32, score: Option<i64>) -> PickerRow
         group: "",
         group_rank,
         score,
+        file_match: None,
         pinned: false,
         unavailable: None,
         attention: None,

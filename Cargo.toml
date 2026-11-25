@@ -26,6 +26,7 @@ path = "src/main.rs"
 
 [dependencies]
 tempfile = "3"
+ignore = "0.4"
 trash = "5"
 plexi-distribution = { path = "crates/distribution" }
 anstream = "1"

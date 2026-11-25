@@ -410,7 +410,7 @@ impl ScopedWalker {
     }
 }
 
-fn normalize_rel_path(path: &Path) -> String {
+pub(crate) fn normalize_rel_path(path: &Path) -> String {
     let raw = path.to_string_lossy();
     if std::path::MAIN_SEPARATOR == '/' {
         raw.into_owned()
@@ -477,7 +477,7 @@ pub struct MatchScore {
     pub primary_ranges: Vec<Range<usize>>,
     /// Matched UTF-8 byte ranges within `CandidateInput::relative_path`.
     pub path_ranges: Vec<Range<usize>>,
-    basename_tier: u8,
+    pub(crate) basename_tier: u8,
 }
 
 /// Score `candidate` against `query`. Returns `None` if `query` does not match.

@@ -1474,6 +1474,49 @@ fn palette_files_stop_with_preview() {
 }
 
 #[test]
+fn palette_files_read_shows_root_readme_first() {
+    use crate::host::picker::{PickerId, PreviewBody, PreviewStatus};
+
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    let root = root_context_in_workspace(&mut h);
+    for path in ["a/b", "worktrees/feature", ".git/info"] {
+        std::fs::create_dir_all(root.join(path)).expect("fixture directory");
+    }
+    for (path, text) in [
+        ("README.md", "# Workspace README\n\nStart here."),
+        ("a/b/README.md", "# Nested README"),
+        ("readfile.tcl", "# A Tcl script"),
+        ("worktrees/feature/README.md", "# Excluded worktree"),
+        (".git/info/exclude", "/worktrees/\n"),
+    ] {
+        std::fs::write(root.join(path), text).expect("fixture file");
+    }
+    open_files_stop(&mut h);
+    type_palette_text(&mut h, "read");
+    wait_for_palette(&mut h, "ranked Files rows and preview", |app| {
+        app.host
+            .picker(PickerId::Palette)
+            .is_some_and(|picker| !picker.is_loading())
+            && matches!(
+                palette_preview(app),
+                Some(PreviewStatus::Ready(PreviewBody::Text { .. }))
+            )
+    });
+    h.with_app(|app| {
+        let picker = app.host.picker(PickerId::Palette).expect("open palette");
+        assert_eq!(picker.query(), "read");
+        let first = picker.rows().first().expect("matching file");
+        assert_eq!(first.title, "README.md");
+        assert!(first.secondary.is_empty(), "first result is in the root");
+        assert!(picker
+            .rows()
+            .iter()
+            .all(|row| !row.secondary.starts_with("worktrees")));
+    });
+    h.save_screenshot(&evidence_png!()).expect("render failed");
+}
+
+#[test]
 fn palette_agents_stop_with_preview() {
     let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
     add_focused_pane(&mut h);
