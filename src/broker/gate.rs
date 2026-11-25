@@ -2509,8 +2509,8 @@ impl PermissionMonitor {
                 && !details.choices.iter().any(|c| c == answer_trimmed)
             {
                 return Err(NeedsYouResolveError::Failed(format!(
-                    "answer {:?} is not one of the allowed choices {:?}",
-                    answer_trimmed, details.choices
+                    "answer is not one of the {} allowed choices",
+                    details.choices.len()
                 )));
             }
         }
@@ -2553,8 +2553,8 @@ impl PermissionMonitor {
             outcome,
         );
         log::info!(
-            "needs_you: desktop answered {id} answer={:?} run_outcome={}",
-            answer_trimmed,
+            "needs_you: desktop answered {id} answer_bytes={} run_outcome={}",
+            answer_trimmed.len(),
             outcome.as_str()
         );
         self.resolved_receipt(id, false).ok_or_else(|| {

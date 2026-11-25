@@ -6250,17 +6250,35 @@ mod tests {
             .as_mut()
             .unwrap();
         assert_eq!(group.current, 1);
-        group.drafts[1].other = Some("Green".into());
+        group.drafts[1].other = Some("custom color canary".into());
         assert!(!Path::new(&response).exists());
+        let capture = crate::testing::test_log::capture();
         assert!(h.app.pick_decision_overlay_option(3));
         let ctx = h.app.ctx.clone();
         h.app.service_claude_questions(&monitor, &ctx);
+        let logs = capture.lines().join("\n");
+        for site in [
+            "consent_guard: witnessed",
+            "needs_you: desktop answered",
+            "permission_seal: desktop decision overlay answered",
+        ] {
+            assert!(logs.contains(site), "missing trace from {site}");
+        }
+        for content in [
+            "Which color do you pick?",
+            "Which colors should we include?",
+            "Blue",
+            "Red",
+            "custom color canary",
+        ] {
+            assert!(!logs.contains(content), "desktop answer leaked into logs");
+        }
         assert_eq!(
             read_claude_question_reply(&response)["decision"]["hookSpecificOutput"]["decision"]
                 ["updatedInput"]["answers"],
             json!({
                 "Which color do you pick?": "Blue",
-                "Which colors should we include? ": "Red, Blue, Green",
+                "Which colors should we include? ": "Red, Blue, custom color canary",
             })
         );
     }

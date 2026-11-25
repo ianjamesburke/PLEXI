@@ -44,8 +44,8 @@ struct Call {
 
 struct Ask {
     id: String,
-    // Only this connection receives the answer. Once released, no retry can
-    // claim it while we wait for Claude to report the effective tool result.
+    // The socket ingress supplies a host-issued handle for this connection.
+    // Once released, no retry can claim it while we wait for PostToolUse.
     waiter: Option<String>,
 }
 
@@ -158,7 +158,7 @@ impl PlexiApp {
         monitor: &PermissionMonitor,
         payload: &Value,
         pane: Option<&PaneCaller>,
-        response: &str,
+        reply_handle: &str,
     ) -> Option<Value> {
         let Some(pane) = pane.filter(|pane| !pane.authority.is_revoked()) else {
             return Some(json!({"ok":false,"error_code":"permission_denied"}));
@@ -229,7 +229,7 @@ impl PlexiApp {
                     call.expires = expires;
                     call.ask = Some(Ask {
                         id: id.to_owned(),
-                        waiter: Some(response.to_owned()),
+                        waiter: Some(reply_handle.to_owned()),
                     });
                     self.ctx.request_repaint();
                     log::info!(
@@ -320,5 +320,59 @@ impl PlexiApp {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
         self.claude_questions.calls = calls;
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::net::UnixStream;
+
+    use super::*;
+    use crate::app::socket_caller::{Ingress, PaneIpcMessage};
+    use crate::app::ui_mailbox::{RecordingWake, UiMailbox};
+    use crate::protocol::HostRequest;
+
+    #[test]
+    fn hook_waiter_uses_a_host_issued_handle() {
+        let profile = tempfile::tempdir().unwrap();
+        let (mailbox, inbox) = UiMailbox::channel(Arc::new(RecordingWake::new()), "claude-test");
+        let (mut server, client) = UnixStream::pair().unwrap();
+        let client_label = format!("claude-hook-test-{}", uuid::Uuid::new_v4());
+        let frame = json!({
+            "type": "needs_you_api",
+            "op": "claude_hook",
+            "payload": {"hook_event_name": "PermissionRequest"},
+            "response_file": client_label,
+        });
+        crate::app::handle_socket_line_in(
+            profile.path(),
+            &frame.to_string(),
+            &mailbox,
+            None,
+            &mut server,
+        );
+        drop(server);
+        let PaneIpcMessage::Request {
+            ingress:
+                Ingress::Socket {
+                    reply: Some(handle),
+                    ..
+                },
+            request,
+        } = inbox.try_recv().unwrap()
+        else {
+            panic!("expected a queued socket request");
+        };
+        let HostRequest::NeedsYouApi { response_file, .. } = *request else {
+            panic!("expected a Claude hook request");
+        };
+        assert!(response_file == handle);
+        // Consume the registration before asserting so the negative control
+        // also cleans up after itself.
+        assert!(write_json_response(&handle, fallback()));
+        assert!(handle != client_label, "the waiter uses the client's label");
+        assert_eq!(ReplyRegistry::connected(&client_label), None);
+        let reply = crate::testing::socket_policy_tests::read_client(client, "Claude hook");
+        assert_eq!(reply, fallback());
     }
 }

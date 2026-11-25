@@ -1169,8 +1169,9 @@ impl PlexiApp {
         match monitor.answer_needs_you_decided(evidence, id, answer) {
             Ok(receipt) => {
                 log::info!(
-                    "permission_seal: desktop {label} answered id={} answer={answer:?} resolution={}",
+                    "permission_seal: desktop {label} answered id={} answer_bytes={} resolution={}",
                     receipt.id,
+                    answer.len(),
                     receipt.resolution.as_str()
                 );
                 Ok(())
