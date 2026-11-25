@@ -76,6 +76,7 @@ pub(crate) enum NeedsYouOp {
     Answer,
     Reconcile,
     Complete,
+    ClaudeHook,
 }
 
 impl NeedsYouOp {
@@ -86,6 +87,7 @@ impl NeedsYouOp {
             "answer" => Self::Answer,
             "reconcile" => Self::Reconcile,
             "complete" => Self::Complete,
+            "claude_hook" => Self::ClaudeHook,
             _ => return None,
         })
     }
@@ -364,6 +366,7 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
                 NeedsYouOp::Ask | NeedsYouOp::Show | NeedsYouOp::Reconcile | NeedsYouOp::Complete,
             ) => Protected,
             Some(NeedsYouOp::Answer) => Decision,
+            Some(NeedsYouOp::ClaudeHook) => OwnPane,
             None => return Err(invalid_op("needs_you", op)),
         },
         HostRequest::AgentsApi { op, .. } => match AgentsOp::parse(op) {
