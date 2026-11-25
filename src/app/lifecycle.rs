@@ -748,6 +748,11 @@ impl PlexiApp {
                 {
                     Self::prepare_agent_memory(name, &placement.effective_cwd)?;
                 }
+                let launch_command = crate::cli::agent::with_claude_resume_hooks(
+                    crate::cli::AgentHarness::parse(&record.harness),
+                    &resume_cmd,
+                    record.session_id.as_deref(),
+                );
                 self.launch_agent_worker(
                     crate::pane_ops::create::AgentWorkerLaunch {
                         grant: crate::pane_ops::create::AgentWorkerGrant {
@@ -759,7 +764,7 @@ impl PlexiApp {
                         spawned_by: None,
                         role: &role,
                         harness: &record.harness,
-                        command: &resume_cmd,
+                        command: &launch_command,
                         task: record.summary.as_deref().unwrap_or_default(),
                         ephemeral: false,
                         result_schema: None,
@@ -5820,10 +5825,11 @@ impl PlexiApp {
                     self.refuse_cross_pane("agent_ask", &error, *pane_id, response_file);
                     return;
                 }
-                if !self
-                    .terminal_incarnation(*pane_id)
-                    .is_some_and(crate::host::pane::TerminalPane::is_agent_pane)
-                {
+                // The launch record and foreground detector are the host's
+                // sources of agent identity for this gate.
+                if !self.terminal_incarnation(*pane_id).is_some_and(|t| {
+                    !t.exited && (t.agent_launch.is_some() || t.observed_agent.is_some())
+                }) {
                     log::info!("pane_ipc: kind=agent_ask refused pane_id={pane_id} reason=agent_terminal_required");
                     write_json_response(
                         response_file,
@@ -6030,20 +6036,37 @@ impl PlexiApp {
                 log::info!("pane_ipc: kind=wake draining queued spawns");
                 self.drain_spawn_queue();
             }
+            crate::protocol::HostRequest::ShutdownForRestart { response_file } => {
+                self.queue_restart_shutdown(response_file);
+            }
             crate::protocol::HostRequest::Shutdown { response_file } => {
-                // Sent by `plexi host stop` over a direct notify.sock
-                // connection. This handler has no `egui::Context`, so it
-                // cannot send ViewportCommand::Close directly — it sets a
-                // flag consumed at the top of the next frame
-                // (`update_preamble`, mirrors `update_quit_pending`). The
-                // reply waits for `exit_host`, which knows the real outcome.
-                log::info!(
-                    "pane_ipc: kind=shutdown reply={} — closing on next frame",
-                    response_file.is_some()
-                );
+                // `update_preamble` checks live editors before accepting
+                // the stop. Accepted stops reply from `exit_host`.
                 if let Some(reply) = response_file {
+                    // Every caller needs an answer to avoid a timeout followed
+                    // by forced termination. Keep the first caller's token.
+                    if self.quit_coordinator.stop_reply.is_some()
+                        || self.quit_coordinator.is_active()
+                    {
+                        log::info!(
+                            "pane_ipc: shutdown refused while another quit is in progress"
+                        );
+                        write_json_response(
+                            reply,
+                            serde_json::json!({
+                                "ok": false,
+                                "error_code": "host_stop_in_progress",
+                                "error": "The host is already handling a quit request",
+                            }),
+                        );
+                        return;
+                    }
                     self.quit_coordinator.stop_reply = Some(reply.clone());
                 }
+                log::info!(
+                    "pane_ipc: kind=shutdown reply={} — queued for shutdown check",
+                    response_file.is_some()
+                );
                 self.shutdown_requested = true;
             }
             _ => {

@@ -1961,6 +1961,11 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },
+    /// Internal CLI handoff for a restart from a pane in this host. The host
+    /// acknowledges acceptance on the reply stream and waits for the CLI to
+    /// confirm the relaunch coordinator is detached before killing panes.
+    #[schemars(skip)]
+    ShutdownForRestart { response_file: String },
 }
 
 /// Who caused a plugin state change (`HostRequest::EmitEvent`).

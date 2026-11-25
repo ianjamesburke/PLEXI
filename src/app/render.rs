@@ -1179,14 +1179,8 @@ impl PlexiApp {
 
         // Quit confirmation overlay
         if self.confirm_quit() && self.quit_press_count > 0 {
-            // Reset on Escape or timeout
-            let timed_out = self
-                .quit_last_press
-                .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
-                .unwrap_or(false);
-            if timed_out || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.quit_press_count = 0;
-                self.quit_last_press = None;
+            if self.keyboard_quit_timed_out(std::time::Instant::now()) {
+                self.reset_keyboard_quit_confirmation();
             } else {
                 self.draw_quit_confirm_overlay(&ctx);
                 // Keep repainting so the timeout dismissal fires promptly

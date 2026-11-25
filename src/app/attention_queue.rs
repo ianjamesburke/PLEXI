@@ -463,7 +463,7 @@ impl PlexiApp {
         };
         if self.synthetic_input_frame {
             log::info!(
-                "decision_overlay: rejected synthetic decision ask_id={} option_idx={option_idx}",
+                "decision_overlay: rejected synthetic decision ask_id={}",
                 overlay.ask_id
             );
             return;
@@ -2303,13 +2303,16 @@ impl PlexiApp {
             option_key: option.key.clone(),
             option_label: option.label.clone(),
         };
-        log::info!(
-            "decision_overlay: host decision recorded ask_id={} pane_id={} option={}:{}",
-            verdict.ask_id,
-            verdict.pane_id,
-            verdict.option_idx,
-            verdict.option_key
-        );
+        // The broker already logs the Needs You outcome without the answer.
+        if !matches!(overlay.source, QueueSource::NeedsYou { .. }) {
+            log::info!(
+                "decision_overlay: host decision recorded ask_id={} pane_id={} option={}:{}",
+                verdict.ask_id,
+                verdict.pane_id,
+                verdict.option_idx,
+                verdict.option_key
+            );
+        }
         self.attention_queue.verdicts.push(verdict);
         self.record_agent_interaction(overlay.pane_id, "answer");
         self.attention_queue.decision_overlay = None;
@@ -6228,6 +6231,7 @@ mod tests {
             .unwrap()
             .push(second);
         permission["tool_input"] = pre["tool_input"].clone();
+        let capture = crate::testing::test_log::capture();
         send_claude_question_event(&mut h, &origin, &pre);
         let response = send_claude_question_event(&mut h, &origin, &permission);
         let id = monitor.host_records().questions(true)[0].id.clone();
@@ -6252,18 +6256,61 @@ mod tests {
         assert_eq!(group.current, 1);
         group.drafts[1].other = Some("custom color canary".into());
         assert!(!Path::new(&response).exists());
-        let capture = crate::testing::test_log::capture();
         assert!(h.app.pick_decision_overlay_option(3));
         let ctx = h.app.ctx.clone();
         h.app.service_claude_questions(&monitor, &ctx);
-        let logs = capture.lines().join("\n");
-        for site in [
+        let expected_answers = json!({
+            "Which color do you pick?": "Blue",
+            "Which colors should we include? ": "Red, Blue, custom color canary",
+        });
+        assert_eq!(
+            read_claude_question_reply(&response)["decision"]["hookSpecificOutput"]["decision"]
+                ["updatedInput"]["answers"],
+            expected_answers
+        );
+
+        let mut post = pre;
+        post["hook_event_name"] = json!("PostToolUse");
+        post["tool_response"] = json!({"answers": expected_answers});
+        let settled = send_claude_question_event(&mut h, &origin, &post);
+        assert!(read_claude_question_reply(&settled)["decision"].is_null());
+        let run = monitor.host_records().run(&id).unwrap();
+        assert_eq!(run.state, crate::broker::gate::ContinuationState::Completed);
+
+        let bridge_traces = [
+            "claude_question:",
             "consent_guard: witnessed",
             "needs_you: desktop answered",
             "permission_seal: desktop decision overlay answered",
-        ] {
-            assert!(logs.contains(site), "missing trace from {site}");
-        }
+            "continuation: completed",
+        ];
+        let records = capture.records();
+        let traces: Vec<_> = records
+            .iter()
+            .filter(|(level, line)| {
+                *level == log::Level::Info
+                    && bridge_traces.iter().any(|prefix| line.starts_with(prefix))
+            })
+            .map(|(_, line)| line.as_str())
+            .collect();
+        assert_eq!(
+            traces,
+            [
+                format!("claude_question: id={id} waiting for pane={pane}"),
+                format!("consent_guard: witnessed id={id}"),
+                format!("needs_you: desktop answered {id} run_outcome=unblocked"),
+                format!(
+                    "permission_seal: desktop decision overlay answered id={id} resolution=approved"
+                ),
+                format!("claude_question: id={id} answer sent=true awaiting PostToolUse"),
+                format!(
+                    "continuation: completed run_id={} state=completed",
+                    run.run_id
+                ),
+                format!("claude_question: id={id} settled reason=PostToolUse"),
+            ],
+            "bridge INFO traces must contain only identifiers and outcomes"
+        );
         for content in [
             "Which color do you pick?",
             "Which colors should we include?",
@@ -6271,16 +6318,60 @@ mod tests {
             "Red",
             "custom color canary",
         ] {
-            assert!(!logs.contains(content), "desktop answer leaked into logs");
+            assert!(
+                records.iter().all(|(_, line)| !line.contains(content)),
+                "desktop answer leaked into logs"
+            );
         }
+
+        let desktop_choice = "desktop overlay choice canary";
+        let desktop_id = monitor
+            .file_needs_you_with_details(
+                NeedsYouFile {
+                    kind: NeedsYouKind::Question,
+                    actor: crate::broker::principal::RecordOwner::Pane(
+                        h.app.pane_principal(pane).unwrap(),
+                    ),
+                    resource: format!("pane:{pane}"),
+                    summary: "Choose a branch".into(),
+                    expires_at: None,
+                    run_tag: None,
+                },
+                Some(crate::broker::gate::NeedsYouDetails {
+                    choices: vec![desktop_choice.into(), "another branch".into()],
+                    pane_id: Some(pane),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        assert!(h.app.open_decision_overlay_for_ask(&desktop_id));
+        h.app.arm_decision_overlay_for_test();
+        let before_answer = capture.records().len();
+        h.app.request_decision_overlay_option(0);
         assert_eq!(
-            read_claude_question_reply(&response)["decision"]["hookSpecificOutput"]["decision"]
-                ["updatedInput"]["answers"],
-            json!({
-                "Which color do you pick?": "Blue",
-                "Which colors should we include? ": "Red, Blue, custom color canary",
-            })
+            monitor
+                .host_records()
+                .question(&desktop_id)
+                .unwrap()
+                .answer
+                .as_deref(),
+            Some(desktop_choice)
         );
+        let records = capture.records();
+        let decision_logs = &records[before_answer..];
+        let outcome = format!("needs_you: resolved {desktop_id} answered");
+        assert!(decision_logs
+            .iter()
+            .any(|(level, line)| *level == log::Level::Info && line == &outcome));
+        for (_, line) in decision_logs {
+            assert!(
+                !line.contains("option=")
+                    && !line.contains("option_idx=")
+                    && !line.contains("choice_1")
+                    && !line.contains(desktop_choice),
+                "desktop overlay answer leaked into logs: {line}"
+            );
+        }
     }
 
     #[test]
@@ -6712,13 +6803,17 @@ mod tests {
         assert_agent_ask_refuses_plain_shell(&[crate::release::ReleaseFeature::AgentMesh]);
     }
 
-    fn add_unparented_agent(h: &mut HostHarness) -> u64 {
+    #[test]
+    fn agent_ask_refuses_shell_after_own_state_report() {
+        use crate::protocol::AgentState;
+
+        let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
         h.inject_from_pane(
             pane_id,
             crate::protocol::HostRequest::SetAgentState {
                 pane_id,
-                state: crate::protocol::AgentState::Working,
+                state: AgentState::Working,
                 agent: "codex".into(),
                 detail: None,
                 session_id: None,
@@ -6727,7 +6822,35 @@ mod tests {
             },
         );
         h.hidden_frame();
-        assert!(h.app.terminal_incarnation(pane_id).unwrap().is_agent_pane());
+        let terminal = h.app.terminal_incarnation(pane_id).unwrap();
+        assert_eq!(terminal.agent.as_ref().unwrap().state, AgentState::Working);
+        let slots = terminal.slots.clone();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let questions = monitor.host_records().questions(true);
+        let waiter = h.workspace_root().join("parent-wait.json");
+        h.app
+            .park_agent_tool_wait(pane_id, waiter.to_str().unwrap());
+
+        let reply = ask_from_pane(&mut h, pane_id, "Which branch?");
+
+        assert_eq!(reply["ok"], false, "{reply}");
+        let error = reply["error"].as_str().unwrap();
+        assert!(error.contains("requires an agent terminal"), "{error}");
+        let terminal = h.app.terminal_incarnation(pane_id).unwrap();
+        assert_eq!(terminal.agent.as_ref().unwrap().state, AgentState::Working);
+        assert_eq!(terminal.slots, slots);
+        assert_eq!(monitor.host_records().questions(true), questions);
+        assert!(!waiter.exists(), "refused ask woke the parent waiter");
+    }
+
+    fn add_unparented_agent(h: &mut HostHarness) -> u64 {
+        let (pane_id, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "reviewer", "codex", "sleep 30", "", None, false, None, None, None, None, false,
+                None,
+            )
+            .unwrap();
         pane_id
     }
 

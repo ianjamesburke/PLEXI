@@ -1345,8 +1345,8 @@ fn main() -> eframe::Result {
                             ephemeral,
                             background,
                         )),
-                        HostCmd::Restart { yes } => {
-                            cli::trace::exit(cli::host::host_restart_cli(yes, json))
+                        HostCmd::Restart { yes, after_pid } => {
+                            cli::trace::exit(cli::host::host_restart_cli(yes, json, after_pid))
                         }
                         HostCmd::Stop => cli::trace::exit(cli::host_stop_cli()),
                         HostCmd::Log { message, source } => {

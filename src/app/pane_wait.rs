@@ -417,6 +417,7 @@ impl PlexiApp {
                 .find_map(|win| win.panes.get_mut(&pane_id))
                 .and_then(crate::host::pane::Pane::as_terminal_mut)
                 .map(|term| {
+                    term.begin_agent_launch(crate::host::pane::AgentLaunchKind::Command);
                     term.backend
                         .process_command(egui_term::BackendCommand::Write(
                             format!("{}\n", agent.command).into_bytes(),
