@@ -259,6 +259,67 @@ fn decision_overlay_refusal_names_the_arm_delay_or_synthetic_input() {
 }
 
 #[test]
+fn screenshot_claude_question_decision_overlay() {
+    use crate::broker::gate::{
+        NeedsYouChoice, NeedsYouDetails, NeedsYouFile, NeedsYouKind, NeedsYouQuestion,
+        PermissionMonitor,
+    };
+    let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
+    let pane_id = add_focused_pane(&mut h);
+    let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    let question = "Which color do you pick?";
+    let id = monitor
+        .file_needs_you_with_details(
+            NeedsYouFile {
+                kind: NeedsYouKind::Question,
+                actor: crate::broker::principal::RecordOwner::Host("Claude Code".into()),
+                resource: format!("pane:{pane_id}"),
+                summary: question.into(),
+                expires_at: None,
+                run_tag: None,
+            },
+            Some(NeedsYouDetails {
+                claude_questions: vec![NeedsYouQuestion {
+                    question: question.into(),
+                    header: "Color".into(),
+                    multi_select: true,
+                    options: vec![
+                        NeedsYouChoice {
+                            label: "Red".into(),
+                            description: "Match the warm palette".into(),
+                        },
+                        NeedsYouChoice {
+                            label: "Blue".into(),
+                            description: "Match the cool palette".into(),
+                        },
+                    ],
+                }],
+                pane_id: Some(pane_id),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    h.with_app_mut(|app| assert!(app.open_decision_overlay_for_ask(&id)));
+    h.run_steps(3);
+    assert!(h.host_has_label(question));
+    assert!(h.host_has_label("Match the warm palette"));
+    assert!(h.host_has_label("Match the cool palette"));
+    h.with_app_mut(|app| {
+        assert!(!app.pick_decision_overlay_option(0));
+        assert!(!app.pick_decision_overlay_option(2));
+    });
+    h.run_steps(3);
+    assert!(h.host_has_label("Submit answers"));
+    h.with_app_mut(|app| {
+        assert!(app
+            .ctx
+            .memory(|memory| memory.has_focus(egui::Id::new("decision_overlay_other"))));
+    });
+    h.save_screenshot(&crate::ui_tests::evidence_png!())
+        .unwrap();
+}
+
+#[test]
 fn screenshot_attention_queue_all_states_themes() {
     use crate::app::attention_queue::{QueueBar, QueueCategory, QueueSource};
     let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);

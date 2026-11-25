@@ -13,6 +13,17 @@ const CLAUDE_CODE_HOOK_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+const CLAUDE_QUESTION_EVENTS: &[&str] = &[
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "StopFailure",
+    "SessionEnd",
+];
+const CLAUDE_QUESTION_HOOK_AGENT: &str = "claude-code-question";
+
 const CODEX_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -3403,6 +3414,10 @@ pub fn agent_hook_event_cli(agent: Option<&str>) -> i32 {
     let Ok(input) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return 0;
     };
+    if agent == Some(CLAUDE_QUESTION_HOOK_AGENT) {
+        claude_question_hook_cli(input);
+        return 0;
+    }
     let Some(report) = map_hook_payload(&input) else {
         return 0;
     };
@@ -3422,6 +3437,39 @@ pub fn agent_hook_event_cli(agent: Option<&str>) -> i32 {
     0
 }
 
+fn claude_question_hook_cli(input: serde_json::Value) {
+    use crate::app::claude_question::HOOK_TIMEOUT_SECS;
+    let wait = input["hook_event_name"] == "PermissionRequest";
+    let request = serde_json::json!({
+        "type": "needs_you_api", "op": "claude_hook", "payload": input,
+    });
+    let timeout = if wait {
+        std::time::Duration::from_secs(HOOK_TIMEOUT_SECS - 2)
+    } else {
+        crate::rpc::DEFAULT_TIMEOUT
+    };
+    if let Ok(super::reply::HostReply::Payload(content)) =
+        super::request_reply(request, "claude-question", "Claude question", timeout)
+    {
+        if wait {
+            let decision = claude_question_decision(&content);
+            if let Some(decision) = decision {
+                println!("{decision}");
+            }
+        }
+    } else {
+        log::info!("claude_question: hook request unavailable; leaving question in Claude");
+    }
+}
+
+fn claude_question_decision(content: &str) -> Option<serde_json::Value> {
+    let response: serde_json::Value = serde_json::from_str(content).ok()?;
+    (response["ok"] == true
+        && response["decision"]["hookSpecificOutput"]["hookEventName"] == "PermissionRequest"
+        && response["decision"]["hookSpecificOutput"]["decision"]["behavior"] == "allow")
+        .then(|| response["decision"].clone())
+}
+
 /// Hook command registered with harnesses: no shell, no `jq`.
 const NATIVE_HOOK_COMMAND: &str = "plexi agent hook-event --agent";
 
@@ -3435,7 +3483,31 @@ fn claude_state_settings_json() -> String {
             serde_json::json!([{"hooks": [{"type": "command", "command": command}]}]),
         );
     }
-    serde_json::to_string_pretty(&serde_json::json!({ "hooks": hooks })).unwrap_or_default()
+    let mut settings = serde_json::json!({ "hooks": hooks });
+    for event in CLAUDE_QUESTION_EVENTS {
+        let entries = settings["hooks"][*event].as_array_mut();
+        if let Some(entries) = entries {
+            entries.push(claude_question_hook_entry(event));
+        } else {
+            settings["hooks"][*event] = serde_json::json!([claude_question_hook_entry(event)]);
+        }
+    }
+    serde_json::to_string_pretty(&settings).unwrap_or_default()
+}
+
+fn claude_question_hook_entry(event: &str) -> serde_json::Value {
+    let command = format!("{NATIVE_HOOK_COMMAND} {CLAUDE_QUESTION_HOOK_AGENT}");
+    let mut hook = serde_json::json!({"type": "command", "command": command});
+    let matcher = match event {
+        "PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "PermissionRequest" => {
+            "^AskUserQuestion$"
+        }
+        _ => "",
+    };
+    if event == "PermissionRequest" {
+        hook["timeout"] = serde_json::json!(crate::app::claude_question::HOOK_TIMEOUT_SECS);
+    }
+    serde_json::json!({"matcher": matcher, "hooks": [hook]})
 }
 
 fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
@@ -3552,7 +3624,14 @@ fn install_json_agent_hooks(
             return 1;
         }
     };
-    let changed = match register_agent_hooks(&mut settings, events, command, status_message) {
+    let changed = match register_agent_hooks(&mut settings, events, command, status_message)
+        .and_then(|changed| {
+            if events == CLAUDE_CODE_HOOK_EVENTS {
+                register_claude_question_hooks(&mut settings).map(|added| changed || added)
+            } else {
+                Ok(changed)
+            }
+        }) {
         Ok(changed) => changed,
         Err(e) => {
             eprintln!("error: refusing to modify {label} config: {e}");
@@ -3590,6 +3669,30 @@ fn register_agent_hooks(
     Ok(changed)
 }
 
+fn register_claude_question_hooks(settings: &mut serde_json::Value) -> Result<bool, String> {
+    let mut changed = false;
+    for event in CLAUDE_QUESTION_EVENTS {
+        let event_hooks = &mut settings["hooks"][*event];
+        if event_hooks.is_null() {
+            *event_hooks = serde_json::json!([]);
+        }
+        let entries = event_hooks
+            .as_array_mut()
+            .ok_or_else(|| format!("the existing hooks.{event} value is not an array"))?;
+        let entry = claude_question_hook_entry(event);
+        let mut managed = entries
+            .iter()
+            .filter(|entry| is_claude_question_hook(entry));
+        if managed.next() == Some(&entry) && managed.next().is_none() {
+            continue;
+        }
+        entries.retain(|entry| !is_claude_question_hook(entry));
+        entries.push(entry);
+        changed = true;
+    }
+    Ok(changed)
+}
+
 fn register_json_hook(
     settings: &mut serde_json::Value,
     event: &str,
@@ -3612,9 +3715,10 @@ fn register_json_hook(
     });
     let mut next_entries: Vec<serde_json::Value> = event_hooks
         .into_iter()
-        .filter(|entry| !contains_plexi_agent_hook(entry))
+        .filter(|entry| !contains_plexi_agent_hook(entry) || is_claude_question_hook(entry))
         .collect();
-    next_entries.push(new_entry);
+    let before_bridge = next_entries.iter().position(is_claude_question_hook);
+    next_entries.insert(before_bridge.unwrap_or(next_entries.len()), new_entry);
     let changed = event_value.as_array() != Some(&next_entries);
     if changed {
         settings["hooks"][event] = serde_json::Value::Array(next_entries);
@@ -3788,7 +3892,8 @@ export default function (pi: ExtensionAPI) {
 
 fn uninstall_claude_code_hooks() -> i32 {
     let settings_path = claude_settings_path();
-    uninstall_json_hooks(&settings_path, CLAUDE_CODE_HOOK_EVENTS, "Claude Code")
+    let events = [CLAUDE_CODE_HOOK_EVENTS, CLAUDE_QUESTION_EVENTS].concat();
+    uninstall_json_hooks(&settings_path, &events, "Claude Code")
 }
 
 fn uninstall_codex_hooks() -> i32 {
@@ -3875,21 +3980,32 @@ pub fn is_plexi_pi_extension(content: &str) -> bool {
         || (content.contains("const plexiBin =") && content.contains("PLEXI_AGENT_NAME: \"pi\""))
 }
 
-fn contains_plexi_agent_hook(entry: &serde_json::Value) -> bool {
-    entry
-        .get("hooks")
-        .and_then(|h| h.as_array())
-        .map(|arr| {
-            arr.iter().any(|h| {
-                h.get("command")
-                    .and_then(|c| c.as_str())
-                    .map(|c| {
-                        c.contains(PLEXI_AGENT_STATE_SCRIPT) || c.contains("plexi agent report")
-                    })
-                    .unwrap_or(false)
+fn is_claude_question_hook(entry: &serde_json::Value) -> bool {
+    entry["hooks"].as_array().is_some_and(|hooks| {
+        hooks.iter().any(|hook| {
+            hook["command"].as_str().is_some_and(|command| {
+                command == format!("{NATIVE_HOOK_COMMAND} {CLAUDE_QUESTION_HOOK_AGENT}")
             })
         })
-        .unwrap_or(false)
+    })
+}
+
+fn contains_plexi_agent_hook(entry: &serde_json::Value) -> bool {
+    is_claude_question_hook(entry)
+        || entry
+            .get("hooks")
+            .and_then(|h| h.as_array())
+            .map(|arr| {
+                arr.iter().any(|h| {
+                    h.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| {
+                            c.contains(PLEXI_AGENT_STATE_SCRIPT) || c.contains("plexi agent report")
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
 }
 
 fn claude_settings_path() -> PathBuf {
@@ -4099,6 +4215,38 @@ mod agent_tests {
         }))
         .unwrap();
         assert_eq!(r.detail.unwrap().chars().count(), "Bash: ".len() + 60);
+    }
+
+    #[test]
+    fn claude_question_hook_is_matched_and_keeps_only_decision_stdout() {
+        let settings: serde_json::Value =
+            serde_json::from_str(&super::claude_state_settings_json()).unwrap();
+        let permission = &settings["hooks"]["PermissionRequest"];
+        let entries = permission.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1]["matcher"], "^AskUserQuestion$");
+        assert_eq!(
+            entries[1]["hooks"][0]["timeout"],
+            crate::app::claude_question::HOOK_TIMEOUT_SECS
+        );
+        let mut installed = serde_json::json!({"hooks":{}});
+        assert!(super::register_claude_question_hooks(&mut installed).unwrap());
+        assert!(!super::register_claude_question_hooks(&mut installed).unwrap());
+        assert_eq!(installed["hooks"]["PermissionRequest"][0], entries[1]);
+        assert!(super::claude_question_decision(r#"{"ok":true}"#).is_none());
+        assert!(
+            super::claude_question_decision(r#"{"ok":false,"error_code":"invalid_op"}"#).is_none()
+        );
+        let output = serde_json::json!({"hookSpecificOutput":{
+            "hookEventName":"PermissionRequest",
+            "decision":{"behavior":"allow","updatedInput":{"answers":{"Q?":"Red"}}}
+        }});
+        assert_eq!(
+            super::claude_question_decision(
+                &serde_json::json!({"ok":true,"decision":output}).to_string()
+            ),
+            Some(output)
+        );
     }
 
     #[test]
@@ -4401,25 +4549,25 @@ mod agent_tests {
         assert_eq!(installed["model"], "user-choice");
         assert_eq!(
             installed["hooks"]["PreToolUse"].as_array().unwrap().len(),
-            2
+            3
         );
         assert_eq!(
             fs::read_to_string(path.with_extension("json.plexi-hook.bak")).unwrap(),
             serde_json::to_string_pretty(&original).unwrap()
         );
 
+        let events = [
+            super::CLAUDE_CODE_HOOK_EVENTS,
+            super::CLAUDE_QUESTION_EVENTS,
+        ]
+        .concat();
         assert_eq!(
-            super::uninstall_json_hooks(&path, super::CLAUDE_CODE_HOOK_EVENTS, "Claude Code"),
+            super::uninstall_json_hooks(&path, &events, "Claude Code"),
             0
         );
         let removed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(removed["model"], "user-choice");
-        assert_eq!(removed["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
-        assert_eq!(
-            removed["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            "/usr/local/bin/user-hook"
-        );
+        assert_eq!(removed, original);
     }
 
     #[test]

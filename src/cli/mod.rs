@@ -1188,7 +1188,7 @@ fn send_request_connected(
         "response_file".to_string(),
         serde_json::Value::String(response_file.clone()),
     );
-    log::info!("{label}:cli: request response_file={response_file:?}");
+    log::info!("{label}:cli: request sent to reply transport");
     let stream = send_to_socket_connected(payload)?;
     Ok((response_file, stream))
 }
