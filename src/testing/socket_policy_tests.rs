@@ -878,6 +878,7 @@ const SOCKET_OPERATIONS: &[(Op, VerbPolicy)] = {
         (Sub("needs_you_api", "op", "show"), Protected),
         (Sub("needs_you_api", "op", "reconcile"), Protected),
         (Sub("needs_you_api", "op", "complete"), Protected),
+        (Sub("needs_you_api", "op", "claude_hook"), OwnPane),
         (Sub("needs_you_api", "op", "answer"), Decision),
         (Sub("agents_api", "op", "list_agents"), Protected),
         (Sub("agents_api", "op", "list_grants"), Protected),
@@ -1027,6 +1028,7 @@ fn suboperations() -> Vec<(&'static str, &'static str)> {
         NeedsYouOp::Answer => "answer",
         NeedsYouOp::Reconcile => "reconcile",
         NeedsYouOp::Complete => "complete",
+        NeedsYouOp::ClaudeHook => "claude_hook",
     };
     let agents = |op: AgentsOp| match op {
         AgentsOp::CreateAgent => "create_agent",
@@ -1056,6 +1058,7 @@ fn suboperations() -> Vec<(&'static str, &'static str)> {
         NeedsYouOp::Answer,
         NeedsYouOp::Reconcile,
         NeedsYouOp::Complete,
+        NeedsYouOp::ClaudeHook,
     ] {
         assert_eq!(NeedsYouOp::parse(needs_you(op)), Some(op));
         all.push(("needs_you_api", needs_you(op)));

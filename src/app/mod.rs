@@ -6,6 +6,7 @@ pub(crate) mod agents_view;
 pub(crate) mod approval_keyboard;
 pub(crate) mod assistant_host_tools;
 pub mod attention_queue;
+pub(crate) mod claude_question;
 pub mod audio_player_view;
 pub(crate) mod authority_import;
 pub(crate) mod canvas_bindings;
@@ -710,6 +711,7 @@ pub struct PlexiApp {
         HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
     pub zoom: zoom::ZoomState,
     pub attention_queue: attention_queue::AttentionQueueState,
+    claude_questions: claude_question::ClaudeQuestions,
     approval_keyboard: approval_keyboard::ApprovalKeyboard,
     /// Consent input guards for the event-consent, raw WASM review and
     /// keychain recovery dialogs (stints 1498, 1560); the capability prompt
@@ -2086,6 +2088,7 @@ impl PlexiApp {
                     pending_pane_pointer_frames: HashMap::new(),
                     zoom: zoom::ZoomState::default(),
                     attention_queue: attention_queue::AttentionQueueState::default(),
+                    claude_questions: Default::default(),
                     approval_keyboard: Default::default(),
                     event_consent_guard: Default::default(),
                     raw_wasm_review_guard: Default::default(),
@@ -2386,6 +2389,7 @@ impl PlexiApp {
             pending_pane_pointer_frames: HashMap::new(),
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
+            claude_questions: Default::default(),
             approval_keyboard: Default::default(),
             event_consent_guard: Default::default(),
             raw_wasm_review_guard: Default::default(),
@@ -3362,6 +3366,7 @@ impl PlexiApp {
             pending_pane_pointer_frames: HashMap::new(),
             zoom: zoom::ZoomState::default(),
             attention_queue: attention_queue::AttentionQueueState::default(),
+            claude_questions: Default::default(),
             approval_keyboard: Default::default(),
             event_consent_guard: Default::default(),
             raw_wasm_review_guard: Default::default(),
@@ -3910,6 +3915,7 @@ impl eframe::App for PlexiApp {
             }
         }
         if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(&profile) {
+            self.service_claude_questions(&monitor, ctx);
             monitor.expire_needs_you();
         }
 

@@ -190,6 +190,8 @@ impl NeedsYouResolution {
 #[serde(deny_unknown_fields)]
 pub struct NeedsYouDetails {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claude_questions: Vec<NeedsYouQuestion>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_free_text: bool,
@@ -220,6 +222,21 @@ pub struct NeedsYouDetails {
     pub workspace: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NeedsYouQuestion {
+    pub question: String,
+    pub header: String,
+    pub options: Vec<NeedsYouChoice>,
+    #[serde(default, rename = "multiSelect")]
+    pub multi_select: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NeedsYouChoice {
+    pub label: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct NeedsYouRecord {
     pub id: String,
@@ -236,6 +253,16 @@ pub struct NeedsYouRecord {
     pub details: Option<NeedsYouDetails>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
+}
+
+impl NeedsYouRecord {
+    pub(crate) fn is_claude_question(&self) -> bool {
+        self.kind == NeedsYouKind::Question
+            && self
+                .details
+                .as_ref()
+                .is_some_and(|details| !details.claude_questions.is_empty())
+    }
 }
 
 /// A question or a blocked run filed by the host. Approvals are filed by the gate.
@@ -2554,6 +2581,7 @@ impl PermissionMonitor {
                 row.resolution.is_none()
                     && matches!(row.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun)
                     && row.actor.pane() == Some(owner)
+                    && !row.is_claude_question()
             })
             .map(|row| row.id.clone())
             .collect();
@@ -2574,6 +2602,50 @@ impl PermissionMonitor {
             withdrawn.push(id);
         }
         withdrawn
+    }
+
+    pub(crate) fn finish_claude_question(
+        &self,
+        id: &str,
+        reason: &str,
+        effective_answer: Option<String>,
+    ) -> Result<(), String> {
+        let _resolve = self.needs_resolve.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(row) = self
+            .needs_you_of(id)
+            .filter(NeedsYouRecord::is_claude_question)
+        else {
+            return Err(format!("unknown Claude question {id}"));
+        };
+        if row.resolution.is_none()
+            && !self.close_needs_you_as(
+                id,
+                NeedsYouResolution::Retired,
+                &format!("retired:{reason}"),
+                "",
+                Some("host"),
+            )
+        {
+            // A dead waiter cannot be made usable by an audit retry.
+            self.dismiss_without_audit(id, NeedsYouResolution::Retired);
+        }
+
+        let run = self
+            .host_records()
+            .run(id)
+            .ok_or_else(|| format!("missing continuation for Claude question {id}"))?;
+        let state = if effective_answer.is_some() {
+            ContinuationState::Completed
+        } else if run.answer.is_some() {
+            ContinuationState::OutcomeUnknown
+        } else {
+            ContinuationState::Canceled
+        };
+        let receipt = effective_answer
+            .as_ref()
+            .map(|answer| format!(r#"{{"answers":{answer}}}"#));
+        self.settle_continuation(&run.handle(), state, receipt, Some(effective_answer))?;
+        Ok(())
     }
 
     /// Close the exact incarnation under the same locks as desktop decisions
@@ -3736,6 +3808,16 @@ impl PermissionMonitor {
         state: ContinuationState,
         receipt: Option<String>,
     ) -> Result<ContinuationRecord, String> {
+        self.settle_continuation(handle, state, receipt, None)
+    }
+
+    fn settle_continuation(
+        &self,
+        handle: &RunHandle,
+        state: ContinuationState,
+        receipt: Option<String>,
+        effective_answer: Option<Option<String>>,
+    ) -> Result<ContinuationRecord, String> {
         let now = self.now_secs();
         let updated = {
             let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
@@ -3746,8 +3828,11 @@ impl PermissionMonitor {
             let previous = map.get(&key).expect("checked key").clone();
             let entry = map.get_mut(&key).expect("checked key");
             entry.state = state;
-            if entry.request_fingerprint.is_some() {
+            if entry.request_fingerprint.is_some() || effective_answer.is_some() {
                 entry.run_outcome = Some(state.as_str().to_string());
+            }
+            if let Some(answer) = effective_answer {
+                entry.answer = answer;
             }
             if let Some(rcpt) = receipt {
                 entry.receipt = Some(rcpt);
@@ -4066,7 +4151,12 @@ impl PermissionMonitor {
                 continue;
             }
             restored.open.insert(item.id.clone());
-            if item.kind.mints_authority() && live_sender.is_none() {
+            if (item.kind.mints_authority() && live_sender.is_none())
+                || item
+                    .details
+                    .as_ref()
+                    .is_some_and(|details| !details.claude_questions.is_empty())
+            {
                 restored.retired.push(item.id.clone());
             }
             origins.insert(item.id.clone(), item.origin_session.clone());

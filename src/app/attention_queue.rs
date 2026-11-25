@@ -18,6 +18,7 @@ use crate::app::view_trait::KeyDisposition;
 use crate::app::PlexiApp;
 use crate::broker::consent::DecisionFailure;
 use crate::broker::gate::{ApprovalChoice, NeedsYouKind, PermissionMonitor};
+use crate::ui::button::{ButtonKind, ButtonSize, KitButton};
 use crate::ui::card_block::{layout_card, paint_card, wrap_text, CardForm, CardSpec, CardState};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::style;
@@ -30,6 +31,7 @@ use std::time::{Duration, Instant};
 
 pub const OVERLAY_QUESTION: &str = "What would you do here?";
 pub const NO_ASKS_HINT: &str = "No open asks in queue";
+const OTHER_ANSWER_FIELD: &str = "decision_overlay_other";
 
 /// Unresolved Needs-you records from the loaded profile monitor, oldest first.
 pub(crate) fn open_needs_you_items() -> Vec<crate::broker::gate::NeedsYouRecord> {
@@ -156,6 +158,45 @@ pub struct DecisionOverlayState {
     pub hint: Option<(String, Instant)>,
     pub stale_notice: Option<(String, Instant)>,
     pub source: QueueSource,
+    grouped: Option<GroupedQuestionDraft>,
+}
+
+#[derive(Debug, Clone)]
+struct GroupedQuestionDraft {
+    questions: Vec<crate::broker::gate::NeedsYouQuestion>,
+    drafts: Vec<QuestionDraft>,
+    current: usize,
+}
+
+#[derive(Default, Debug, Clone)]
+struct QuestionDraft {
+    selected: std::collections::BTreeSet<usize>,
+    other: Option<String>,
+}
+
+impl QuestionDraft {
+    fn answer(&self, question: &crate::broker::gate::NeedsYouQuestion) -> Option<String> {
+        if self
+            .other
+            .as_ref()
+            .is_some_and(|other| other.trim().is_empty())
+        {
+            return None;
+        }
+        let answers: Vec<_> = self
+            .selected
+            .iter()
+            .map(|&index| question.options[index].label.as_str())
+            .chain(self.other.as_deref())
+            .collect();
+        (!answers.is_empty()).then(|| answers.join(", "))
+    }
+}
+
+impl GroupedQuestionDraft {
+    fn current(&self) -> (&crate::broker::gate::NeedsYouQuestion, &QuestionDraft) {
+        (&self.questions[self.current], &self.drafts[self.current])
+    }
 }
 
 impl DecisionOverlayState {
@@ -180,6 +221,44 @@ impl DecisionOverlayState {
             hint: None,
             stale_notice: None,
             source: bar.source.clone(),
+            grouped: None,
+        }
+    }
+
+    fn show_grouped_question(&mut self) {
+        let Some(group) = &self.grouped else { return };
+        let (question, draft) = group.current();
+        self.question = crate::host::guest_text::shown(&question.question);
+        self.options = question
+            .options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| QueueOption {
+                key: format!("choice_{}", index + 1),
+                label: crate::host::guest_text::shown(&option.label),
+                recommended: false,
+            })
+            .collect();
+        self.selected_idx = draft.selected.first().copied().unwrap_or(0);
+        if draft.other.is_some() {
+            self.selected_idx = self.options.len();
+        }
+        self.options.push(QueueOption {
+            key: "other".into(),
+            label: "Other".into(),
+            recommended: false,
+        });
+        if question.multi_select || draft.other.is_some() {
+            self.options.push(QueueOption {
+                key: "submit".into(),
+                label: (if group.current + 1 == group.questions.len() {
+                    "Submit answers"
+                } else {
+                    "Next question"
+                })
+                .into(),
+                recommended: false,
+            });
         }
     }
 }
@@ -816,7 +895,22 @@ impl PlexiApp {
             });
         }
 
-        for item in monitor.host_records().open() {
+        let open_items = monitor.host_records().open();
+        for item in &open_items {
+            if item.kind == NeedsYouKind::BlockedRun
+                && item.summary == super::claude_question::TOOL
+                && open_items.iter().any(|question| {
+                    question.is_claude_question()
+                        && question.actor == item.actor
+                        && question
+                            .details
+                            .as_ref()
+                            .and_then(|d| d.session_id.as_ref())
+                            == item.details.as_ref().and_then(|d| d.session_id.as_ref())
+                })
+            {
+                continue;
+            }
             if self.attention_queue.answered_ask_ids.contains(&item.id)
                 || self.attention_queue.dismissed_ids.contains(&item.id)
                 || seen_ids.contains(&item.id)
@@ -863,7 +957,14 @@ impl PlexiApp {
             let choices = item
                 .details
                 .as_ref()
-                .map(|d| d.choices.clone())
+                .map(|d| match d.claude_questions.first() {
+                    Some(question) => question
+                        .options
+                        .iter()
+                        .map(|opt| crate::host::guest_text::shown(&opt.label))
+                        .collect(),
+                    None => d.choices.clone(),
+                })
                 .unwrap_or_default();
             let recommend = item.details.as_ref().and_then(|d| d.recommend.clone());
             let is_question =
@@ -929,9 +1030,11 @@ impl PlexiApp {
                 created_at_ms: (item.created_at.max(0) as u64).saturating_mul(1000),
                 locked: false,
                 source: QueueSource::NeedsYou {
-                    request_id: item.id,
+                    request_id: item.id.clone(),
                     is_question: is_question
-                        && item.details.as_ref().is_some_and(|d| !d.choices.is_empty()),
+                        && item.details.as_ref().is_some_and(|d| {
+                            !d.choices.is_empty() || !d.claude_questions.is_empty()
+                        }),
                 },
             });
         }
@@ -949,6 +1052,18 @@ impl PlexiApp {
                 continue;
             }
             let src_pane = notif.agent_source_pane();
+            if src_pane != 0
+                && notif.body == super::claude_question::TOOL
+                && open_items.iter().any(|item| {
+                    item.is_claude_question()
+                        && item
+                            .actor
+                            .pane()
+                            .is_some_and(|owner| owner.number() == src_pane)
+                })
+            {
+                continue;
+            }
             let explicit_pane = (src_pane != 0).then_some(src_pane);
             let explicit_ctx = (notif.source_context_id != 0).then_some(notif.source_context_id);
             let (context_id, mut pane_id, pane_name, context_path) =
@@ -1256,7 +1371,16 @@ impl PlexiApp {
                 || unbound_host_decision
                 || uncertain_notification
                 || self.find_pane_in_any_window(overlay.pane_id).is_some();
-            if !pane_alive {
+            let grouped_withdrawn = overlay.grouped.is_some()
+                && !self
+                    .attention_queue
+                    .items
+                    .iter()
+                    .any(|bar| bar.id == overlay.ask_id);
+            if grouped_withdrawn {
+                self.attention_queue.decision_overlay = None;
+                self.sync_attention_queue_layer();
+            } else if !pane_alive {
                 log::info!(
                     "decision_overlay: closing because target pane {} died",
                     overlay.pane_id
@@ -1438,7 +1562,27 @@ impl PlexiApp {
             crate::broker::consent::consent_request_key(&bar.id),
             std::time::Instant::now(),
         );
-        self.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&bar));
+        let mut overlay = DecisionOverlayState::from_bar(&bar);
+        if let QueueSource::NeedsYou {
+            request_id,
+            is_question: true,
+        } = &bar.source
+        {
+            let group = PermissionMonitor::loaded(&crate::config::config_dir())
+                .and_then(|monitor| monitor.host_records().question(request_id))
+                .and_then(|row| row.details)
+                .map(|details| details.claude_questions)
+                .filter(|questions| !questions.is_empty());
+            if let Some(questions) = group {
+                overlay.grouped = Some(GroupedQuestionDraft {
+                    drafts: vec![QuestionDraft::default(); questions.len()],
+                    questions,
+                    current: 0,
+                });
+                overlay.show_grouped_question();
+            }
+        }
+        self.attention_queue.decision_overlay = Some(overlay);
         self.attention_queue.open = false;
         // A decision opens on top of whatever owned input.
         self.focus_stack
@@ -1822,9 +1966,104 @@ impl PlexiApp {
             })
     }
 
+    fn pick_grouped_question_option(&mut self, option_idx: usize) -> bool {
+        let Some(overlay) = self.attention_queue.decision_overlay.as_mut() else {
+            return false;
+        };
+        let Some(group) = &mut overlay.grouped else {
+            return false;
+        };
+        let Some(option) = overlay.options.get(option_idx) else {
+            return false;
+        };
+        let question = &group.questions[group.current];
+        let draft = &mut group.drafts[group.current];
+        match option.key.as_str() {
+            "other" => {
+                if question.multi_select && draft.other.is_some() {
+                    draft.other = None;
+                } else {
+                    draft.other.get_or_insert_with(String::new);
+                    if !question.multi_select {
+                        draft.selected.clear();
+                    }
+                }
+                overlay.show_grouped_question();
+                return false;
+            }
+            "submit" => {}
+            _ if option_idx < question.options.len() => {
+                if question.multi_select {
+                    if !draft.selected.insert(option_idx) {
+                        draft.selected.remove(&option_idx);
+                    }
+                    overlay.selected_idx = option_idx;
+                    return false;
+                }
+                draft.other = None;
+                draft.selected.clear();
+                draft.selected.insert(option_idx);
+            }
+            _ => return false,
+        }
+        if draft.answer(question).is_none() {
+            overlay.hint = Some(("Choose an answer before continuing.".into(), Instant::now()));
+            return false;
+        }
+        if group.current + 1 < group.questions.len() {
+            group.current += 1;
+            overlay.hint = None;
+            overlay.show_grouped_question();
+            return false;
+        }
+        let Some(answers) = group
+            .questions
+            .iter()
+            .zip(&group.drafts)
+            .map(|(q, draft)| draft.answer(q).map(|answer| (&q.question, answer)))
+            .collect::<Option<std::collections::BTreeMap<_, _>>>()
+        else {
+            return false;
+        };
+        let answer = serde_json::json!(answers).to_string();
+        let id = overlay.ask_id.clone();
+        let result = self
+            .witness_overlay_decision(&id, &id, &answer, false)
+            .map_err(DecisionFailure::from)
+            .and_then(|evidence| {
+                self.answer_from_desktop(evidence, &id, &answer, "decision overlay")
+                    .map_err(DecisionFailure::from)
+            });
+        match result {
+            Ok(()) => {
+                self.approval_keyboard.last_error = None;
+                self.attention_queue.answered_ask_ids.insert(id);
+                self.attention_queue.decision_overlay = None;
+                self.sync_attention_queue_layer();
+                self.sync_attention_queue();
+                true
+            }
+            Err(error) => {
+                self.approval_keyboard.last_error = Some((id, error));
+                false
+            }
+        }
+    }
+
     /// Pick option `option_idx` in the open Decision Overlay.
     /// Sends at most one verdict, closes the overlay, and keeps focus on the pane.
     pub fn pick_decision_overlay_option(&mut self, option_idx: usize) -> bool {
+        if self
+            .attention_queue
+            .decision_overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.grouped.is_some())
+        {
+            if self.synthetic_input_frame {
+                return false;
+            }
+            return self.pick_grouped_question_option(option_idx);
+        }
         let Some(overlay) = self.attention_queue.decision_overlay.clone() else {
             return false;
         };
@@ -2114,6 +2353,23 @@ impl PlexiApp {
             self.summon_decision_overlay();
             input.clear();
             return KeyDisposition::Consumed;
+        }
+
+        if let Some(overlay) = self.attention_queue.decision_overlay.as_ref() {
+            let editing_other = overlay
+                .grouped
+                .as_ref()
+                .is_some_and(|group| group.current().1.other.is_some())
+                && self
+                    .ctx
+                    .memory(|memory| memory.has_focus(egui::Id::new(OTHER_ANSWER_FIELD)));
+            if editing_other {
+                if input.consume_key(egui::Modifiers::NONE, Key::Enter) {
+                    self.request_decision_overlay_option(overlay.options.len() - 1);
+                    input.clear();
+                }
+                return KeyDisposition::Consumed;
+            }
         }
 
         // Check non-repeating key presses for j/k, Enter, 1-9.
@@ -2593,6 +2849,11 @@ impl PlexiApp {
             .min(screen.width() - 32.0)
             .max(300.0);
         let mut picked_option: Option<usize> = None;
+        let mut go_back = false;
+        let mut other = overlay
+            .grouped
+            .as_ref()
+            .and_then(|group| group.current().1.other.clone());
 
         let v_margin = 18_i8;
         let max_h = (screen.height() - 2.0 * (style::SPACE_MD + f32::from(v_margin))).max(160.0);
@@ -2667,26 +2928,47 @@ impl PlexiApp {
                                 );
                                 ui.add_space(style::SPACE_SM);
 
-                                // Command text in monospace block
-                                egui::Frame::NONE
-                                    .fill(colors.code_bg)
-                                    .stroke(Stroke::new(1.0_f32, colors.border))
-                                    .corner_radius(style::RADIUS_BAR)
-                                    .inner_margin(egui::Margin::symmetric(12, 10))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        let code_w = ui.available_width();
-                                        wrapped_label(
-                                            ui,
-                                            &overlay.command_text,
-                                            FontId::new(style::TEXT_CAPTION, FontFamily::Monospace),
-                                            colors.text_primary,
-                                            code_w,
-                                        );
-                                    });
+                                if let Some(group) = &overlay.grouped {
+                                    let (question, _) = group.current();
+                                    ui.label(crate::host::guest_text::shown(&question.header));
+                                    if question.multi_select {
+                                        ui.label("Select all that apply.");
+                                    }
+                                    if group.current > 0
+                                        && ui.add(
+                                            KitButton::new("Previous question", &colors)
+                                                .kind(ButtonKind::Ghost)
+                                                .size(ButtonSize::Sm)
+                                                .focusable(false),
+                                        ).clicked()
+                                    {
+                                        go_back = true;
+                                    }
+                                } else {
+                                    // Command text in monospace block
+                                    egui::Frame::NONE
+                                        .fill(colors.code_bg)
+                                        .stroke(Stroke::new(1.0_f32, colors.border))
+                                        .corner_radius(style::RADIUS_BAR)
+                                        .inner_margin(egui::Margin::symmetric(12, 10))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            let code_w = ui.available_width();
+                                            wrapped_label(
+                                                ui,
+                                                &overlay.command_text,
+                                                FontId::new(
+                                                    style::TEXT_CAPTION,
+                                                    FontFamily::Monospace,
+                                                ),
+                                                colors.text_primary,
+                                                code_w,
+                                            );
+                                        });
+                                }
                                 ui.add_space(style::SPACE_MD);
 
-                                // 2–4 options
+                                // Options and grouped-question controls
                                 for (idx, opt) in overlay.options.iter().enumerate() {
                                     let is_sel = idx == overlay.selected_idx;
                                     let fill = if is_sel {
@@ -2707,11 +2989,48 @@ impl PlexiApp {
                                         .inner_margin(egui::Margin::symmetric(12, 9))
                                         .show(ui, |ui| {
                                             ui.set_width(ui.available_width());
-                                            paint_option_row(ui, idx + 1, opt, &colors);
+                                            if let Some(group) = &overlay.grouped {
+                                                let (question, draft) = group.current();
+                                                if let Some(choice) = question.options.get(idx) {
+                                                    let mut display = opt.clone();
+                                                    if draft.selected.contains(&idx) {
+                                                        display.label = format!("✓ {}", opt.label);
+                                                    }
+                                                    paint_option_row(
+                                                        ui,
+                                                        idx + 1,
+                                                        &display,
+                                                        &colors,
+                                                    );
+                                                    let description =
+                                                        crate::host::guest_text::shown(
+                                                            &choice.description,
+                                                        );
+                                                    if !description.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(description)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                    }
+                                                } else {
+                                                    paint_option_row(ui, idx + 1, opt, &colors);
+                                                }
+                                            } else {
+                                                paint_option_row(ui, idx + 1, opt, &colors);
+                                            }
                                         })
                                         .response
                                         .interact(Sense::click());
 
+                                    if overlay.grouped.is_some() {
+                                        resp.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::WidgetType::Button,
+                                                true,
+                                                &opt.label,
+                                            )
+                                        });
+                                    }
                                     let rect = resp.rect;
                                     self.approval_buttons.push(crate::app::ApprovalButton {
                                         label: opt.label.clone(),
@@ -2720,6 +3039,18 @@ impl PlexiApp {
                                     });
                                     if resp.clicked_by(egui::PointerButton::Primary) {
                                         picked_option = Some(idx);
+                                    }
+                                    if opt.key == "other" {
+                                        if let Some(value) = &mut other {
+                                            crate::ui::text_field::TextField::singleline(
+                                                egui::Id::new(OTHER_ANSWER_FIELD),
+                                                "Your answer",
+                                            )
+                                            .surface(crate::ui::focus::SurfaceKey::Overlay(
+                                                crate::app::input_owner::OverlaySurface::DecisionOverlay,
+                                            ))
+                                            .show(ui, value, &colors);
+                                        }
                                     }
                                     ui.add_space(style::SPACE_XS);
                                 }
@@ -2762,6 +3093,16 @@ impl PlexiApp {
                     });
             });
 
+        if let Some(current) = self.attention_queue.decision_overlay.as_mut() {
+            if let Some(group) = &mut current.grouped {
+                group.drafts[group.current].other = other;
+                if go_back && !self.synthetic_input_frame {
+                    group.current -= 1;
+                    current.hint = None;
+                    current.show_grouped_question();
+                }
+            }
+        }
         if let Some(idx) = picked_option {
             self.request_decision_overlay_option(idx);
         }
@@ -5711,6 +6052,382 @@ mod tests {
             !show(&mut h, later, "show-later.json"),
             "a reused number shows nothing"
         );
+    }
+
+    fn claude_question_fixture() -> (serde_json::Value, serde_json::Value) {
+        use serde_json::json;
+        let permission: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/claude-question-permission-request.json"
+        ))
+        .unwrap();
+        let mut pre = permission.clone();
+        pre["hook_event_name"] = json!("PreToolUse");
+        pre["tool_use_id"] = json!("toolu_015sfZe7qQJm5a7UZnFvtnHY");
+        (pre, permission)
+    }
+
+    fn send_claude_question_event(
+        h: &mut HostHarness,
+        origin: &crate::broker::caller::RequestOrigin,
+        payload: &serde_json::Value,
+    ) -> String {
+        let response = crate::rpc::response_file_in(h.profile_dir(), "claude-hook", "json");
+        h.app
+            .handle_needs_you_api("claude_hook", payload, origin, &response);
+        response
+    }
+
+    fn read_claude_question_reply(response: &str) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn claude_question_hook_files_one_answerable_card() {
+        use serde_json::json;
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let pane = h.add_focused_terminal();
+        let origin = h.origin_from_pane(pane);
+        let (pre, permission) = claude_question_fixture();
+        let registration = send_claude_question_event(&mut h, &origin, &pre);
+        let registration = read_claude_question_reply(&registration);
+        assert_eq!(registration["ok"], true, "{registration}");
+        let response = send_claude_question_event(&mut h, &origin, &permission);
+        assert!(
+            !Path::new(&response).exists(),
+            "PermissionRequest waits for the person"
+        );
+        let rows = monitor.host_records().questions(true);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            rows[0].summary,
+            permission["tool_input"]["questions"][0]["question"]
+        );
+        assert_eq!(rows[0].actor.pane().unwrap().number(), pane);
+        let id = &rows[0].id;
+        let grant_count = monitor.store().records().len();
+        let duplicate = send_claude_question_event(&mut h, &origin, &permission);
+        assert!(read_claude_question_reply(&duplicate)["decision"].is_null());
+        assert_eq!(monitor.host_records().questions(true).len(), 1);
+        h.app.withdraw_agent_attention_items(pane);
+        assert_eq!(monitor.host_records().questions(true).len(), 1);
+
+        h.app.sync_attention_queue();
+        let bar = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.id == *id)
+            .unwrap();
+        assert_eq!(
+            bar.options
+                .iter()
+                .map(|opt| opt.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Red", "Blue"]
+        );
+        assert_eq!(
+            h.app.resolve_attention_destination(bar),
+            AttentionDestination::DecisionOverlay(id.clone())
+        );
+        assert!(h.app.open_decision_overlay_for_ask(id));
+        h.app.arm_decision_overlay_for_test();
+        assert!(h.app.pick_decision_overlay_option(1));
+        assert!(!h.app.pick_decision_overlay_option(0));
+        let ctx = h.app.ctx.clone();
+        h.app.service_claude_questions(&monitor, &ctx);
+
+        let mut expected = permission["tool_input"].clone();
+        expected["answers"] = json!({"Which color do you pick?": "Blue"});
+        let reply = read_claude_question_reply(&response);
+        assert_eq!(
+            reply["decision"]["hookSpecificOutput"]["decision"],
+            json!({
+                "behavior": "allow", "updatedInput": expected,
+            })
+        );
+        assert_eq!(
+            monitor.host_records().run(id).unwrap().state,
+            crate::broker::gate::ContinuationState::Running
+        );
+        let mut post = pre;
+        post["hook_event_name"] = json!("PostToolUse");
+        post["tool_input"] = expected.clone();
+        post["tool_response"] = expected;
+        let settled = send_claude_question_event(&mut h, &origin, &post);
+        assert!(read_claude_question_reply(&settled)["decision"].is_null());
+        let run = monitor.host_records().run(id).unwrap();
+        assert_eq!(run.state, crate::broker::gate::ContinuationState::Completed);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&run.receipt.unwrap()).unwrap()["answers"]
+                ["Which color do you pick?"],
+            "Blue"
+        );
+        assert_eq!(monitor.store().records().len(), grant_count);
+    }
+
+    #[test]
+    fn claude_question_tui_wins_before_hook_reply() {
+        use serde_json::json;
+        for submit_desktop_in_same_frame in [false, true] {
+            let mut h = HostHarness::new();
+            let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+            let pane = h.add_focused_terminal();
+            let origin = h.origin_from_pane(pane);
+            let (mut pre, permission) = claude_question_fixture();
+            send_claude_question_event(&mut h, &origin, &pre);
+            let reply = send_claude_question_event(&mut h, &origin, &permission);
+            let id = monitor.host_records().questions(true)[0].id.clone();
+            assert!(h.app.open_decision_overlay_for_ask(&id));
+            if submit_desktop_in_same_frame {
+                h.app.arm_decision_overlay_for_test();
+                assert!(h.app.pick_decision_overlay_option(1));
+            }
+            pre["hook_event_name"] = json!("PostToolUse");
+            pre["tool_input"]["answers"] = json!({"Which color do you pick?": "Red"});
+            pre["tool_response"] = pre["tool_input"].clone();
+            send_claude_question_event(&mut h, &origin, &pre);
+
+            assert!(read_claude_question_reply(&reply)["decision"].is_null());
+            h.app.sync_attention_queue();
+            assert!(h.app.attention_queue.decision_overlay.is_none());
+            assert!(monitor.host_records().questions(true).is_empty());
+            let run = monitor.host_records().run(&id).unwrap();
+            assert_eq!(run.state, crate::broker::gate::ContinuationState::Completed);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&run.receipt.unwrap()).unwrap()
+                    ["answers"]["Which color do you pick?"],
+                "Red"
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&run.answer.unwrap()).unwrap()
+                    ["Which color do you pick?"],
+                "Red"
+            );
+            // A retry of the same permission request has no registered tool and
+            // cannot obtain the old answer.
+            let replay = send_claude_question_event(&mut h, &origin, &permission);
+            assert!(read_claude_question_reply(&replay)["decision"].is_null());
+        }
+    }
+
+    #[test]
+    fn claude_question_group_submits_choices_in_order_and_other_text() {
+        use serde_json::json;
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let pane = h.add_focused_terminal();
+        let origin = h.origin_from_pane(pane);
+        let (mut pre, mut permission) = claude_question_fixture();
+        let mut second = pre["tool_input"]["questions"][0].clone();
+        second["question"] = json!("Which colors should we include? ");
+        second["multiSelect"] = json!(true);
+        pre["tool_input"]["questions"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        permission["tool_input"] = pre["tool_input"].clone();
+        send_claude_question_event(&mut h, &origin, &pre);
+        let response = send_claude_question_event(&mut h, &origin, &permission);
+        let id = monitor.host_records().questions(true)[0].id.clone();
+        assert!(h.app.open_decision_overlay_for_ask(&id));
+        h.app.arm_decision_overlay_for_test();
+        assert!(
+            !h.app.pick_decision_overlay_option(1),
+            "first choice is a draft"
+        );
+        assert!(!h.app.pick_decision_overlay_option(1));
+        assert!(!h.app.pick_decision_overlay_option(0));
+        assert!(!h.app.pick_decision_overlay_option(2));
+        let group = h
+            .app
+            .attention_queue
+            .decision_overlay
+            .as_mut()
+            .unwrap()
+            .grouped
+            .as_mut()
+            .unwrap();
+        assert_eq!(group.current, 1);
+        group.drafts[1].other = Some("Green".into());
+        assert!(!Path::new(&response).exists());
+        assert!(h.app.pick_decision_overlay_option(3));
+        let ctx = h.app.ctx.clone();
+        h.app.service_claude_questions(&monitor, &ctx);
+        assert_eq!(
+            read_claude_question_reply(&response)["decision"]["hookSpecificOutput"]["decision"]
+                ["updatedInput"]["answers"],
+            json!({
+                "Which color do you pick?": "Blue",
+                "Which colors should we include? ": "Red, Blue, Green",
+            })
+        );
+    }
+
+    #[test]
+    fn claude_question_stale_keys_pane_reuse_and_timeout_fall_back() {
+        use serde_json::json;
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let pane = h.add_focused_terminal();
+        let origin = h.origin_from_pane(pane);
+        let (mut pre, permission) = claude_question_fixture();
+        let fallback = send_claude_question_event(&mut h, &origin, &permission);
+        assert!(read_claude_question_reply(&fallback)["decision"].is_null());
+        let ctx = h.app.ctx.clone();
+
+        send_claude_question_event(&mut h, &origin, &pre);
+        let response = send_claude_question_event(&mut h, &origin, &permission);
+        let expiry = monitor.host_records().questions(true)[0]
+            .expires_at
+            .unwrap();
+        let mut wrong = pre.clone();
+        wrong["hook_event_name"] = json!("PostToolUseFailure");
+        wrong["tool_use_id"] = json!("toolu_other");
+        send_claude_question_event(&mut h, &origin, &wrong);
+        assert!(
+            !Path::new(&response).exists(),
+            "a stale completion cannot withdraw the card"
+        );
+        monitor.set_now_for_test(expiry);
+        h.app.service_claude_questions(&monitor, &ctx);
+        assert!(monitor.host_records().questions(true).is_empty());
+        assert!(read_claude_question_reply(&response)["decision"].is_null());
+
+        pre["tool_use_id"] = json!("toolu_next");
+        send_claude_question_event(&mut h, &origin, &pre);
+        let response = send_claude_question_event(&mut h, &origin, &permission);
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .terminal_incarnation_mut()
+            .unwrap();
+        let grant = terminal.authority().unwrap().grant().clone();
+        terminal.replace_grant_for_test(grant);
+        h.app.service_claude_questions(&monitor, &ctx);
+        assert!(monitor.host_records().questions(true).is_empty());
+        assert!(read_claude_question_reply(&response)["decision"].is_null());
+        let later = h.origin_from_pane(pane);
+        let response = send_claude_question_event(&mut h, &later, &permission);
+        assert!(read_claude_question_reply(&response)["decision"].is_null());
+    }
+
+    #[test]
+    fn claude_question_restart_retires_open_and_never_replays_submitted() {
+        use crate::broker::gate::{ContinuationState, NeedsYouResolution};
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let pane = h.add_focused_terminal();
+        let origin = h.origin_from_pane(pane);
+        let (mut pre, mut permission) = claude_question_fixture();
+        send_claude_question_event(&mut h, &origin, &pre);
+        let reply = send_claude_question_event(&mut h, &origin, &permission);
+        let answered = monitor.host_records().questions(true)[0].id.clone();
+        assert!(h.app.open_decision_overlay_for_ask(&answered));
+        h.app.arm_decision_overlay_for_test();
+        assert!(h.app.pick_decision_overlay_option(1));
+        let ctx = h.app.ctx.clone();
+        h.app.service_claude_questions(&monitor, &ctx);
+        assert!(!read_claude_question_reply(&reply)["decision"].is_null());
+
+        pre["tool_use_id"] = serde_json::json!("toolu_pending");
+        pre["tool_input"]["questions"][0]["question"] = serde_json::json!("Another question?");
+        permission["tool_input"] = pre["tool_input"].clone();
+        send_claude_question_event(&mut h, &origin, &pre);
+        send_claude_question_event(&mut h, &origin, &permission);
+        let waiting = monitor.host_records().questions(true)[0].id.clone();
+
+        let restored = PermissionMonitor::open_profile(h.profile_dir()).unwrap();
+        assert!(restored
+            .host_records()
+            .questions(true)
+            .iter()
+            .all(|row| !row.is_claude_question()));
+        assert_eq!(
+            restored
+                .host_records()
+                .question(&waiting)
+                .unwrap()
+                .resolution,
+            Some(NeedsYouResolution::Retired)
+        );
+        assert_eq!(
+            restored.host_records().run(&waiting).unwrap().state,
+            ContinuationState::Canceled
+        );
+        assert_eq!(
+            restored.host_records().run(&answered).unwrap().state,
+            ContinuationState::OutcomeUnknown
+        );
+    }
+
+    #[test]
+    fn claude_question_suppresses_only_the_native_fallback_while_live() {
+        use crate::protocol::{AgentState, HostRequest};
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let pane = h.add_focused_terminal();
+        let origin = h.origin_from_pane(pane);
+        let (pre, permission) = claude_question_fixture();
+        h.app.handle_pane_ipc_request(
+            origin.clone(),
+            HostRequest::SetAgentState {
+                pane_id: pane,
+                state: AgentState::Blocked,
+                agent: "claude-code".into(),
+                detail: Some("AskUserQuestion".into()),
+                session_id: pre["session_id"].as_str().map(str::to_owned),
+                event: Some("PermissionRequest".into()),
+                blocked_reason: None,
+            },
+        );
+        h.app.sync_attention_queue();
+        assert!(h.app.attention_queue.items.iter().any(|bar| {
+            bar.category == QueueCategory::Ask
+                && h.app.resolve_attention_destination(bar)
+                    == AttentionDestination::SourcePane(pane)
+        }));
+        send_claude_question_event(&mut h, &origin, &pre);
+        send_claude_question_event(&mut h, &origin, &permission);
+        h.app.sync_attention_queue();
+        let asks: Vec<_> = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .filter(|bar| bar.category == QueueCategory::Ask)
+            .collect();
+        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert!(matches!(
+            h.app.resolve_attention_destination(asks[0]),
+            AttentionDestination::DecisionOverlay(_)
+        ));
+        assert_eq!(
+            monitor
+                .host_records()
+                .questions(true)
+                .iter()
+                .filter(|row| row.is_claude_question())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn claude_question_ambiguous_registration_leaves_claude_in_charge() {
+        let mut h = HostHarness::new();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let pane = h.add_focused_terminal();
+        let origin = h.origin_from_pane(pane);
+        let (mut pre, permission) = claude_question_fixture();
+        send_claude_question_event(&mut h, &origin, &pre);
+        pre["tool_use_id"] = serde_json::json!("toolu_another");
+        send_claude_question_event(&mut h, &origin, &pre);
+        let response = send_claude_question_event(&mut h, &origin, &permission);
+        assert!(read_claude_question_reply(&response)["decision"].is_null());
+        assert!(monitor.host_records().questions(true).is_empty());
     }
 
     #[test]

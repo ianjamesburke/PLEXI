@@ -119,6 +119,21 @@ fn records_for_origin<'a>(
     }
 }
 
+pub(super) fn file_needs_you_ask(
+    monitor: &crate::broker::gate::PermissionMonitor,
+    records: &crate::broker::gate::Records<'_>,
+    question: crate::broker::gate::NeedsYouFile,
+    details: crate::broker::gate::NeedsYouDetails,
+) -> Result<serde_json::Value, String> {
+    let id = monitor.file_needs_you_with_details(question, Some(details))?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "id": id,
+        "item": records.question(&id),
+        "continuation": records.run(&id),
+    }))
+}
+
 impl PlexiApp {
     pub(crate) fn observe_permissions(
         &mut self,
@@ -434,6 +449,14 @@ impl PlexiApp {
             );
             return;
         };
+        if op == "claude_hook" {
+            if let Some(reply) =
+                self.claude_question_hook(&monitor, payload, caller_pane, response_file)
+            {
+                crate::rpc::write_json_response(response_file, reply);
+            }
+            return;
+        }
         let body = match op {
             "ask" if ask_recommend_error(payload).is_some() => {
                 let error = ask_recommend_error(payload).unwrap_or_default();
@@ -522,7 +545,9 @@ impl PlexiApp {
                     expected_revision,
                     ..Default::default()
                 };
-                match monitor.file_needs_you_with_details(
+                file_needs_you_ask(
+                    &monitor,
+                    &records,
                     crate::broker::gate::NeedsYouFile {
                         kind: crate::broker::gate::NeedsYouKind::Question,
                         actor,
@@ -531,24 +556,9 @@ impl PlexiApp {
                         expires_at: None,
                         run_tag,
                     },
-                    Some(details),
-                ) {
-                    Ok(id) => {
-                        let item = records.question(&id);
-                        let continuation = records.run(&id);
-                        log::info!("needs_you: api ask filed id={id} pane={resolved_pane:?} context={resolved_context} caller={}", origin.class());
-                        serde_json::json!({
-                            "ok": true,
-                            "id": id,
-                            "item": item,
-                            "continuation": continuation,
-                        })
-                    }
-                    Err(error) => serde_json::json!({
-                        "ok": false,
-                        "error": error,
-                    }),
-                }
+                    details,
+                )
+                .unwrap_or_else(|error| serde_json::json!({ "ok": false, "error": error }))
             }
             "show" => {
                 let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -656,6 +666,18 @@ impl PlexiApp {
                     .and_then(|v| v.as_str())
                     .map(ToString::to_string);
                 let record = records.run(id);
+                if record
+                    .as_ref()
+                    .and_then(|run| run.needs_you_id.as_deref())
+                    .and_then(|question| records.question(question))
+                    .is_some_and(|row| row.is_claude_question())
+                {
+                    crate::rpc::write_json_response(
+                        response_file,
+                        serde_json::json!({"ok":false,"error_code":"permission_denied"}),
+                    );
+                    return;
+                }
                 if record
                     .as_ref()
                     .is_some_and(|r| r.request_fingerprint.is_some())
