@@ -845,10 +845,11 @@ pub enum HostRequest {
         /// Agent role name (`.plexi/agents/<name>.toml`).
         #[serde(default, alias = "role_name")]
         role: String,
-        /// CLI harness identifier (`claude`, `codex`, `pi`, `agy`).
+        /// Harness identifier for an explicit raw command.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         harness: String,
-        /// Shell command to launch the agent harness.
-        #[serde(alias = "cmd")]
+        /// Explicit raw command. Omit it to launch the named definition.
+        #[serde(default, alias = "cmd", skip_serializing_if = "String::is_empty")]
         command: String,
         /// Optional task brief passed to the spawned agent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -856,9 +857,9 @@ pub enum HostRequest {
         /// Optional child sub-context name to create or reuse under the parent context.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subcontext: Option<String>,
-        /// Whether the worker pane is ephemeral (`PLEXI_EPHEMERAL=1`, self-closes on exit 0).
-        #[serde(default)]
-        ephemeral: bool,
+        /// Override the configured lifetime. Raw commands default to non-ephemeral.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ephemeral: Option<bool>,
         /// Optional display name for the spawned pane.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
@@ -1961,6 +1962,11 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },
+    /// Internal CLI handoff for a restart from a pane in this host. The host
+    /// acknowledges acceptance on the reply stream and waits for the CLI to
+    /// confirm the relaunch coordinator is detached before killing panes.
+    #[schemars(skip)]
+    ShutdownForRestart { response_file: String },
 }
 
 /// Who caused a plugin state change (`HostRequest::EmitEvent`).

@@ -140,6 +140,9 @@ pub struct SavedAgentSession {
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_name: Option<String>,
+    /// Named Claude memory attested by the original host launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) claude_memory: Option<crate::agent::memory::ClaudeMemoryIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_posture: Option<crate::broker::PermissionPosture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -190,6 +193,9 @@ pub struct AgentHistoryRecord {
     pub harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_name: Option<String>,
+    /// Named Claude memory attested by the original host launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) claude_memory: Option<crate::agent::memory::ClaudeMemoryIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_posture: Option<crate::broker::PermissionPosture>,
     /// The closed pane's grant (a `broker::pane_authority::PaneAuthority`),
@@ -1868,6 +1874,7 @@ mod tests {
                 last_interaction_at: 0,
                 harness: "claude".to_string(),
                 config_name: Some("implementer".to_string()),
+                claude_memory: None,
                 permission_posture: None,
                 session_id: Some("sess-42".to_string()),
                 last_state: AgentState::Blocked,
@@ -1933,6 +1940,7 @@ mod tests {
             cwd: PathBuf::from("/tmp/work"),
             harness: "claude".to_string(),
             config_name: Some("implementer".to_string()),
+            claude_memory: None,
             permission_posture: None,
             authority: None,
             session_id: Some("sess-42".to_string()),
@@ -1999,6 +2007,7 @@ pub(crate) fn archive_saved_completion(
         pane_name: pane.name.clone(),
         harness: session.harness.clone(),
         config_name: session.config_name.clone(),
+        claude_memory: None,
         permission_posture: session.permission_posture.clone(),
         // The saved pane's grant record, as saved.
         authority: pane

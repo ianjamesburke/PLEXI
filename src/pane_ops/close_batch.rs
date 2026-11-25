@@ -16,7 +16,9 @@
 use std::collections::HashSet;
 
 use crate::app::PlexiApp;
-use crate::host::model::{CloseBatchWait, PaneCloseBatch, PaneTargetSource, PaneTargets};
+use crate::host::model::{
+    CloseBatchWait, PaneCloseBatch, PaneSelection, PaneTargetSource, PaneTargets,
+};
 use crate::spatial::tiling::PaneId;
 
 /// What a paused batch learned from its pane's dialog this pass.
@@ -41,10 +43,14 @@ impl PlexiApp {
             })
     }
 
-    /// Start closing the active window's selection when it holds two or more
-    /// panes. Returns false, changing nothing, when the close shortcut should
-    /// act on the focused pane as before.
-    pub(crate) fn start_close_selected_panes(&mut self, action: &str) -> bool {
+    /// Close the captured selection while it is still focused and visible.
+    /// Returns false when Cmd+W should fall back to a focused-pane close.
+    pub(crate) fn start_close_captured_selection(
+        &mut self,
+        window_id: u64,
+        selection: Option<&PaneSelection>,
+        action: &str,
+    ) -> bool {
         // A batch whose asking pane lost focus ends here, so Cmd+W elsewhere
         // works normally. One still waiting owns the dialog on screen.
         self.service_pane_close_batch();
@@ -57,19 +63,33 @@ impl PlexiApp {
         {
             return false;
         }
-        let Some(targets) = self
-            .resolve_pane_targets(action)
-            .filter(|t| t.source == PaneTargetSource::Selection && t.panes.len() >= 2)
-        else {
+        if self.windows[self.active_window].window_id != window_id {
+            return false;
+        }
+        let Some(selection) = selection else {
             return false;
         };
-        let window = &self.windows[self.active_window];
+        let Some(targets) = self.resolve_pane_targets(action).filter(|targets| {
+            targets.source == PaneTargetSource::Selection
+                && targets.panes.len() >= 2
+                && targets.panes == selection.panes
+                && self.host.pane_selection(window_id) == Some(selection)
+        }) else {
+            log::info!("close_batch: {action} ignored, captured selection is no longer active");
+            return false;
+        };
+        self.start_selected_close_batch(self.active_window, targets, action);
+        true
+    }
+
+    fn start_selected_close_batch(&mut self, win_idx: usize, targets: PaneTargets, action: &str) {
+        let window = &self.windows[win_idx];
         let closing: HashSet<PaneId> = targets.panes.iter().copied().collect();
         let focus_after = window
             .tree
             .tiles
             .find_pane(&targets.anchor)
-            .and_then(|tile| self.choose_focus_after_closing(self.active_window, tile, &closing))
+            .and_then(|tile| self.choose_focus_after_closing(win_idx, tile, &closing))
             .and_then(|(tile, rule)| {
                 let pane = match window.tree.tiles.get(tile) {
                     Some(egui_tiles::Tile::Pane(pane)) => *pane,
@@ -95,7 +115,6 @@ impl PlexiApp {
             focus_after,
         });
         self.service_pane_close_batch();
-        true
     }
 
     /// Advance the batch until it finishes or pauses on a pane's dialog. Runs

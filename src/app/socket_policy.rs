@@ -259,9 +259,10 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
     Ok(match request {
         // Stop is served to every same-user caller: an older client reads
         // any refusal as zero grace and kills the host (Codex 3290 r3).
-        HostRequest::GetBuildInfo { .. } | HostRequest::Wake | HostRequest::Shutdown { .. } => {
-            Open
-        }
+        HostRequest::GetBuildInfo { .. }
+        | HostRequest::Wake
+        | HostRequest::Shutdown { .. }
+        | HostRequest::ShutdownForRestart { .. } => Open,
         // Its handler answers every caller class with a typed receipt
         // (`caller_unidentified`, `no_anchor`, `outside_authority`).
         HostRequest::FileOpen { .. } => Open,

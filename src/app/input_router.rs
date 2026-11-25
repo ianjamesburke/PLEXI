@@ -62,6 +62,7 @@ fn is_input_intent(event: &egui::Event) -> bool {
 /// Owned, frame-scoped buffer of input-intent events removed from `ctx`.
 pub(crate) struct PlexiInput {
     events: Vec<egui::Event>,
+    positions: Vec<usize>,
     modifiers: egui::Modifiers,
 }
 
@@ -82,7 +83,7 @@ impl PlexiInput {
             });
             (taken, i.modifiers)
         });
-        Self { events, modifiers }
+        Self::synthetic(events, modifiers)
     }
 
     pub(crate) fn modifiers(&self) -> egui::Modifiers {
@@ -96,7 +97,12 @@ impl PlexiInput {
     /// focus). `events` is caller-filtered; this does not re-check
     /// `is_input_intent`.
     pub(crate) fn synthetic(events: Vec<egui::Event>, modifiers: egui::Modifiers) -> Self {
-        Self { events, modifiers }
+        let positions = (0..events.len()).collect();
+        Self {
+            events,
+            positions,
+            modifiers,
+        }
     }
 
     /// The frame's owned input-intent events, in arrival order. Consumers that
@@ -105,6 +111,36 @@ impl PlexiInput {
     /// `ctx.input(|i| &i.events)`.
     pub(crate) fn events(&self) -> &[egui::Event] {
         &self.events
+    }
+
+    pub(crate) fn retain_events(&mut self, mut keep: impl FnMut(&egui::Event) -> bool) {
+        self.retain_positioned_events(|_, event| keep(event));
+    }
+
+    /// Keep original positions across ownership passes so actions claimed in
+    /// different passes can still dispatch in delivery order.
+    pub(crate) fn retain_positioned_events(
+        &mut self,
+        mut keep: impl FnMut(usize, &egui::Event) -> bool,
+    ) {
+        let mut read = 0;
+        let mut write = 0;
+        self.events.retain(|event| {
+            let position = self.positions[read];
+            read += 1;
+            let retained = keep(position, event);
+            if retained {
+                self.positions[write] = position;
+                write += 1;
+            }
+            retained
+        });
+        self.positions.truncate(write);
+    }
+
+    fn remove_event(&mut self, index: usize) {
+        self.events.remove(index);
+        self.positions.remove(index);
     }
 
     /// Was `key` pressed this frame? Mirrors `egui::InputState::key_pressed`
@@ -131,6 +167,7 @@ impl PlexiInput {
     /// nothing leaks to underlying panes or widgets.
     pub(crate) fn clear(&mut self) {
         self.events.clear();
+        self.positions.clear();
     }
 
     /// Consume the whole buffer into its owned events + modifiers. Used by the
@@ -154,7 +191,7 @@ impl PlexiInput {
                     if *k == key && m.matches_logically(modifiers)
             )
         }) {
-            self.events.remove(pos);
+            self.remove_event(pos);
             true
         } else {
             false
@@ -177,7 +214,7 @@ impl PlexiInput {
                         )
             )
         }) {
-            self.events.remove(pos);
+            self.remove_event(pos);
             true
         } else {
             false
@@ -199,28 +236,7 @@ impl PlexiInput {
                     if *k == key && m.matches_logically(modifiers)
             )
         }) {
-            self.events.remove(pos);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Consume a key-release edge regardless of its current modifiers. The OS
-    /// may report Command released before the key that completed a host chord,
-    /// so the matching key-up can arrive with `Modifiers::NONE`.
-    pub(crate) fn consume_key_release(&mut self, key: egui::Key) -> bool {
-        if let Some(pos) = self.events.iter().position(|event| {
-            matches!(
-                event,
-                egui::Event::Key {
-                    key: event_key,
-                    pressed: false,
-                    ..
-                } if *event_key == key
-            )
-        }) {
-            self.events.remove(pos);
+            self.remove_event(pos);
             true
         } else {
             false
@@ -237,7 +253,7 @@ impl PlexiInput {
             .iter()
             .position(|e| matches!(e, egui::Event::Copy))
         {
-            self.events.remove(pos);
+            self.remove_event(pos);
             true
         } else {
             false
@@ -254,7 +270,7 @@ impl PlexiInput {
             .iter()
             .position(|e| matches!(e, egui::Event::Cut))
         {
-            self.events.remove(pos);
+            self.remove_event(pos);
             true
         } else {
             false
@@ -269,7 +285,7 @@ impl PlexiInput {
             return;
         }
         let mut suppress_text = true;
-        self.events.retain(|event| {
+        self.retain_events(|event| {
             if suppress_text && matches!(event, egui::Event::Text(_) | egui::Event::Paste(_)) {
                 return false;
             }

@@ -230,18 +230,6 @@ fn canonical_workspace(raw: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn valid_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(first) if first.is_ascii_lowercase() => {}
-        _ => return false,
-    }
-    name.len() <= 64
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
 /// A grant names exactly one tool: no wildcard, path or spaces. Applies to
 /// specs and to every card loaded from disk.
 fn parse_grant_tool(tool: &str) -> Result<&str, String> {
@@ -533,8 +521,12 @@ fn read_agent(dir: &Path) -> Result<AgentAuthorityRecord, String> {
         .map_err(|error| format!("read {}: {error}", path.display()))?;
     let record: AgentAuthorityRecord = serde_json::from_str(&raw)
         .map_err(|error| format!("agent.json in {}: {error}", dir.display()))?;
-    super::check_named_agent_id(&record.id, &path)?;
-    if let Some(grant) = record.grants.iter().find(|grant| parse_grant_tool(&grant.tool).is_err()) {
+    super::validate_agent_id(&record.id).map_err(|error| format!("{}: {error}", path.display()))?;
+    if let Some(grant) = record
+        .grants
+        .iter()
+        .find(|grant| parse_grant_tool(&grant.tool).is_err())
+    {
         return Err(format!(
             "agent.json in {}: grant tool '{}' is not a tool name",
             dir.display(),
@@ -744,8 +736,8 @@ struct CreateAgent<'a> {
 }
 
 fn create_agent(req: CreateAgent<'_>) -> Value {
-    if !valid_name(req.name) {
-        return json!({"ok": false, "error_code": "invalid_name", "error": "agent name must be a lowercase slug"});
+    if let Err(error) = super::validate_agent_id(req.name) {
+        return json!({"ok": false, "error_code": "invalid_name", "error": error});
     }
     let gate = host_gate!();
     gate.expire_soft_grants();
@@ -766,6 +758,11 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
     // A definition without an authority record (a seeded `default`, a
     // `plexi agent create` folder) is adopted: only `agent.json` is written.
     let adopt = dir.exists();
+    if let Err(error) = crate::cli::agent::validate_agent_slug(req.name) {
+        if !adopt {
+            return json!({"ok": false, "error_code": "invalid_name", "error": error});
+        }
+    }
     if let Some(issue) = crate::agent::unrecognised_agent_dir(&dir) {
         return json!({
             "ok": false, "error_code": "agent_unrecognised",
@@ -1039,6 +1036,8 @@ fn issue_run(req: IssueRun<'_>) -> Value {
 }
 
 fn find_agent(workspace: &Path, id: &str) -> Result<AgentAuthorityRecord, Value> {
+    super::validate_agent_id(id)
+        .map_err(|error| json!({"ok": false, "error_code": "invalid_name", "error": error}))?;
     let dir = agents_root(workspace).join(id);
     let definition = match crate::cli::agent::resolve_agent_definition_in(
         id, &crate::config::config_dir(), Some(workspace),

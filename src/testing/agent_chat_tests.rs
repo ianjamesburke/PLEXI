@@ -6,6 +6,8 @@ use super::harness_tests::{
     pane_total, read_json_response, researcher_history_record, seed_pi_session, temp_response,
     terminal_role, AgentFocusFixture,
 };
+#[cfg(unix)]
+use super::harness_tests::{assert_claude_memory_command, use_inert_agent_shell};
 use super::*;
 use crate::app::agent_open::AgentOpenOutcome;
 
@@ -33,15 +35,13 @@ fn pane_exists(h: &HostHarness, pane_id: PaneId) -> bool {
 
 /// Start `name` from the fixture profile as `agent start` does; returns its pane.
 fn start_agent(h: &mut HostHarness, fx: &AgentFocusFixture, name: &str, caller: PaneId) -> PaneId {
-    let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
-        name,
-        &fx.profile_dir,
-        &fx.proj_dir,
-        None,
-        &fx.stops(),
-    )
-    .expect("resolve agent start payload");
-    let req = fx.request(payload);
+    let payload = crate::cli::agent::agent_start_payload(name, &fx.proj_dir, None, &fx.stops())
+        .expect("resolve agent start payload");
+    #[cfg(unix)]
+    let _shell = use_inert_agent_shell(fx.home.path());
+    let mut payload = payload;
+    payload["response_file"] = serde_json::json!(temp_response(fx.home.path(), "agent-start"));
+    let req = serde_json::from_value(payload).unwrap();
     let HostRequest::AgentSpawn { response_file, .. } = &req else {
         panic!("expected AgentSpawn");
     };
@@ -82,13 +82,13 @@ fn memory_dir(name: &str) -> std::path::PathBuf {
     crate::config::shared_dir().join("agent_memory").join(name)
 }
 
-fn write_agent(fx: &AgentFocusFixture, id: &str) {
+fn write_agent(fx: &AgentFocusFixture, id: &str, harness: &str) {
     let dir = fx.profile_dir.join("agents").join(id);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("AGENT.md"), format!("You are {id}.\n")).unwrap();
     std::fs::write(
         dir.join("settings.toml"),
-        format!("[agent]\nid = \"{id}\"\ndisplay_name = \"{id}\"\n\n[harness]\ncli = \"pi\"\n"),
+        format!("[agent]\nid = \"{id}\"\ndisplay_name = \"{id}\"\n\n[harness]\ncli = \"{harness}\"\n"),
     )
     .unwrap();
 }
@@ -213,25 +213,11 @@ fn archived_chat_reopens_from_history() {
 }
 
 #[test]
-fn new_chat_reads_the_same_memory_folder() {
+fn new_chat_preserves_named_agent_memory_files() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let caller = h.add_focused_terminal();
     let memory = memory_dir("researcher");
-    let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
-        "researcher",
-        &fx.profile_dir,
-        &fx.proj_dir,
-        None,
-        &fx.stops(),
-    )
-    .unwrap();
-    let command = payload["command"].as_str().unwrap();
-    assert!(
-        command.contains(&*memory.to_string_lossy()),
-        "a named chat is told its memory folder: {command}"
-    );
-
     let first = start_agent(&mut h, &fx, "researcher", caller);
     assert!(
         memory.is_dir(),
@@ -245,19 +231,7 @@ fn new_chat_reads_the_same_memory_folder() {
     assert_eq!(
         std::fs::read_to_string(memory.join("facts.md")).unwrap(),
         "the build is just pr-candidate\n",
-        "New chat keeps what the agent knows"
-    );
-    let again = crate::cli::agent::resolve_agent_start_in_stopping_at(
-        "researcher",
-        &fx.profile_dir,
-        &fx.proj_dir,
-        None,
-        &fx.stops(),
-    )
-    .unwrap();
-    assert_eq!(
-        again["command"], payload["command"],
-        "same folder, same instructions"
+        "New chat preserves the existing memory file"
     );
     // The definition folder is never rewritten.
     let def_dir = fx.profile_dir.join("agents").join("researcher");
@@ -266,28 +240,152 @@ fn new_chat_reads_the_same_memory_folder() {
         "You are a researcher.\n"
     );
 
-    // An ephemeral run has no durable identity and is told no memory folder.
-    let ephemeral = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+    let ephemeral = crate::pane_ops::create::ConfiguredAgentLaunch::resolve(
         "researcher",
-        &fx.profile_dir,
         &fx.proj_dir,
         Some("task"),
-        None,
         Some(true),
-        &fx.stops(),
     )
     .unwrap();
-    assert!(!ephemeral["command"]
-        .as_str()
-        .unwrap()
-        .contains("memory folder"));
+    assert!(!ephemeral.command.contains("memory folder"));
+}
+
+#[cfg(unix)]
+#[test]
+fn archived_claude_chat_reopens_with_its_agent_memory() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    write_agent(&fx, "researcher", "claude");
+    let _shell = use_inert_agent_shell(fx.home.path());
+    h.add_focused_terminal();
+    let mut record = researcher_history_record(&fx.proj_dir, "archived-claude", "claude");
+    record.chat_archived = true;
+    let memory = memory_dir("researcher");
+    for (ephemeral, has_binding) in [(false, false), (true, false), (false, true)] {
+        record.ephemeral = ephemeral;
+        record.claude_memory = has_binding.then(|| {
+            serde_json::from_value(serde_json::json!({"scope": "global", "agent_id": "researcher"}))
+                .unwrap()
+        });
+        let reply = h.app.reopen_agent_record(
+            &record,
+            None,
+            None,
+            crate::broker::pane_authority::GrantSource::OutsideProcess,
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["session_id"], "archived-claude");
+        let command = reply["command"].as_str().unwrap();
+        if ephemeral || !has_binding {
+            assert_eq!(command, "claude --resume archived-claude");
+            assert!(!memory.exists());
+        } else {
+            assert_claude_memory_command(command, &memory, " --resume archived-claude");
+            assert!(memory.is_dir());
+        }
+        let pane = terminal(&h, reply["pane_id"].as_u64().unwrap());
+        assert_eq!(pane.last_resumed_command.as_deref(), Some(command));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_standby_wake_binds_named_memory_for_resume_and_fallback() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    write_agent(&fx, "researcher", "claude");
+    let _shell = use_inert_agent_shell(fx.home.path());
+    let sessions = fx.home.path().join("claude-projects");
+    std::fs::create_dir_all(sessions.join("-proj")).unwrap();
+    std::fs::write(sessions.join("-proj").join("saved-claude.jsonl"), "{}\n").unwrap();
+    let _sessions = crate::cli::agent::set_test_claude_projects_dir(sessions);
+    let memory = memory_dir("researcher");
+    let caller = h.add_focused_terminal();
+
+    for (session_id, cached_command, args) in [
+        (
+            "saved-claude",
+            Some("claude --resume saved-claude"),
+            " --resume saved-claude",
+        ),
+        ("missing-claude", None, ""),
+    ] {
+        let pane_id = start_agent(&mut h, &fx, "researcher", caller);
+        let pane = terminal_mut(&mut h, pane_id);
+        pane.agent_session_id = Some(session_id.into());
+        pane.standby_session = pane.build_saved_agent_session();
+        pane.standby_cwd = Some(fx.proj_dir.clone());
+        pane.standby_resume_command = cached_command.map(str::to_owned);
+
+        let command = pane.resume_from_standby().unwrap().unwrap();
+        assert_claude_memory_command(&command, &memory, args);
+        assert_eq!(pane.last_resumed_command.as_deref(), Some(command.as_str()));
+        assert_eq!(
+            pane.agent_session_id.as_deref(),
+            cached_command.map(|_| session_id)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_reopen_keeps_the_launched_memory_after_workspace_shadowing() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    write_agent(&fx, "researcher", "claude");
+    let _shell = use_inert_agent_shell(fx.home.path());
+    let caller = h.add_focused_terminal();
+    let pane_id = start_agent(&mut h, &fx, "researcher", caller);
+    let pane = terminal_mut(&mut h, pane_id);
+    pane.agent_session_id = Some("saved-claude".into());
+    let saved = pane.build_saved_agent_session().unwrap();
+    let saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+    let record = pane
+        .build_history_record(1, "test", fx.proj_dir.clone())
+        .unwrap();
+    let record = serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+
+    let shadow = crate::agent::workspace_agents_dir(&fx.proj_dir).join("researcher");
+    std::fs::create_dir_all(&shadow).unwrap();
+    for file in ["AGENT.md", "settings.toml"] {
+        std::fs::copy(
+            fx.profile_dir.join("agents/researcher").join(file),
+            shadow.join(file),
+        )
+        .unwrap();
+    }
+
+    let reply = h.app.reopen_agent_record(
+        &record,
+        None,
+        None,
+        crate::broker::pane_authority::GrantSource::OutsideProcess,
+    );
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_claude_memory_command(
+        reply["command"].as_str().unwrap(),
+        &memory_dir("researcher"),
+        " --resume saved-claude",
+    );
+
+    let pane = terminal_mut(&mut h, pane_id);
+    pane.standby_session = Some(saved);
+    pane.standby_cwd = Some(fx.proj_dir.clone());
+    pane.standby_resume_command = Some("claude --resume saved-claude".into());
+    let command = pane.resume_from_standby().unwrap().unwrap();
+    assert_claude_memory_command(
+        &command,
+        &memory_dir("researcher"),
+        " --resume saved-claude",
+    );
+    assert!(!fx.proj_dir.join(".plexi/agent_memory/researcher").exists());
 }
 
 #[test]
 fn two_named_agents_never_share_memory_or_chats() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    write_agent(&fx, "writer");
+    write_agent(&fx, "writer", "pi");
     let caller = h.add_focused_terminal();
     let researcher = start_agent(&mut h, &fx, "researcher", caller);
     let writer = start_agent(&mut h, &fx, "writer", caller);
@@ -456,4 +554,440 @@ fn new_chat_that_cannot_launch_refuses_before_closing_the_chat() {
             .any(|record| record.pane_id == current && record.chat_archived),
         "the current chat was archived"
     );
+}
+
+#[test]
+fn admission_rejects_agent_id_aliases_before_lookup() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let caller = h.add_focused_terminal();
+    let origin = crate::broker::caller::RequestOrigin::HostUi;
+    for alias in ["researcher/", "./researcher", " researcher"] {
+        let err = h
+            .app
+            .open_named_agent(alias, &fx.proj_dir, Some(caller), &origin)
+            .expect_err("aliases must not resolve");
+        assert!(
+            err.contains("invalid agent") && err.contains(alias),
+            "{err}"
+        );
+    }
+    #[cfg(unix)]
+    let _shell = use_inert_agent_shell(fx.home.path());
+    assert!(
+        h.app
+            .open_named_agent("default", &fx.proj_dir, Some(caller), &origin)
+            .is_ok()
+    );
+}
+
+#[cfg(unix)]
+fn capture_claude_argv(dir: &std::path::Path) -> crate::host::shell::TestShellOverrideGuard {
+    use std::os::unix::fs::PermissionsExt as _;
+    let shell = dir.join("capture-shell");
+    let claude = dir.join("claude");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\nexport PATH='{dir}':/usr/bin:/bin\nunset ENV\n\
+             if [ \"$2\" = -c ]; then exec /bin/sh -c \"$3\"; fi\n\
+             /bin/stty -icanon -echo min 1 time 0 || exit 1\n\
+             if [ \"$1\" = -l ]; then touch '{dir}/ready-'\"$PLEXI_PANE_ID\"; fi\n\
+             while IFS= read -r line; do /bin/sh -c \"$line\"; done\n",
+            dir = dir.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &claude,
+        format!(
+            "#!/bin/sh\nprintf '%s\\0' \"$@\" >> '{}/argv-'\"$PLEXI_PANE_ID\"\n",
+            dir.display()
+        ),
+    )
+    .unwrap();
+    for file in [&shell, &claude] {
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    crate::host::shell::set_test_shell_override(shell.to_string_lossy())
+}
+
+#[cfg(unix)]
+fn captured_argv(dir: &std::path::Path, pane: PaneId) -> Vec<String> {
+    let path = dir.join(format!("argv-{pane}"));
+    for _ in 0..100 {
+        if let Ok(args) = std::fs::read_to_string(&path) {
+            if let Some(args) = args.strip_suffix('\0') {
+                std::fs::remove_file(&path).unwrap();
+                return args.split('\0').map(str::to_owned).collect();
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("no Claude argv captured at {}", path.display());
+}
+
+#[cfg(unix)]
+fn bound_path(argv: &[String]) -> std::path::PathBuf {
+    let settings: Vec<_> = argv.windows(2).filter(|p| p[0] == "--settings").collect();
+    assert_eq!(settings.len(), 1, "{argv:?}");
+    let settings: serde_json::Value = serde_json::from_str(&settings[0][1]).unwrap();
+    assert!(settings["hooks"]["SessionStart"].is_array());
+    assert!(settings.get("autoMemoryEnabled").is_none());
+    std::path::PathBuf::from(settings["autoMemoryDirectory"].as_str().unwrap())
+}
+
+#[cfg(unix)]
+fn cli_launch(
+    h: &mut HostHarness,
+    fx: &AgentFocusFixture,
+    caller: PaneId,
+    mut payload: serde_json::Value,
+) -> PaneId {
+    let response = temp_response(fx.home.path(), "memory-admission");
+    payload["response_file"] = serde_json::json!(response);
+    h.inject_from_pane(caller, serde_json::from_value(payload).unwrap());
+    h.run_frames(2);
+    let reply = read_json_response(&response);
+    assert_eq!(reply["ok"], true, "{reply}");
+    reply["pane_id"].as_u64().unwrap()
+}
+
+#[cfg(unix)]
+fn shadow_researcher(fx: &AgentFocusFixture, workspace: &std::path::Path, prompt: &str) {
+    let dir = crate::agent::workspace_agents_dir(workspace).join("researcher");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(
+        fx.profile_dir.join("agents/researcher/settings.toml"),
+        dir.join("settings.toml"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("AGENT.md"), prompt).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn completion_round_definition_lookup_uses_canonical_workspace() {
+    let fx = AgentFocusFixture::new();
+    let agent_dir = crate::agent::workspace_agents_dir(&fx.proj_dir).join("researcher");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    // A missing persona reports the actual path used for definition lookup.
+    let alias = fx.home.path().join("project-alias");
+    std::os::unix::fs::symlink(&fx.proj_dir, &alias).unwrap();
+    let error = crate::pane_ops::create::ConfiguredAgentLaunch::resolve_in(
+        "researcher",
+        &alias,
+        None,
+        None,
+        &fx.profile_dir,
+        &fx.stops(),
+    )
+    .unwrap_err();
+    let expected = agent_dir.canonicalize().unwrap();
+    assert!(error.contains(expected.to_str().unwrap()), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn admission_builds_claude_argv_and_identity_from_the_same_definition() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let _shell = capture_claude_argv(fx.home.path());
+    let caller = h.add_focused_terminal();
+    write_agent(&fx, "researcher", "claude");
+    let payload = crate::cli::agent::agent_start_payload(
+        "researcher",
+        &fx.proj_dir,
+        Some("Do the task"),
+        &fx.stops(),
+    )
+    .unwrap();
+    shadow_researcher(&fx, &fx.proj_dir, "Workspace persona at admission");
+    let repo_notes = fx.proj_dir.join(".plexi/agent_memory/researcher");
+    std::fs::create_dir_all(&repo_notes).unwrap();
+    std::fs::write(repo_notes.join("MEMORY.md"), "Repository-controlled notes").unwrap();
+    let second = fx.home.path().join("second-project");
+    shadow_researcher(&fx, &second, "Second workspace persona");
+
+    for (cwd, prompt) in [
+        (&fx.proj_dir, "Workspace persona at admission"),
+        (&second, "Second workspace persona"),
+    ] {
+        let mut request = payload.clone();
+        request["cwd"] = serde_json::json!(cwd);
+        let pane_id = cli_launch(&mut h, &fx, caller, request);
+        let argv = captured_argv(fx.home.path(), pane_id);
+        assert!(argv.iter().any(|arg| arg.contains(prompt)), "{argv:?}");
+        let root = cwd.canonicalize().unwrap();
+        assert_eq!(
+            bound_path(&argv),
+            root.join(".plexi/agent_memory/researcher")
+        );
+        let saved =
+            serde_json::to_value(terminal(&h, pane_id).build_saved_agent_session().unwrap())
+                .unwrap();
+        assert_eq!(
+            saved["claude_memory"],
+            serde_json::json!({"scope": {"workspace_root": root}, "agent_id": "researcher"})
+        );
+        assert!(saved.get("claude_memory_dir").is_none());
+
+        let history = terminal(&h, pane_id)
+            .build_history_record(1, "test", cwd.to_path_buf())
+            .unwrap();
+        let history = serde_json::from_value(serde_json::to_value(history).unwrap()).unwrap();
+        std::fs::remove_dir_all(crate::agent::workspace_agents_dir(cwd).join("researcher"))
+            .unwrap();
+        let reply = h.app.reopen_agent_record(
+            &history,
+            None,
+            None,
+            crate::broker::pane_authority::GrantSource::OutsideProcess,
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        let reopened = reply["pane_id"].as_u64().unwrap();
+        assert_eq!(
+            bound_path(&captured_argv(fx.home.path(), reopened)),
+            root.join(".plexi/agent_memory/researcher")
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(repo_notes.join("MEMORY.md")).unwrap(),
+        "Repository-controlled notes"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn admission_raw_claude_command_cannot_attest_named_memory() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let _shell = capture_claude_argv(fx.home.path());
+    let caller = h.add_focused_terminal();
+    write_agent(&fx, "researcher", "claude");
+    let pane_id = cli_launch(
+        &mut h,
+        &fx,
+        caller,
+        serde_json::json!({
+            "type": "agent_spawn", "role": "researcher", "harness": "claude",
+            "command": "claude --resume raw-claude", "cwd": fx.proj_dir,
+        }),
+    );
+    assert_eq!(
+        captured_argv(fx.home.path(), pane_id),
+        ["--resume", "raw-claude"]
+    );
+    let saved =
+        serde_json::to_value(terminal(&h, pane_id).build_saved_agent_session().unwrap()).unwrap();
+    assert!(
+        saved.get("claude_memory").is_none() && saved.get("claude_memory_dir").is_none(),
+        "{saved}"
+    );
+    assert!(!memory_dir("researcher").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn admission_legacy_claude_paths_are_ignored_on_reopen_and_restart() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    let _shell = capture_claude_argv(fx.home.path());
+    let sessions = fx.home.path().join("claude-projects");
+    std::fs::create_dir_all(sessions.join("-proj")).unwrap();
+    std::fs::write(sessions.join("-proj/legacy-claude.jsonl"), "{}\n").unwrap();
+    let _sessions = crate::cli::agent::set_test_claude_projects_dir(sessions);
+    let caller = h.add_focused_terminal();
+    write_agent(&fx, "researcher", "claude");
+    let payload = crate::cli::agent::agent_spawn_payload(
+        "researcher",
+        &fx.proj_dir,
+        Some("ephemeral task"),
+        None,
+        Some(true),
+        &fx.stops(),
+    )
+    .unwrap();
+    let ephemeral = cli_launch(&mut h, &fx, caller, payload);
+    let argv = captured_argv(fx.home.path(), ephemeral);
+    assert!(
+        argv.iter().all(|arg| !arg.contains("autoMemoryDirectory")),
+        "{argv:?}"
+    );
+    let pane = terminal_mut(&mut h, ephemeral);
+    assert!(pane.ephemeral);
+    pane.agent_session_id = Some("legacy-claude".into());
+    let expired = serde_json::to_value(
+        pane.build_history_record(1, "test", fx.proj_dir.clone())
+            .unwrap(),
+    )
+    .unwrap();
+    h.app.close_pane_by_id(ephemeral);
+
+    let old = fx
+        .proj_dir
+        .canonicalize()
+        .unwrap()
+        .join(".plexi/agent_memory/researcher");
+    let legacy = serde_json::to_value(researcher_history_record(
+        &fx.proj_dir,
+        "legacy-claude",
+        "claude",
+    ))
+    .unwrap();
+    let assert_legacy_resume = |pane| {
+        let argv = captured_argv(fx.home.path(), pane);
+        let [settings_flag, settings_path, resume_flag, session_id] = argv.as_slice() else {
+            panic!("expected one settings file and the legacy session ID: {argv:?}");
+        };
+        assert_eq!(settings_flag, "--settings");
+        assert_eq!(resume_flag, "--resume");
+        assert_eq!(session_id, "legacy-claude");
+        let settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(settings_path).unwrap()).unwrap();
+        assert!(settings.get("autoMemoryDirectory").is_none());
+        super::harness_tests::assert_claude_question_permission_hook(&settings);
+    };
+    for mut json in [expired, legacy] {
+        json["claude_memory_dir"] = serde_json::json!(old);
+        let record = serde_json::from_value(json).unwrap();
+        let reply = h.app.reopen_agent_record(
+            &record,
+            None,
+            None,
+            crate::broker::pane_authority::GrantSource::OutsideProcess,
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        let pane = reply["pane_id"].as_u64().unwrap();
+        assert_legacy_resume(pane);
+        assert!(h.app.save_workspace_now());
+        drop(h);
+        h = HostHarness::from_profile_dir(&fx.profile_dir);
+        assert_legacy_resume(pane);
+        h.app.close_pane_by_id(pane);
+    }
+    assert!(!old.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn admission_global_identity_survives_shadow_reopen_eager_restore_and_standby_wake() {
+    let fx = AgentFocusFixture::new();
+    let _shell = capture_claude_argv(fx.home.path());
+    let sessions = fx.home.path().join("claude-projects");
+    std::fs::create_dir_all(sessions.join("-proj")).unwrap();
+    let _sessions = crate::cli::agent::set_test_claude_projects_dir(sessions.clone());
+    for id in ["eager-memory", "standby-memory"] {
+        std::fs::write(sessions.join(format!("-proj/{id}.jsonl")), "{}\n").unwrap();
+    }
+    let config = fx.profile_dir.join("config.toml");
+    std::fs::write(&config, "[agents]\nrestore_mode = 'eager'\n").unwrap();
+    let mut h = HostHarness::from_profile_dir(&fx.profile_dir);
+    let caller = h.add_focused_terminal();
+    write_agent(&fx, "researcher", "claude");
+    let eager = cli_launch(
+        &mut h,
+        &fx,
+        caller,
+        crate::cli::agent::agent_start_payload("researcher", &fx.proj_dir, None, &fx.stops())
+            .unwrap(),
+    );
+    let standby = cli_launch(
+        &mut h,
+        &fx,
+        caller,
+        crate::cli::agent::agent_spawn_payload(
+            "researcher",
+            &fx.proj_dir,
+            Some("background"),
+            Some("background"),
+            None,
+            &fx.stops(),
+        )
+        .unwrap(),
+    );
+    let path = bound_path(&captured_argv(fx.home.path(), eager))
+        .canonicalize()
+        .unwrap();
+    assert_eq!(path, memory_dir("researcher").canonicalize().unwrap());
+    assert_eq!(
+        bound_path(&captured_argv(fx.home.path(), standby))
+            .canonicalize()
+            .unwrap(),
+        path
+    );
+    terminal_mut(&mut h, eager).agent_session_id = Some("eager-memory".into());
+    terminal_mut(&mut h, standby).agent_session_id = Some("standby-memory".into());
+    let session =
+        serde_json::to_value(terminal(&h, standby).build_saved_agent_session().unwrap()).unwrap();
+    let history = serde_json::to_value(
+        terminal(&h, eager)
+            .build_history_record(1, "test", fx.proj_dir.clone())
+            .unwrap(),
+    )
+    .unwrap();
+    shadow_researcher(&fx, &fx.proj_dir, "Later workspace persona");
+    let record = serde_json::from_value(history.clone()).unwrap();
+    let reply = h.app.reopen_agent_record(
+        &record,
+        None,
+        None,
+        crate::broker::pane_authority::GrantSource::OutsideProcess,
+    );
+    assert_eq!(reply["ok"], true, "{reply}");
+    let reopened = reply["pane_id"].as_u64().unwrap();
+    let argv = captured_argv(fx.home.path(), reopened);
+    assert_eq!(bound_path(&argv).canonicalize().unwrap(), path);
+    assert_eq!(&argv[2..], ["--resume", "eager-memory"]);
+    h.app.close_pane_by_id(reopened);
+    assert!(h.app.save_workspace_now());
+    drop(h);
+
+    let mut h = HostHarness::from_profile_dir(&fx.profile_dir);
+    for (pane, sid) in [(eager, "eager-memory"), (standby, "standby-memory")] {
+        let argv = captured_argv(fx.home.path(), pane);
+        assert_eq!(bound_path(&argv).canonicalize().unwrap(), path);
+        assert_eq!(&argv[2..], ["--resume", sid]);
+    }
+    assert!(h.app.save_workspace_now());
+    drop(h);
+
+    std::fs::write(&config, "[agents]\nrestore_mode = 'lazy'\n").unwrap();
+    let mut h = HostHarness::from_profile_dir(&fx.profile_dir);
+    assert!(terminal(&h, standby).is_standby());
+    let ready = fx.home.path().join(format!("ready-{standby}"));
+    for _ in 0..100 {
+        if ready.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        ready.exists(),
+        "standby shell is ready for a full settings argument"
+    );
+    assert!(h.app.resume_standby_pane(standby).unwrap());
+    let argv = captured_argv(fx.home.path(), standby);
+    assert_eq!(bound_path(&argv).canonicalize().unwrap(), path);
+    assert_eq!(&argv[2..], ["--resume", "standby-memory"]);
+    let identity = serde_json::json!({"scope": "global", "agent_id": "researcher"});
+    assert_eq!(history["claude_memory"], identity);
+    assert_eq!(session["claude_memory"], identity);
+    assert!(!fx.proj_dir.join(".plexi/agent_memory/researcher").exists());
+}
+
+#[test]
+fn admission_saved_identity_decode_rejects_aliases_and_relative_workspace_roots() {
+    let fx = AgentFocusFixture::new();
+    let mut record =
+        serde_json::to_value(researcher_history_record(&fx.proj_dir, "session", "claude")).unwrap();
+    for binding in [
+        serde_json::json!({"scope": "global", "agent_id": "researcher/"}),
+        serde_json::json!({"scope": {"workspace_root": "../elsewhere"}, "agent_id": "researcher"}),
+    ] {
+        record["claude_memory"] = binding;
+        assert!(
+            serde_json::from_value::<crate::workspace::AgentHistoryRecord>(record.clone()).is_err()
+        );
+    }
 }

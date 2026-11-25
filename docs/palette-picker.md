@@ -48,12 +48,13 @@ Agents (Tab again)
 
 ## Binding commands to keys
 
-Not every palette command can be bound in `[keybindings]` today.
-- Bindable: rows of `PaletteCommand::Host(Action)`, because `build_binding_table` turns each `KeyBindings` field into an `Action`, except `Action::OpenChangelog` (the "Changelog" row), which no `KeyBindings` field reaches. User commands bind through their own key in `commands.toml` (`KeyBindings::user_commands` to `Action::RunUserCommand`).
-- Not bindable: the palette-only variants `OpenGlobalConfig`, `OpenWorkspaceConfig`, `StatePreset`, `EditCommands`, `SwitchCommandsScope`, `OpenAttention`, `SetupCli`, `UiUpcycle`, `CheckForUpdates` and `RestartToUpdate`. They have no `Action`.
-- Context, plugin and note rows are destinations, not commands.
+The host command registry supplies stable IDs, search labels, argument
+requirements and bindings. Cmd+P and keyboard shortcuts dispatch the same
+host action and open the existing form when input is needed. See [keybinding
+configuration](CONFIG.md#keybindings) for assignment.
 
-The gap is stint 1151's scope: one registry where every command has a stable id assignable in `[keybindings]`, with a coverage test that fails on an unregistered action. 1151 stays in 0.6 Palette, and its coverage test must name these variants and `OpenChangelog`. No new stint.
+Context, pane and note results open named destinations. User commands retain
+workspace scoping and use the existing `[keys]` configuration.
 
 ## The component underneath
 
@@ -142,7 +143,7 @@ Chords checked in `KeyBindings::default`.
 
 ## Deleted
 
-Stint 1391: `PaletteEntry::Agent`, `PaletteAction`, `action_for_palette_entry`, `sort_palette_entries`, `reconcile_palette_selection`, the key block in `draw_command_palette`, `command_palette_handle_key`, and the `palette_query`, `palette_selected`, `palette_selected_key` and `palette_scroll_reset` fields. Stint 1151: `PaletteCommand`, `PaletteCommandEntry`, `PALETTE_COMMANDS`, `run_palette_selection`, `run_palette_command`.
+Stint 1391: `PaletteEntry::Agent`, `PaletteAction`, `action_for_palette_entry`, `sort_palette_entries`, `reconcile_palette_selection`, the key block in `draw_command_palette`, `command_palette_handle_key`, and the `palette_query`, `palette_selected`, `palette_selected_key` and `palette_scroll_reset` fields. Stint 1151 replaces the separate `PaletteCommand` enum and `PALETTE_COMMANDS` list with declarations in the [host command registry](../src/host/command_registry.rs).
 
 ## Build order
 
@@ -153,7 +154,7 @@ Stint 1391: `PaletteEntry::Agent`, `PaletteAction`, `action_for_palette_entry`, 
 | 1151 command registry | Every command bindable; plugin commands join Commands with their plugin label | its own done-when, plus `every_palette_command_is_bindable` naming the variants above |
 | 1392 files | File index, Files stop, usage ranking, `Preview` painter and worker with `text` and `image` | `file_walk_never_runs_on_the_ui_thread`, `palette_opens_a_file_with_no_explorer_open`, `files_stay_inside_the_active_context_root`, `cached_rows_show_before_the_walk_finishes`, `empty_query_orders_files_by_usage`, `usage_breaks_ties_after_score`, `reset_ranking_forgets_the_row`, `usage_file_is_channel_neutral`, `preview_never_loads_on_the_ui_thread`, `preview_for_a_moved_selection_is_dropped`, `oversized_image_shows_no_preview_with_reason`, `oversized_source_answer_is_refused`, `ui_tests::tests::palette::files_stop_with_preview` |
 | Agents view (new; after 1391 and 1396) | Agents stop, `attention` order, `last_interaction_at`, snapshot source, action list, Focus, Answer, Close pane | `agents_waiting_on_you_sort_first`, `agents_sort_by_last_interaction_not_state_change`, `answer_opens_the_decision_overlay_and_never_resolves_in_the_palette`, `cmd_enter_lists_actions_and_keeps_the_query`, `agents_source_does_not_read_disk_per_query`, `ui_tests::tests::palette::agents_stop_with_preview` |
-| 1397 agent memory and New chat | "New chat" as an Agents action and a command | `new_chat_archives_the_current_chat`, `archived_chat_reopens_from_history`, `new_chat_reads_the_same_memory_folder` |
+| 1397 agent memory and New chat | "New chat" as an Agents action and a command | `new_chat_archives_the_current_chat`, `archived_chat_reopens_from_history`, `new_chat_preserves_named_agent_memory_files` |
 
 ## Later
 

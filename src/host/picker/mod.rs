@@ -262,6 +262,32 @@ pub(crate) struct Hit {
     pub key: RowKey,
 }
 
+/// Provenance of the input that requested an activation.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InputOrigin {
+    #[default]
+    Human,
+    Synthetic(Option<u64>),
+}
+
+/// Input and owned arguments captured before a picker activation can wait
+/// for a source answer.
+#[derive(Default, Clone, PartialEq, Eq)]
+pub(crate) struct ActivationInput {
+    pub(crate) origin: InputOrigin,
+    pub(crate) pane_root: Option<crate::host::context::PaneCwd>,
+}
+
+impl std::fmt::Debug for ActivationInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ActivationInput")
+            .field("origin", &self.origin)
+            .field("has_pane_root", &self.pane_root.is_some())
+            .finish()
+    }
+}
+
 /// Commands are applied one at a time, in input order; each binds to the
 /// state the commands before it left.
 #[derive(Debug, Clone, PartialEq)]
@@ -281,12 +307,12 @@ pub(crate) enum PickerCommand {
     Hover(Hit),
     /// Enter: the selected row's first action, now or once the current
     /// query is answered.
-    Accept(Option<&'static str>),
+    Accept(Option<&'static str>, ActivationInput),
     ShowActions,
     Back,
-    ClickAction(Hit, u64, &'static str),
+    ClickAction(Hit, u64, &'static str, ActivationInput),
     /// Pointer click on a presented row: select it and accept it.
-    Click(Hit),
+    Click(Hit, ActivationInput),
     /// Another surface took input above the open picker: an Enter it froze
     /// was meant for the rows the person saw, never for later ones.
     Yield,
@@ -318,6 +344,7 @@ pub(crate) enum PickerEffect {
         stamp: Stamp,
         row: RowKey,
         action: &'static str,
+        input: ActivationInput,
     },
     /// Load the preview of `row`, selected on a stop with a preview.
     LoadPreview {
@@ -374,7 +401,7 @@ pub(crate) struct PickerState {
     /// The current generation has an answer (`rows` belong to it).
     answered: bool,
     loading: bool,
-    pending: Option<PendingEnter>,
+    pending: Option<(PendingEnter, ActivationInput)>,
     /// Bumped when the keyboard moves the selection, so the results painter
     /// scrolls the selected row into view exactly once.
     reveal: u64,
@@ -636,22 +663,22 @@ impl PickerState {
                 }
                 Vec::new()
             }
-            PickerCommand::Accept(Some(action)) => self.accept_action(action),
-            PickerCommand::Accept(None) => {
+            PickerCommand::Accept(Some(action), input) => self.accept_action(action, input),
+            PickerCommand::Accept(None, input) => {
                 if self.showing_actions() {
                     self.selected_action()
                         .map(|action| action.id)
-                        .map_or_else(Vec::new, |id| self.accept_action(id))
+                        .map_or_else(Vec::new, |id| self.accept_action(id, input))
                 } else {
-                    self.accept_enter()
+                    self.accept_enter(input)
                 }
             }
-            PickerCommand::ClickAction(hit, opening, action) => {
+            PickerCommand::ClickAction(hit, opening, action, input) => {
                 if self.actions_opening() == Some(opening)
                     && self.selected() == Some(&hit.key)
                     && self.current_hit(hit).is_some()
                 {
-                    self.accept_action(action)
+                    self.accept_action(action, input)
                 } else {
                     Vec::new()
                 }
@@ -663,7 +690,7 @@ impl PickerState {
                 }
                 Vec::new()
             }
-            PickerCommand::Click(hit) => {
+            PickerCommand::Click(hit, input) => {
                 if self.pending.is_some() {
                     log::debug!("picker: click ignored, an Enter is pending");
                     return Vec::new();
@@ -672,7 +699,7 @@ impl PickerState {
                     return Vec::new();
                 };
                 self.selection = Selection::Key(key.clone());
-                self.activate(&key, None)
+                self.activate(&key, None, input)
             }
             PickerCommand::Rows {
                 generation,
@@ -813,14 +840,18 @@ impl PickerState {
                     self.show_actions_for(key);
                 }
             }
-            if let Some(pending) = self.pending.take() {
-                return self.resolve_pending(pending);
+            if let Some((pending, input)) = self.pending.take() {
+                return self.resolve_pending(pending, input);
             }
         }
         Vec::new()
     }
 
-    fn resolve_pending(&mut self, pending: PendingEnter) -> Vec<PickerEffect> {
+    fn resolve_pending(
+        &mut self,
+        pending: PendingEnter,
+        input: ActivationInput,
+    ) -> Vec<PickerEffect> {
         let target = match pending {
             PendingEnter::Key { key, action } => Some((key, Some(action))),
             PendingEnter::Initial(moves) => {
@@ -840,7 +871,7 @@ impl PickerState {
                     log::info!("picker: pending Enter's action no longer first on its row");
                     Vec::new()
                 } else {
-                    self.activate(&key, action)
+                    self.activate(&key, action, input)
                 }
             }
             None => {
@@ -942,7 +973,7 @@ impl PickerState {
         }
     }
 
-    fn accept_enter(&mut self) -> Vec<PickerEffect> {
+    fn accept_enter(&mut self, input: ActivationInput) -> Vec<PickerEffect> {
         if !self.open || self.pending_actions.is_some() {
             return Vec::new();
         }
@@ -952,7 +983,7 @@ impl PickerState {
         }
         if self.answered && !self.loading {
             return match self.selection.clone() {
-                Selection::Key(key) => self.activate(&key, None),
+                Selection::Key(key) => self.activate(&key, None, input),
                 Selection::Initial(_) | Selection::Cleared => Vec::new(),
             };
         }
@@ -968,7 +999,8 @@ impl PickerState {
                 }),
             Selection::Initial(moves) => Some(PendingEnter::Initial(moves.clone())),
             Selection::Cleared => None,
-        };
+        }
+        .map(|pending| (pending, input));
         if self.pending.is_some() {
             log::info!(
                 "picker: Enter waits for generation {} to finish",
@@ -978,17 +1010,22 @@ impl PickerState {
         Vec::new()
     }
 
-    fn accept_action(&mut self, id: &'static str) -> Vec<PickerEffect> {
+    fn accept_action(&mut self, id: &'static str, input: ActivationInput) -> Vec<PickerEffect> {
         if self.visible_actions().iter().any(|action| action.id == id) {
             if let Some(key) = self.selected().cloned() {
-                return self.activate(&key, Some(id));
+                return self.activate(&key, Some(id), input);
             }
         }
         Vec::new()
     }
 
     /// Activate an action by id, or the row's first action for Enter.
-    fn activate(&mut self, key: &RowKey, action: Option<&'static str>) -> Vec<PickerEffect> {
+    fn activate(
+        &mut self,
+        key: &RowKey,
+        action: Option<&'static str>,
+        input: ActivationInput,
+    ) -> Vec<PickerEffect> {
         let Some(row) = self.rows.iter().find(|row| row.key == *key) else {
             log::info!("picker: activation found no row for its key");
             return Vec::new();
@@ -1013,6 +1050,7 @@ impl PickerState {
             stamp: self.rows_stamp,
             row: key.clone(),
             action,
+            input,
         }];
         effects.extend(self.close());
         effects

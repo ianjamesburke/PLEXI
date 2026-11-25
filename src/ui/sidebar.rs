@@ -820,7 +820,9 @@ impl PlexiApp {
                     self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Bottom);
                 }
-                WindowMenuAction::SetRoot(source) => self.set_root_from_pane(source),
+                WindowMenuAction::SetRoot(source) => {
+                    self.set_root_from_pane(source, self.input_origin())
+                }
                 WindowMenuAction::OpenRootOverlay(id) => {
                     let Some(root) = self.context_root_for(id) else {
                         return;

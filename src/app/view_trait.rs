@@ -532,6 +532,9 @@ pub trait View: Send {
         false
     }
 
+    /// Show the stable command ID in the config editor opened for assignment.
+    fn show_binding_hint_for(&mut self, _path: &std::path::Path, _id: &'static str) {}
+
     /// Switch an open `commands.toml` editor between workspace and global scope.
     fn switch_commands_scope(&mut self) -> bool {
         false

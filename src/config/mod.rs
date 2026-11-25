@@ -229,76 +229,6 @@ const KNOWN_MARKETPLACE: &[&str] = &[
     "account_url",
     "account_email",
 ];
-const KNOWN_KEYBINDINGS: &[&str] = &[
-    "quit",
-    "close_pane",
-    "toggle_command_palette",
-    "split_horizontal",
-    "split_vertical",
-    "split_right",
-    "split_down",
-    "swap_pane_left",
-    "swap_pane_down",
-    "swap_pane_up",
-    "swap_pane_right",
-    "send_pane_left",
-    "send_pane_down",
-    "send_pane_up",
-    "send_pane_right",
-    "navigate_left",
-    "navigate_down",
-    "navigate_up",
-    "navigate_right",
-    "select_pane_left",
-    "select_pane_down",
-    "select_pane_up",
-    "select_pane_right",
-    "new_tab",
-    "next_tab",
-    "prev_tab",
-    "next_context",
-    "prev_context",
-    "move_context_up",
-    "move_context_down",
-    "nav_back",
-    "focus_history_forward",
-    "toggle_sidebar",
-    "toggle_zoom",
-    "toggle_shortcuts",
-    "rename_context",
-    "rename_pane",
-    "new_context",
-    "new_page_right",
-    "toggle_minimap",
-    "scroll_up",
-    "scroll_down",
-    "increase_font_size",
-    "decrease_font_size",
-    "reset_font_size",
-    "ui_scale_up",
-    "ui_scale_down",
-    "ui_scale_reset",
-    "open_agents",
-    "next_blocked_agent",
-    "focus_approval",
-    "open_file_browser",
-    "open_quick_note",
-    "open_config",
-    "reload_config",
-    "open_secrets_manager",
-    "open_assistant",
-    "force_reload_plugin",
-    "toggle_attention_queue",
-    "zoom_in",
-    "open_scratchpad",
-    "set_context_root_from_cwd",
-    "push_to_subcontext",
-    "new_child_context",
-    "park_context",
-    "open_notes_picker",
-    "close_context",
-];
-
 /// Diagnostics for config text about to be written to `path`. Lets `config set`
 /// refuse a value the loader would reject.
 pub(crate) fn validate_text(data: &str, path: &Path) -> Vec<ConfigDiagnostic> {
@@ -321,8 +251,14 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
 
     let (parsed_cfg, mut diags) = parse_config_lenient(&data, path);
 
+    let bindings = crate::host::keys::build_key_bindings(parsed_cfg.keybindings.as_ref());
+    for error in bindings.conflicts() {
+        diags.push(ConfigDiagnostic::InvalidKeyBinding {
+            path: path_str.clone(),
+            error,
+        });
+    }
     if let Some(ref user_keys) = parsed_cfg.keys {
-        let bindings = crate::host::keys::build_key_bindings(parsed_cfg.keybindings.as_ref());
         for err in crate::host::keys::validate_user_keys(user_keys, &bindings) {
             diags.push(ConfigDiagnostic::InvalidKeyBinding {
                 path: path_str.clone(),
@@ -433,6 +369,16 @@ fn deserialize_config_lenient(data: &str, path: &Path) -> (PlexiConfig, Vec<Conf
     // the original text is the config exactly as written.
     if let Ok(cfg) = toml::from_str::<PlexiConfig>(data) {
         return (cfg, diags);
+    }
+
+    // Adding a canonical ID to a config that uses its old spelling should
+    // update the binding. Serde treats both keys as a duplicate field.
+    if let Some(bindings) = table.get_mut("keybindings").and_then(toml::Value::as_table_mut) {
+        for &(id, alias) in KEYBINDING_ALIASES {
+            if bindings.contains_key(id) {
+                bindings.remove(alias);
+            }
+        }
     }
 
     let legacy = match table.get("ai") {
@@ -798,7 +744,7 @@ pub fn validate_commands_from_str(data: &str, path: &Path) -> Vec<ConfigDiagnost
 /// Keys removed by the plugin rename. Never accepted; only named in diagnostics.
 fn renamed_key(table: &str, key: &str) -> Option<&'static str> {
     match (table, key) {
-        ("keybindings", "force_reload_app") => Some("force_reload_plugin"),
+        ("keybindings", "force_reload_app") => Some("force_reload_view"),
         _ => None,
     }
 }
@@ -821,183 +767,34 @@ fn check_unknown_keys(
     }
 }
 
-/// Per-action keybinding overrides. Each field is the name of an action;
-/// the value is a key combo string like `"cmd+d"` or `"cmd+shift+d"`.
-/// Omitting a field preserves the default binding for that action.
-/// Format: `[modifier+]...[modifier+]key` (case-insensitive).
-/// Modifiers: cmd/command, shift, ctrl/control, alt/opt/option.
-/// Keys: a-z, 0-9, enter, escape, tab, space, backspace, delete, up, down,
-///   left, right, open_bracket, close_bracket, backslash, slash, comma,
-///   period, equals, minus (and symbol aliases like "[", "]", "\\", etc.).
-#[cfg_attr(test, derive(Serialize))]
-#[derive(Deserialize, Default, Clone)]
-pub struct KeybindingsConfig {
-    pub quit: Option<String>,
-    pub close_pane: Option<String>,
-    pub toggle_command_palette: Option<String>,
-    pub split_horizontal: Option<String>,
-    pub split_vertical: Option<String>,
-    pub split_right: Option<String>,
-    pub split_down: Option<String>,
-    pub swap_pane_left: Option<String>,
-    pub swap_pane_down: Option<String>,
-    pub swap_pane_up: Option<String>,
-    pub swap_pane_right: Option<String>,
-    pub send_pane_left: Option<String>,
-    pub send_pane_down: Option<String>,
-    pub send_pane_up: Option<String>,
-    pub send_pane_right: Option<String>,
-    pub navigate_left: Option<String>,
-    pub navigate_down: Option<String>,
-    pub navigate_up: Option<String>,
-    pub navigate_right: Option<String>,
-    /// Extend pane selection left (default Cmd+Shift+H).
-    pub select_pane_left: Option<String>,
-    /// Extend pane selection down (default Cmd+Shift+J).
-    pub select_pane_down: Option<String>,
-    /// Extend pane selection up (default Cmd+Shift+K).
-    pub select_pane_up: Option<String>,
-    /// Extend pane selection right (default Cmd+Shift+L).
-    pub select_pane_right: Option<String>,
-    pub new_tab: Option<String>,
-    /// Next tab (default Cmd+]).
-    pub next_tab: Option<String>,
-    /// Previous tab (default Cmd+[).
-    pub prev_tab: Option<String>,
-    /// Next context (unbound by default).
-    pub next_context: Option<String>,
-    /// Previous context (unbound by default).
-    pub prev_context: Option<String>,
-    pub move_context_up: Option<String>,
-    pub move_context_down: Option<String>,
-    /// Pane navigation or focus history back (unbound by default).
-    pub nav_back: Option<String>,
-    /// Focus history forward (unbound by default).
-    pub focus_history_forward: Option<String>,
-    pub toggle_sidebar: Option<String>,
-    pub toggle_zoom: Option<String>,
-    pub toggle_shortcuts: Option<String>,
-    pub rename_context: Option<String>,
-    pub rename_pane: Option<String>,
-    pub new_context: Option<String>,
-    pub new_page_right: Option<String>,
-    pub toggle_minimap: Option<String>,
-    pub scroll_up: Option<String>,
-    pub scroll_down: Option<String>,
-    /// Increase the focused pane's text size (default Cmd+=).
-    pub increase_font_size: Option<String>,
-    /// Decrease the focused pane's text size (default Cmd+-).
-    pub decrease_font_size: Option<String>,
-    /// Reset the focused pane's text size (default Cmd+Alt+0).
-    pub reset_font_size: Option<String>,
-    /// Scale the whole UI up, terminal text included (default Cmd+Shift+=).
-    pub ui_scale_up: Option<String>,
-    /// Scale the whole UI down, terminal text included (default Cmd+Shift+-).
-    pub ui_scale_down: Option<String>,
-    /// Reset host-wide UI scale (default Cmd+Shift+0).
-    pub ui_scale_reset: Option<String>,
-    /// Open the Agents pane (default Cmd+Alt+A).
-    pub open_agents: Option<String>,
-    /// Next agent needing attention (default cmd+alt+b).
-    pub next_blocked_agent: Option<String>,
-    /// Focus the oldest permission banner (default cmd+alt+p).
-    pub focus_approval: Option<String>,
-    pub open_file_browser: Option<String>,
-    pub open_quick_note: Option<String>,
-    pub open_config: Option<String>,
-    pub reload_config: Option<String>,
-    pub open_secrets_manager: Option<String>,
-    pub open_assistant: Option<String>,
-    pub force_reload_view: Option<String>,
-    pub toggle_attention_queue: Option<String>,
-    pub zoom_in: Option<String>,
-    pub open_scratchpad: Option<String>,
-    pub push_to_subcontext: Option<String>,
-    pub new_child_context: Option<String>,
-    pub set_context_root_from_cwd: Option<String>,
-    pub park_context: Option<String>,
-    pub open_notes_picker: Option<String>,
-    pub close_context: Option<String>,
-}
+macro_rules! keybindings_config {
+    ($($id:ident [$($alias:literal),*]: $mode:ident $default:tt => $action:expr, $context:ident, $exact:literal, $no_repeat:literal;
+        $visibility:ident($($spec:tt)*);)*) => {
+        const KNOWN_KEYBINDINGS: &[&str] = &[$(stringify!($id), $($alias,)*)*];
+        const KEYBINDING_ALIASES: &[(&str, &str)] = &[$($((stringify!($id), $alias),)*)*];
+        #[cfg(test)]
+        const CANONICAL_KEYBINDINGS: &[&str] = &[$(stringify!($id),)*];
 
-impl KeybindingsConfig {
-    fn overlay(&mut self, other: Self) {
-        macro_rules! overlay_field {
-            ($field:ident) => {
-                if other.$field.is_some() {
-                    self.$field = other.$field;
-                }
-            };
+        /// Optional chord overrides by stable command ID.
+        #[cfg_attr(test, derive(Serialize))]
+        #[derive(Deserialize, Default, Clone)]
+        pub struct KeybindingsConfig {
+            $(
+                $(#[serde(alias = $alias)])*
+                pub $id: Option<String>,
+            )*
         }
-        overlay_field!(quit);
-        overlay_field!(close_pane);
-        overlay_field!(toggle_command_palette);
-        overlay_field!(split_horizontal);
-        overlay_field!(split_vertical);
-        overlay_field!(split_right);
-        overlay_field!(split_down);
-        overlay_field!(swap_pane_left);
-        overlay_field!(swap_pane_down);
-        overlay_field!(swap_pane_up);
-        overlay_field!(swap_pane_right);
-        overlay_field!(send_pane_left);
-        overlay_field!(send_pane_down);
-        overlay_field!(send_pane_up);
-        overlay_field!(send_pane_right);
-        overlay_field!(navigate_left);
-        overlay_field!(navigate_down);
-        overlay_field!(navigate_up);
-        overlay_field!(navigate_right);
-        overlay_field!(select_pane_left);
-        overlay_field!(select_pane_down);
-        overlay_field!(select_pane_up);
-        overlay_field!(select_pane_right);
-        overlay_field!(new_tab);
-        overlay_field!(next_tab);
-        overlay_field!(prev_tab);
-        overlay_field!(next_context);
-        overlay_field!(prev_context);
-        overlay_field!(move_context_up);
-        overlay_field!(move_context_down);
-        overlay_field!(nav_back);
-        overlay_field!(focus_history_forward);
-        overlay_field!(toggle_sidebar);
-        overlay_field!(toggle_zoom);
-        overlay_field!(toggle_shortcuts);
-        overlay_field!(rename_context);
-        overlay_field!(rename_pane);
-        overlay_field!(new_context);
-        overlay_field!(new_page_right);
-        overlay_field!(toggle_minimap);
-        overlay_field!(scroll_up);
-        overlay_field!(scroll_down);
-        overlay_field!(increase_font_size);
-        overlay_field!(decrease_font_size);
-        overlay_field!(reset_font_size);
-        overlay_field!(ui_scale_up);
-        overlay_field!(ui_scale_down);
-        overlay_field!(ui_scale_reset);
-        overlay_field!(open_agents);
-        overlay_field!(next_blocked_agent);
-        overlay_field!(focus_approval);
-        overlay_field!(open_file_browser);
-        overlay_field!(open_quick_note);
-        overlay_field!(open_config);
-        overlay_field!(reload_config);
-        overlay_field!(open_secrets_manager);
-        overlay_field!(open_assistant);
-        overlay_field!(force_reload_view);
-        overlay_field!(toggle_attention_queue);
-        overlay_field!(zoom_in);
-        overlay_field!(open_scratchpad);
-        overlay_field!(push_to_subcontext);
-        overlay_field!(new_child_context);
-        overlay_field!(set_context_root_from_cwd);
-        overlay_field!(park_context);
-        overlay_field!(open_notes_picker);
-        overlay_field!(close_context);
-    }
+
+        impl KeybindingsConfig {
+            fn overlay(&mut self, other: Self) {
+                $(if other.$id.is_some() {
+                    self.$id = other.$id;
+                })*
+            }
+        }
+    };
 }
+crate::host::keys::commands!(keybindings_config);
 
 #[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
@@ -2563,78 +2360,6 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
             }
         }
     }
-    fn same_binding(name: &str, global: &crate::host::keys::KeyBindings, effective: &crate::host::keys::KeyBindings) -> bool {
-        match name {
-            "quit" => global.quit == effective.quit,
-            "close_pane" => global.close_pane == effective.close_pane,
-            "toggle_command_palette" => global.toggle_command_palette == effective.toggle_command_palette,
-            "split_horizontal" => global.split_horizontal == effective.split_horizontal,
-            "split_vertical" => global.split_vertical == effective.split_vertical,
-            "split_right" => global.split_right == effective.split_right,
-            "split_down" => global.split_down == effective.split_down,
-            "swap_pane_left" => global.swap_pane_left == effective.swap_pane_left,
-            "swap_pane_down" => global.swap_pane_down == effective.swap_pane_down,
-            "swap_pane_up" => global.swap_pane_up == effective.swap_pane_up,
-            "swap_pane_right" => global.swap_pane_right == effective.swap_pane_right,
-            "send_pane_left" => global.send_pane_left == effective.send_pane_left,
-            "send_pane_down" => global.send_pane_down == effective.send_pane_down,
-            "send_pane_up" => global.send_pane_up == effective.send_pane_up,
-            "send_pane_right" => global.send_pane_right == effective.send_pane_right,
-            "navigate_left" => global.navigate_left == effective.navigate_left,
-            "navigate_down" => global.navigate_down == effective.navigate_down,
-            "navigate_up" => global.navigate_up == effective.navigate_up,
-            "navigate_right" => global.navigate_right == effective.navigate_right,
-            "select_pane_left" => global.select_pane_left == effective.select_pane_left,
-            "select_pane_down" => global.select_pane_down == effective.select_pane_down,
-            "select_pane_up" => global.select_pane_up == effective.select_pane_up,
-            "select_pane_right" => global.select_pane_right == effective.select_pane_right,
-            "new_tab" => global.new_tab == effective.new_tab,
-            "next_tab" => global.next_tab == effective.next_tab,
-            "prev_tab" => global.prev_tab == effective.prev_tab,
-            "next_context" => global.next_context == effective.next_context,
-            "prev_context" => global.prev_context == effective.prev_context,
-            "move_context_up" => global.move_context_up == effective.move_context_up,
-            "move_context_down" => global.move_context_down == effective.move_context_down,
-            "nav_back" => global.nav_back == effective.nav_back,
-            "focus_history_forward" => global.focus_history_forward == effective.focus_history_forward,
-            "toggle_sidebar" => global.toggle_sidebar == effective.toggle_sidebar,
-            "toggle_zoom" => global.toggle_zoom == effective.toggle_zoom,
-            "toggle_shortcuts" => global.toggle_shortcuts == effective.toggle_shortcuts,
-            "rename_context" => global.rename_context == effective.rename_context,
-            "rename_pane" => global.rename_pane == effective.rename_pane,
-            "new_context" => global.new_context == effective.new_context,
-            "new_page_right" => global.new_page_right == effective.new_page_right,
-            "toggle_minimap" => global.toggle_minimap == effective.toggle_minimap,
-            "scroll_up" => global.scroll_up == effective.scroll_up,
-            "scroll_down" => global.scroll_down == effective.scroll_down,
-            "increase_font_size" => global.increase_font_size == effective.increase_font_size,
-            "decrease_font_size" => global.decrease_font_size == effective.decrease_font_size,
-            "reset_font_size" => global.reset_font_size == effective.reset_font_size,
-            "ui_scale_up" => global.ui_scale_up == effective.ui_scale_up,
-            "ui_scale_down" => global.ui_scale_down == effective.ui_scale_down,
-            "ui_scale_reset" => global.ui_scale_reset == effective.ui_scale_reset,
-            "open_agents" => global.open_agents == effective.open_agents,
-            "next_blocked_agent" => global.next_blocked_agent == effective.next_blocked_agent,
-            "focus_approval" => global.focus_approval == effective.focus_approval,
-            "open_file_browser" => global.open_file_browser == effective.open_file_browser,
-            "open_quick_note" => global.open_quick_note == effective.open_quick_note,
-            "open_config" => global.open_config == effective.open_config,
-            "reload_config" => global.reload_config == effective.reload_config,
-            "open_secrets_manager" => global.open_secrets_manager == effective.open_secrets_manager,
-            "open_assistant" => global.open_assistant == effective.open_assistant,
-            "force_reload_plugin" => global.force_reload_view == effective.force_reload_view,
-            "toggle_attention_queue" => global.toggle_attention_queue == effective.toggle_attention_queue,
-            "zoom_in" => global.zoom_in == effective.zoom_in,
-            "open_scratchpad" => global.open_scratchpad == effective.open_scratchpad,
-            "push_to_subcontext" => global.push_to_subcontext == effective.push_to_subcontext,
-            "new_child_context" => global.new_child_context == effective.new_child_context,
-            "set_context_root_from_cwd" => global.set_context_root_from_cwd == effective.set_context_root_from_cwd,
-            "park_context" => global.park_context == effective.park_context,
-            "open_notes_picker" => global.open_notes_picker == effective.open_notes_picker,
-            "close_context" => global.close_context == effective.close_context,
-            _ => false,
-        }
-    }
     fn visit(
         prefix: &str,
         workspace: &toml::Table,
@@ -2699,7 +2424,8 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
     let effective_bindings = crate::host::keys::build_key_bindings(merged_config.keybindings.as_ref());
     if let Some(bindings) = workspace.get("keybindings").and_then(toml::Value::as_table) {
         for key in bindings.keys() {
-            if same_binding(key, &global_bindings, &effective_bindings) {
+            if global_bindings.chord_for_id(key) == effective_bindings.chord_for_id(key)
+                && KNOWN_KEYBINDINGS.contains(&key.as_str()) {
                 ignored.push(format!("keybindings.{key}"));
             }
         }
@@ -3763,7 +3489,17 @@ mod tests {
         assert_eq!(diags.len(), 1);
         let message = diags[0].to_string();
         assert!(message.contains("unknown key `force_reload_app` in [keybindings]"), "{message}");
-        assert!(message.contains("use `force_reload_plugin`"), "{message}");
+        assert!(message.contains("use `force_reload_view`"), "{message}");
+    }
+
+    #[test]
+    fn canonical_binding_wins_over_its_alias_in_the_same_scope() {
+        let (config, diagnostics) = parse_config_lenient(
+            "[keybindings]\nforce_reload_plugin = 'cmd+alt+r'\nforce_reload_view = 'cmd+alt+f'\n",
+            Path::new("config.toml"),
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(config.keybindings.unwrap().force_reload_view.as_deref(), Some("cmd+alt+f"));
     }
 
     #[test]
@@ -4006,7 +3742,7 @@ soft_grant_days = 9
             }
         }
         global.push_str("[keybindings]\n");
-        for key in KNOWN_KEYBINDINGS { global.push_str(&format!("{key} = \"cmd+f\"\n")); }
+        for key in CANONICAL_KEYBINDINGS { global.push_str(&format!("{key} = \"cmd+f\"\n")); }
         let original: PlexiConfig = toml::from_str(&global).unwrap();
         let cases = [
             ("[attention]\nstyle = \"off\"", vec!["attention", "style"]),
