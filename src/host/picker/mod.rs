@@ -47,8 +47,8 @@ pub(crate) enum RankingPreset {
     /// direct match in a later group is never buried under an incidental
     /// match in an earlier one.
     Grouped,
-    /// Match score, then usage (picks, then latest pick), then newest
-    /// modified. An empty query scores nothing, so usage leads.
+    /// Filename match rank, then match score, usage (picks, then latest
+    /// pick), and newest modified. An empty query scores nothing, so usage leads.
     Usage,
     /// Waiting on you first, then most recent interaction.
     Attention,
@@ -58,12 +58,14 @@ pub(crate) enum RankingPreset {
 /// A source that must cut its answer to `MAX_SEARCH_HITS` cuts by this same
 /// key, so the reducer and the source never disagree on the top rows.
 pub(crate) fn usage_rank_key(
+    file_match: Option<files::FileMatchRank>,
     score: Option<i64>,
     usage: Option<usage::UsageEntry>,
     modified: Option<u64>,
 ) -> impl Ord {
     use std::cmp::Reverse;
     (
+        Reverse(file_match),
         Reverse(score),
         Reverse(usage.map(|u| (u.count, u.last_pick))),
         Reverse(modified),
@@ -182,6 +184,8 @@ pub(crate) struct PickerRow {
     /// Match score from `search::score_candidate`, higher is better. `None`
     /// for an empty query or a row that matched without a score.
     pub score: Option<i64>,
+    /// Filename and depth preferences used by the Files stop.
+    pub file_match: Option<files::FileMatchRank>,
     /// Pinned rows lead the list whatever the query.
     pub pinned: bool,
     /// When set the row stays listed, shows the reason and refuses Enter.
@@ -1084,7 +1088,9 @@ fn rank(preset: RankingPreset, query: &str, mut rows: Vec<PickerRow>) -> Vec<Pic
             rows
         }
         RankingPreset::Usage => {
-            rows.sort_by_cached_key(|row| usage_rank_key(row.score, row.usage, row.modified));
+            rows.sort_by_cached_key(|row| {
+                usage_rank_key(row.file_match, row.score, row.usage, row.modified)
+            });
             rows
         }
     }
