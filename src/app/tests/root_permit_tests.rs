@@ -91,6 +91,7 @@ fn focused_cwd_action_requires_the_panes_permit() {
     };
     // Socket-injected input is the pane's own request: it needs the permit.
     h.app.synthetic_input_frame = true;
+    h.app.synthetic_input_pane = Some(pane);
     act(&mut h);
     assert_eq!(h.app.router.active().root, old.path());
     approve_root(&format!("pane:{pane}"), id);

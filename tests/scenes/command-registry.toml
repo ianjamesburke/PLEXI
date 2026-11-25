@@ -1,0 +1,44 @@
+sizes = [[600.0, 490.0], [1168.0, 720.0]]
+scales = [1.0, 1.25]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = "tests/fixtures/file-browser-tree", as = "files" }
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+text = { target = "host", value = "rename pane" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Rename pane" }
+
+[[steps]]
+shot = "registered-pane-command.png"
+
+[[steps]]
+key = { target = "host", value = "escape" }
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+text = { target = "host", value = "close selected panes" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Close selected panes" }
+
+[[steps]]
+shot = "registered-command-unavailable.png"
+
+[[steps]]
+key = { target = "host", value = "escape" }
+
+[[steps]]
+assert = { pane_count = 1 }

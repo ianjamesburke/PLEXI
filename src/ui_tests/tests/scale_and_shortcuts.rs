@@ -883,7 +883,7 @@ fn harness_key_tests_cover_chords_and_custom_bindings() {
         });
         let count = actions
             .iter()
-            .filter(|a| **a == crate::host::keys::Action::IncreasePaneFontSize)
+            .filter(|(_, action)| *action == crate::host::keys::Action::IncreasePaneFontSize)
             .count();
         assert_eq!(
             count, 1,

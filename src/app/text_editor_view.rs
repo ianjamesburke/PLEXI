@@ -176,6 +176,7 @@ pub struct TextEditorView {
     workspace_root: Option<PathBuf>,
     /// Inline validation warnings/errors for `commands.toml` (stint 0883).
     commands_diagnostics: Vec<String>,
+    binding_hint: Option<&'static str>,
     /// Set when `config.toml` is saved so the host reloads config immediately
     /// on the next frame (stint 0881).
     config_saved: bool,
@@ -335,6 +336,7 @@ impl TextEditorView {
             watch: None,
             workspace_root: inferred_ws_root,
             commands_diagnostics: Vec::new(),
+            binding_hint: None,
             config_saved: false,
         };
         app.refresh_commands_diagnostics();
@@ -2465,6 +2467,12 @@ impl View for TextEditorView {
         std::mem::take(&mut self.config_saved)
     }
 
+    fn show_binding_hint_for(&mut self, path: &Path, id: &'static str) {
+        if self.path == path {
+            self.binding_hint = Some(id);
+        }
+    }
+
     fn switch_commands_scope(&mut self) -> bool {
         self.switch_commands_scope_in_place()
     }
@@ -2788,6 +2796,13 @@ impl View for TextEditorView {
             }
         }
 
+        if let Some(id) = self.binding_hint.filter(|_| self.is_config_file()) {
+            crate::ui::typography::caption(
+                ui,
+                format!("Set {id} under [keybindings] to the chord you want."),
+                colors,
+            );
+        }
         self.show_commands_diagnostics_banner(ui, colors);
         self.show_change_banner(ui, colors);
 

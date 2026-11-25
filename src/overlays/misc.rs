@@ -1,5 +1,6 @@
 use super::*;
 use crate::broker::permit::ContextRootProof;
+use crate::host::keys::{Action, Direction, KeyBindings};
 
 /// Shown in the root editor's title when socket input shared a frame with Enter.
 const SYNTHETIC_NOTE: &str = ": not applied, press Enter again";
@@ -40,6 +41,52 @@ pub(super) fn section_label(ui: &mut egui::Ui, title: &str, colors: &Colors) {
 
 fn shortcut_description(ui: &mut egui::Ui, desc: &str, colors: &Colors) {
     crate::ui::typography::caption(ui, desc, colors);
+}
+
+fn shortcut_section(
+    ui: &mut egui::Ui,
+    title: &'static str,
+    rows: &[(&[Action], Option<&str>)],
+    cell_width: f32,
+    bindings: &KeyBindings,
+    colors: &Colors,
+) {
+    section_label(ui, title, colors);
+    egui::Grid::new(("workspace_shortcuts", title))
+        .num_columns(2)
+        .min_col_width(0.0)
+        .max_col_width(cell_width)
+        .spacing([style::SPACE_SM, 4.0])
+        .show(ui, |ui| {
+            for (actions, group_label) in rows {
+                let chords: Vec<_> = actions
+                    .iter()
+                    .filter_map(|action| bindings.chord_for_action(action))
+                    .map(crate::ui::shortcuts::egui_chord_tokens)
+                    .collect();
+                if chords.is_empty() {
+                    continue;
+                }
+                let combos: Vec<_> = chords.iter().map(Vec::as_slice).collect();
+                let label = group_label.or_else(|| actions.first()?.command_label());
+                if let [keys] = combos.as_slice() {
+                    crate::ui::shortcuts::key_combo(ui, keys, colors);
+                } else {
+                    let prefix = &combos[0][..combos[0].len() - 1];
+                    if combos.iter().all(|keys| &keys[..keys.len() - 1] == prefix) {
+                        let mut keys = prefix.to_vec();
+                        keys.extend(combos.iter().filter_map(|keys| keys.last().copied()));
+                        crate::ui::shortcuts::key_combo(ui, &keys, colors);
+                    } else {
+                        crate::ui::shortcuts::key_combo_list(ui, &combos, None, colors);
+                    }
+                }
+                if let Some(label) = label {
+                    shortcut_description(ui, label, colors);
+                }
+                ui.end_row();
+            }
+        });
 }
 
 fn should_show_changelog_line(line: &str) -> bool {
@@ -89,223 +136,70 @@ impl PlexiApp {
                         if ui.is_sizing_pass() {
                             log::info!("shortcuts layout: column_width={column_width:.1} cell_width={cell_width:.1}");
                         }
-                        // ── Left column ──────────────────────────────
+                        use Action::*;
+                        use Direction::{Down, Left, Right, Up};
+
+                        let bindings = &self.key_bindings;
                         ui.vertical(|ui| {
                             ui.set_width(column_width);
-
-                            section_label(ui, "LAYOUT", colors);
-                            egui::Grid::new("shortcuts_layout")
-                                .num_columns(2)
-                                .min_col_width(0.0)
-                                .max_col_width(cell_width)
-                                .spacing([style::SPACE_SM, 4.0])
-                                .show(ui, |ui| {
-                                    let rows: &[(&[&str], &str)] = &[
-                                        (&["\u{2318}", "N"], "New window right"),
-                                        (&["\u{2318}", "\u{21E7}", "N"], "New context"),
-                                        (&["\u{2318}", "\u{21E7}", "U"], "Park context"),
-                                        (&["\u{2318}", "D"], "Split right"),
-                                        (&["\u{2318}", "\u{21E7}", "D"], "Split down"),
-                                        (&["\u{2318}", "\\"], "Split right (mirror)"),
-                                        (&["\u{2318}", "\u{21E7}", "\\"], "Split below (mirror)"),
-                                        (&["\u{2318}", "W"], "Close pane / selected panes"),
-                                        (&["\u{2318}", "\u{21E7}", "W"], "Close context"),
-                                        (&["\u{2318}", "T"], "New tab"),
-                                    ];
-                                    for (keys, desc) in rows {
-                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
-                                        shortcut_description(ui, desc, colors);
-                                        ui.end_row();
-                                    }
-                                });
-
+                            shortcut_section(ui, "LAYOUT", &[
+                                (&[NewPageRight], None),
+                                (&[NewContext], None),
+                                (&[ParkContext], None),
+                                (&[SplitHorizontal], None),
+                                (&[SplitVertical], None),
+                                (&[SplitRight], None),
+                                (&[SplitDown], None),
+                                (&[ClosePane], None),
+                                (&[CloseContext], None),
+                                (&[NewTab], None),
+                            ], cell_width, bindings, colors);
                             ui.add_space(style::SPACE_SM);
-
-                            section_label(ui, "NAVIGATION", colors);
-                            egui::Grid::new("shortcuts_nav")
-                                .num_columns(2)
-                                .min_col_width(0.0)
-                                .max_col_width(cell_width)
-                                .spacing([style::SPACE_SM, 4.0])
-                                .show(ui, |ui| {
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[&["\u{2318}"], &["H", "J", "K", "L"]],
-                                        None,
-                                        colors,
-                                    );
-                                    shortcut_description(
-                                        ui,
-                                        "Move focus (panes & windows)",
-                                        colors,
-                                    );
-                                    ui.end_row();
-
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui, &[&["cmd", "]"], &["cmd", "["]], None, colors,
-                                    );
-                                    shortcut_description(ui, "Next / prev tab", colors);
-                                    ui.end_row();
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui, &[&["cmd", "shift", "H", "J", "K", "L"]], None, colors,
-                                    );
-                                    shortcut_description(ui, "Extend pane selection (or cmd+shift+click)", colors);
-                                    ui.end_row();
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui, &[&["cmd", "enter"]], None, colors,
-                                    );
-                                    shortcut_description(ui, "Wrap selection / zoom / enter portal", colors);
-                                    ui.end_row();
-
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[&["\u{2318}", "1"], &["\u{2318}", "9"]],
-                                        None,
-                                        colors,
-                                    );
-                                    shortcut_description(ui, "Switch context 1–9", colors);
-                                    ui.end_row();
-
-                                    crate::ui::shortcuts::key_combo(
-                                        ui,
-                                        &["cmd", "escape"],
-                                        colors,
-                                    );
-                                    shortcut_description(
-                                        ui,
-                                        "Go to parent context",
-                                        colors,
-                                    );
-                                    ui.end_row();
-
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[&["\u{2318}", "\u{2303}", "H", "J", "K", "L"]],
-                                        None,
-                                        colors,
-                                    );
-                                    shortcut_description(ui, "Swap pane (focus follows)", colors);
-                                    ui.end_row();
-
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[&[
-                                            "\u{2318}", "\u{2303}", "\u{2325}", "H", "J", "K", "L",
-                                        ]],
-                                        None,
-                                        colors,
-                                    );
-                                    shortcut_description(ui, "Send pane (focus stays)", colors);
-                                    ui.end_row();
-                                });
+                            shortcut_section(ui, "NAVIGATION", &[
+                                (&[Navigate(Left), Navigate(Down), Navigate(Up), Navigate(Right)], Some("Move focus")),
+                                (&[NextTab, PrevTab], Some("Next or previous tab")),
+                                (&[SelectPane(Left), SelectPane(Down), SelectPane(Up), SelectPane(Right)], Some("Extend pane selection")),
+                                (&[ZoomIn], None),
+                                (&[SwitchContext(0), SwitchContext(1), SwitchContext(2), SwitchContext(3),
+                                    SwitchContext(4), SwitchContext(5), SwitchContext(6), SwitchContext(7), SwitchContext(8)], Some("Switch context by position")),
+                                (&[ContextZoomOut], None),
+                                (&[SwapPane(Left), SwapPane(Down), SwapPane(Up), SwapPane(Right)], Some("Swap pane")),
+                                (&[SendPane(Left), SendPane(Down), SendPane(Up), SendPane(Right)], Some("Send pane")),
+                            ], cell_width, bindings, colors);
                         });
-
-                        // ── Vertical divider ──────────────────────────
                         ui.add_space(style::SPACE_MD);
                         ui.add(egui::Separator::default().vertical().spacing(0.0));
                         ui.add_space(style::SPACE_MD);
-
-                        // ── Right column ─────────────────────────────
                         ui.vertical(|ui| {
                             ui.set_width(column_width);
-                            section_label(ui, "PLUGINS & TOOLS", colors);
-                            egui::Grid::new("shortcuts_apps")
-                                .num_columns(2)
-                                .min_col_width(0.0)
-                                .max_col_width(cell_width)
-                                .spacing([style::SPACE_SM, 4.0])
-                                .show(ui, |ui| {
-                                    let rows: &[(&[&str], &str)] = &[
-                                        (&["\u{2318}", "P"], "Command palette"),
-                                        (&["\u{2318}", "E"], "File browser"),
-                                        (&["\u{2318}", "0"], "Quick note"),
-                                        (&["\u{2318}", "O"], "Notes picker"),
-                                        (&["\u{2318}", "\u{21E7}", "\u{2423}"], "Scratch note"),
-                                        (&["\u{2318}", "B"], "Toggle sidebar"),
-                                        (&["\u{2318}", "\u{21E7}", "A"], "Notifications"),
-                                        (&["\u{2318}", "\u{21E7}", "M"], "Toggle minimap"),
-                                    ];
-                                    for (keys, desc) in rows {
-                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
-                                        shortcut_description(ui, desc, colors);
-                                        ui.end_row();
-                                    }
-                                });
-
+                            shortcut_section(ui, "PLUGINS & TOOLS", &[
+                                (&[ToggleCommandPalette], None),
+                                (&[OpenFileBrowser], None),
+                                (&[OpenQuickNote], None),
+                                (&[OpenNotesPicker], None),
+                                (&[OpenScratchpad], None),
+                                (&[ToggleSidebar], None),
+                                (&[ToggleAttentionQueue], None),
+                                (&[ToggleMinimap], None),
+                            ], cell_width, bindings, colors);
                             ui.add_space(style::SPACE_SM);
-
-                            section_label(ui, "TERMINAL", colors);
-                            egui::Grid::new("shortcuts_terminal")
-                                .num_columns(2)
-                                .min_col_width(0.0)
-                                .max_col_width(cell_width)
-                                .spacing([style::SPACE_SM, 4.0])
-                                .show(ui, |ui| {
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[&["\u{2318}", "\u{2191}"], &["\u{2318}", "\u{2193}"]],
-                                        None,
-                                        colors,
-                                    );
-                                    shortcut_description(ui, "Scroll terminal", colors);
-                                    ui.end_row();
-
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[&["\u{2318}", "="], &["\u{2318}", "-"]],
-                                        None,
-                                        colors,
-                                    );
-                                    shortcut_description(ui, "Text size +/−", colors);
-                                    ui.end_row();
-
-                                    crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[
-                                            &["\u{2318}", "\u{21E7}", "="],
-                                            &["\u{2318}", "\u{21E7}", "-"],
-                                        ],
-                                        None,
-                                        colors,
-                                    );
-                                    shortcut_description(ui, "UI scale +/−", colors);
-                                    ui.end_row();
-
-                                    crate::ui::shortcuts::key_combo(
-                                        ui,
-                                        &["\u{2318}", "\u{21E7}", "0"],
-                                        colors,
-                                    );
-                                    shortcut_description(ui, "Reset UI scale", colors);
-                                    ui.end_row();
-                                });
-
+                            shortcut_section(ui, "TERMINAL", &[
+                                (&[ScrollUp, ScrollDown], Some("Scroll terminal")),
+                                (&[IncreasePaneFontSize, DecreasePaneFontSize], Some("Change text size")),
+                                (&[UiScaleUp, UiScaleDown], Some("Change UI scale")),
+                                (&[UiScaleReset], None),
+                            ], cell_width, bindings, colors);
                             ui.add_space(style::SPACE_SM);
-
-                            section_label(ui, "SETTINGS", colors);
-                            egui::Grid::new("shortcuts_settings")
-                                .num_columns(2)
-                                .min_col_width(0.0)
-                                .max_col_width(cell_width)
-                                .spacing([style::SPACE_SM, 4.0])
-                                .show(ui, |ui| {
-                                    let rows: &[(&[&str], &str)] = &[
-                                        (&["\u{2318}", ","], "Open config"),
-                                        (&["\u{2318}", "\u{21E7}", ","], "Reload config"),
-                                        (&["\u{2318}", "\u{21E7}", "S"], "Secrets manager"),
-                                        (&["\u{2318}", "R"], "Rename pane"),
-                                        (&["\u{2318}", "\u{21E7}", "R"], "Rename context"),
-                                        (&["\u{2318}", "\u{21E7}", "I"], "Set context root"),
-                                        (&["\u{2318}", "/"], "Toggle comment (editor)"),
-                                        (&["\u{2318}", "/"], "This help"),
-                                        (&["\u{2318}", "Q"], "Quit"),
-                                    ];
-                                    for (keys, desc) in rows {
-                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
-                                        shortcut_description(ui, desc, colors);
-                                        ui.end_row();
-                                    }
-                                });
+                            shortcut_section(ui, "SETTINGS", &[
+                                (&[OpenConfig], None),
+                                (&[ReloadConfig], None),
+                                (&[OpenSecretsManager], None),
+                                (&[RenamePane], None),
+                                (&[RenameContext], None),
+                                (&[SetContextRootFromCwd], None),
+                                (&[ToggleShortcuts], None),
+                                (&[Quit], None),
+                            ], cell_width, bindings, colors);
                         });
                     });
 

@@ -201,7 +201,7 @@ fn config_chooser_offers_not_created_repo_row_for_plain_repo() {
 }
 
 #[test]
-fn config_chooser_omits_repo_row_outside_workspace() {
+fn config_chooser_disables_repo_row_outside_workspace() {
     let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
     let root = h.workspace_root().join("does-not-exist");
     h.with_app_mut(|app| {
@@ -223,7 +223,16 @@ fn config_chooser_omits_repo_row_outside_workspace() {
     assert!(h
         .harness()
         .query_by_label("Open config: this repo")
-        .is_none());
+        .is_some());
+    h.with_app(|app| {
+        let picker = app.host.picker(crate::host::picker::PickerId::Palette).unwrap();
+        let row = picker
+            .rows()
+            .iter()
+            .find(|row| row.title == "Open config: this repo")
+            .unwrap();
+        assert_eq!(row.unavailable, Some("Open a workspace first"));
+    });
 }
 
 /// Stint 1621 fixture: an ordinary pane plus an agent pane titled
@@ -813,7 +822,7 @@ fn palette_typing_abc_reads_abc() {
     h.save_screenshot(&evidence_png!()).expect("render failed");
 }
 
-const KEYBOARD_ROW: &str = "commands:cmd/Keyboard shortcuts";
+const KEYBOARD_ROW: &str = "commands:cmd/toggle_shortcuts";
 
 fn press(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     egui::Event::Key {
@@ -905,6 +914,10 @@ fn reopen_palette(h: &mut PlexiUiHarness) -> Vec<String> {
     );
     assert_ne!(keys[0], KEYBOARD_ROW);
     assert_ne!(keys[1], KEYBOARD_ROW);
+    assert!(
+        !keys[..2].iter().any(|key| key == "commands:cmd/quit"),
+        "opening the palette must keep its existing initial rows: {keys:?}"
+    );
     keys
 }
 
@@ -1303,7 +1316,7 @@ fn palette_commands_stop() {
     let (_, _, selected) = palette_picker(&h);
     assert_eq!(
         selected.as_deref(),
-        Some("commands:cmd/Keyboard shortcuts"),
+        Some("commands:cmd/toggle_shortcuts"),
         "typed query selects its best match"
     );
     h.save_screenshot(&evidence_png!("_query"))
@@ -1325,6 +1338,20 @@ fn palette_commands_stop() {
         h.with_app(|app| app.show_shortcuts),
         "Enter ran the selected Keyboard shortcuts row"
     );
+}
+
+#[test]
+fn palette_keyboard_shortcuts_row_paints_chord_symbol() {
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    h.with_app_mut(|app| app.open_command_palette("keyboard"));
+    h.run_steps(3);
+    h.harness().get_by_label("Keyboard shortcuts");
+    let shortcut_detail = if cfg!(target_os = "macos") {
+        "Show keyboard shortcuts reference · ⌘/"
+    } else {
+        "Show keyboard shortcuts reference · Ctrl+/"
+    };
+    painted_rect(&painted_texts(&mut h), shortcut_detail);
 }
 
 // ── Stint 1392: the Files stop ──

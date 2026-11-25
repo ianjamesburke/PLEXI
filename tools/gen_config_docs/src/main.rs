@@ -4,6 +4,21 @@
 use std::collections::HashMap;
 use syn::{Fields, File, Item, ItemStruct, Type};
 
+#[path = "../../../src/host/command_registry.rs"]
+mod command_registry;
+
+macro_rules! emit_keybindings {
+    ($($id:ident [$($alias:literal),*]: $mode:ident $default:tt => $action:expr, $context:ident, $exact:literal, $no_repeat:literal;
+        $visibility:ident($($spec:tt)*);)*) => {
+        println!("| Command ID | Description |");
+        println!("|---|---|");
+        $(println!("| `{}` | {} |", stringify!($id), emit_keybindings!(@desc $visibility($($spec)*)));)*
+        println!();
+    };
+    (@desc Show($label:literal, $description:literal, $($other:tt)*)) => { $description };
+    (@desc Except($label:literal, $reason:literal)) => { $label };
+}
+
 #[derive(Clone)]
 struct FieldInfo {
     name: String,
@@ -416,7 +431,9 @@ Command templates for dispatching coding agents. `{{cmd}}` is replaced with the 
     print!(
         r#"### Keybindings (`[keybindings]`)
 
-Override only the shortcuts you want to change. Unknown or conflicting overrides log a warning at startup and keep the default binding.
+Omitted keys keep their defaults. `plexi config check` reports chord conflicts. The legacy name `force_reload_plugin` still maps to `force_reload_view`.
+
+In the command palette, open a result's Actions menu and choose **Assign shortcut in config**. The editor shows the command ID to set under `[keybindings]`. The same IDs work in workspace config.
 
 Modifier keys: `cmd` (alias: `command`), `shift`, `ctrl` (alias: `control`), `alt` (aliases: `opt`, `option`).
 
@@ -426,21 +443,7 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 
 "#
     );
-    if let Some(s) = structs.get("KeybindingsConfig") {
-        println!("| Action | Description |");
-        println!("|---|---|");
-        for f in &s.fields {
-            let desc = if f.name == "open_assistant" {
-                "open assistant (beta-gated; not part of stable v1)".to_string()
-            } else if f.doc.is_empty() {
-                human_action_name(&f.name)
-            } else {
-                f.doc.clone()
-            };
-            println!("| `{}` | {} |", f.name, desc);
-        }
-        println!();
-    }
+    command_registry::commands!(emit_keybindings);
 
     // ── User command shortcuts ───────────────────────────────────────────────
     print!(
@@ -512,8 +515,4 @@ fn emit_table_refs(fields: &[&FieldInfo]) {
         println!("| `{}` | {} | {} | {} |", f.name, f.ty, f.default, doc);
     }
     println!();
-}
-
-fn human_action_name(action: &str) -> String {
-    action.replace('_', " ")
 }

@@ -87,6 +87,7 @@ minimum_contrast = 3.0
 # Pane selection: Cmd+Shift+H/J/K/L; wrap selection: Cmd+Enter.
 # Next/previous tab: Cmd+] / Cmd+[. Context/history navigation is unbound.
 # [keybindings]
+# open_changelog = "cmd+alt+c" # No default. Find other IDs in the palette Actions menu.
 # select_pane_left = "cmd+shift+h"
 # select_pane_down = "cmd+shift+j"
 # select_pane_up = "cmd+shift+k"

@@ -178,7 +178,9 @@ Command templates for dispatching coding agents. `{cmd}` is replaced with the pr
 
 ### Keybindings (`[keybindings]`)
 
-Override only the shortcuts you want to change. Unknown or conflicting overrides log a warning at startup and keep the default binding.
+Omitted keys keep their defaults. `plexi config check` reports chord conflicts. The legacy name `force_reload_plugin` still maps to `force_reload_view`.
+
+In the command palette, open a result's Actions menu and choose **Assign shortcut in config**. The editor shows the command ID to set under `[keybindings]`. The same IDs work in workspace config.
 
 Modifier keys: `cmd` (alias: `command`), `shift`, `ctrl` (alias: `control`), `alt` (aliases: `opt`, `option`).
 
@@ -186,75 +188,103 @@ Key names: `a`–`z`, `0`–`9`, `enter`, `escape`, `tab`, `space`, `backspace`,
 
 Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 
-| Action | Description |
+| Command ID | Description |
 |---|---|
-| `quit` | quit |
-| `close_pane` | close pane |
-| `toggle_command_palette` | toggle command palette |
-| `split_horizontal` | split horizontal |
-| `split_vertical` | split vertical |
-| `split_right` | split right |
-| `split_down` | split down |
-| `swap_pane_left` | swap pane left |
-| `swap_pane_down` | swap pane down |
-| `swap_pane_up` | swap pane up |
-| `swap_pane_right` | swap pane right |
-| `send_pane_left` | send pane left |
-| `send_pane_down` | send pane down |
-| `send_pane_up` | send pane up |
-| `send_pane_right` | send pane right |
-| `navigate_left` | navigate left |
-| `navigate_down` | navigate down |
-| `navigate_up` | navigate up |
-| `navigate_right` | navigate right |
-| `select_pane_left` | Extend pane selection left (default Cmd+Shift+H). |
-| `select_pane_down` | Extend pane selection down (default Cmd+Shift+J). |
-| `select_pane_up` | Extend pane selection up (default Cmd+Shift+K). |
-| `select_pane_right` | Extend pane selection right (default Cmd+Shift+L). |
-| `new_tab` | new tab |
-| `next_tab` | Next tab (default Cmd+]). |
-| `prev_tab` | Previous tab (default Cmd+[). |
-| `next_context` | Next context (unbound by default). |
-| `prev_context` | Previous context (unbound by default). |
-| `move_context_up` | move context up |
-| `move_context_down` | move context down |
-| `nav_back` | Pane navigation or focus history back (unbound by default). |
-| `focus_history_forward` | Focus history forward (unbound by default). |
-| `toggle_sidebar` | toggle sidebar |
-| `toggle_zoom` | toggle zoom |
-| `toggle_shortcuts` | toggle shortcuts |
-| `rename_context` | rename context |
-| `rename_pane` | rename pane |
-| `new_context` | new context |
-| `new_page_right` | new page right |
-| `toggle_minimap` | toggle minimap |
-| `scroll_up` | scroll up |
-| `scroll_down` | scroll down |
-| `increase_font_size` | Increase the focused pane's text size (default Cmd+=). |
-| `decrease_font_size` | Decrease the focused pane's text size (default Cmd+-). |
-| `reset_font_size` | Reset the focused pane's text size (default Cmd+Alt+0). |
-| `ui_scale_up` | Scale the whole UI up, terminal text included (default Cmd+Shift+=). |
-| `ui_scale_down` | Scale the whole UI down, terminal text included (default Cmd+Shift+-). |
-| `ui_scale_reset` | Reset host-wide UI scale (default Cmd+Shift+0). |
-| `open_agents` | Open the Agents pane (default Cmd+Alt+A). |
-| `next_blocked_agent` | Next agent needing attention (default cmd+alt+b). |
-| `focus_approval` | Focus the oldest permission banner (default cmd+alt+p). |
-| `open_file_browser` | open file browser |
-| `open_quick_note` | open quick note |
-| `open_config` | open config |
-| `reload_config` | reload config |
-| `open_secrets_manager` | open secrets manager |
-| `open_assistant` | open assistant (beta-gated; not part of stable v1) |
-| `force_reload_view` | force reload view |
-| `toggle_attention_queue` | toggle attention queue |
-| `zoom_in` | zoom in |
-| `open_scratchpad` | open scratchpad |
-| `push_to_subcontext` | push to subcontext |
-| `new_child_context` | new child context |
-| `set_context_root_from_cwd` | set context root from cwd |
-| `park_context` | park context |
-| `open_notes_picker` | open notes picker |
-| `close_context` | close context |
+| `quit` | Quit the application using the configured confirmation |
+| `close_pane` | Close the focused pane (dismisses overlays and view back-stacks first) |
+| `toggle_command_palette` | Command palette |
+| `open_quick_note` | Capture a note in the current context |
+| `open_agents` | Review tasks, workers and blocking reasons |
+| `next_blocked_agent` | Focus the next agent that needs attention |
+| `focus_approval` | Focus the permission banner for a keyboard decision |
+| `toggle_attention_queue` | Open or close the attention queue list |
+| `zoom_in` | Wrap selected panes, enter a portal, or toggle pane zoom |
+| `context_zoom_out` | Close the open overlay, else return to the parent context |
+| `close_context` | Close the selected context (confirmation required) |
+| `split_vertical` | Open a new terminal below |
+| `split_horizontal` | Open a new terminal to the right |
+| `swap_pane_left` | Swap the focused pane with its neighbor left |
+| `swap_pane_down` | Swap the focused pane with its neighbor down |
+| `swap_pane_up` | Swap the focused pane with its neighbor up |
+| `swap_pane_right` | Swap the focused pane with its neighbor right |
+| `send_pane_left` | Move the focused pane without following it left |
+| `send_pane_down` | Move the focused pane without following it down |
+| `send_pane_up` | Move the focused pane without following it up |
+| `send_pane_right` | Move the focused pane without following it right |
+| `new_tab` | Create a new tab in the selected context |
+| `next_tab` | Focus the next tab |
+| `prev_tab` | Focus the previous tab |
+| `move_context_up` | Move the active context up in the sidebar |
+| `move_context_down` | Move the active context down in the sidebar |
+| `navigate_left` | Move focus left |
+| `navigate_down` | Move focus down |
+| `navigate_up` | Move focus up |
+| `navigate_right` | Move focus right |
+| `toggle_sidebar` | Show or hide the context sidebar |
+| `toggle_zoom` | Zoom or restore the selected pane (dives into an agent's children first) |
+| `toggle_shortcuts` | Show keyboard shortcuts reference |
+| `rename_context` | Rename the selected context |
+| `rename_pane` | Rename the selected pane |
+| `split_down` | Split down: a new terminal, or a new copy of the focused view |
+| `split_right` | Split right: a new terminal, or a new copy of the focused view |
+| `push_to_subcontext` | Move the focused pane into a new child context |
+| `new_child_context` | Create and enter an empty child context |
+| `new_context` | Create a new context |
+| `new_page_right` | Create a new window in the current context |
+| `toggle_minimap` | Show or hide the pane minimap |
+| `scroll_up` | Scroll the focused pane up |
+| `scroll_down` | Scroll the focused pane down |
+| `increase_font_size` | Make the focused pane's text larger |
+| `decrease_font_size` | Make the focused pane's text smaller |
+| `reset_font_size` | Restore the focused pane's text size to default |
+| `ui_scale_up` | Make the whole interface larger |
+| `ui_scale_down` | Make the whole interface smaller |
+| `ui_scale_reset` | Restore the interface to 100% |
+| `open_file_browser` | Browse files and directories in the focused context |
+| `open_config` | Choose a global or workspace config to edit |
+| `reload_config` | Reload global and active-workspace configuration |
+| `open_secrets_manager` | Manage scoped credentials, usage and grants |
+| `open_assistant` | Open or focus the Plexi Assistant |
+| `force_reload_view` | Restart the focused process-backed view |
+| `set_context_root_from_cwd` | Use the focused pane’s current directory as the context root |
+| `park_context` | Park or restore the selected context |
+| `open_scratchpad` | Open a fresh scratch note editor |
+| `open_notes_picker` | Open the notes picker for global and context notes |
+| `next_context` | Focus the next context |
+| `prev_context` | Focus the previous context |
+| `nav_back` | Go back in pane navigation or focus history |
+| `focus_history_forward` | Return to the next pane in focus history |
+| `select_pane_left` | Extend the selection left |
+| `select_pane_down` | Extend the selection down |
+| `select_pane_up` | Extend the selection up |
+| `select_pane_right` | Extend the selection right |
+| `open_changelog` | Show what changed in this version |
+| `open_global_config` | Edit the channel-wide Plexi config file |
+| `open_workspace_config` | Edit config for the active workspace scope |
+| `state_preset_default` | Apply agent state colors; shapes always identify the state |
+| `state_preset_okabe_ito` | Apply agent state colors; shapes always identify the state |
+| `state_preset_high_contrast` | Apply agent state colors; shapes always identify the state |
+| `state_preset_mono` | Apply agent state colors; shapes always identify the state |
+| `edit_commands` | Edit commands.toml for the active workspace or global profile |
+| `switch_commands_scope` | Switch commands editor between workspace and global scope |
+| `open_attention` | Open the attention queue for approvals, questions and host notices |
+| `setup_cli` | Install the ~/.local/bin launcher, completions, and PATH registration |
+| `ui_upcycle_git` | Open git's curated command list and forms |
+| `ui_upcycle_cargo` | Open cargo's curated command list and forms |
+| `ui_upcycle_gh` | Open gh's curated command list and forms |
+| `check_for_updates` | Look for a newer Plexi build on this channel now |
+| `restart_to_update` | Restart into the downloaded build after confirmation |
+| `close_selected_panes` | Close every selected pane, asking about unsaved work one pane at a time |
+| `cancel_pane_selection` | Clear the active window’s pane selection |
+| `switch_context_1` | Focus a sidebar context by its position |
+| `switch_context_2` | Focus a sidebar context by its position |
+| `switch_context_3` | Focus a sidebar context by its position |
+| `switch_context_4` | Focus a sidebar context by its position |
+| `switch_context_5` | Focus a sidebar context by its position |
+| `switch_context_6` | Focus a sidebar context by its position |
+| `switch_context_7` | Focus a sidebar context by its position |
+| `switch_context_8` | Focus a sidebar context by its position |
+| `switch_context_9` | Focus a sidebar context by its position |
 
 ### User command shortcuts (`[keys]`)
 
@@ -390,6 +420,7 @@ minimum_contrast = 3.0
 # Pane selection: Cmd+Shift+H/J/K/L; wrap selection: Cmd+Enter.
 # Next/previous tab: Cmd+] / Cmd+[. Context/history navigation is unbound.
 # [keybindings]
+# open_changelog = "cmd+alt+c" # No default. Find other IDs in the palette Actions menu.
 # select_pane_left = "cmd+shift+h"
 # select_pane_down = "cmd+shift+j"
 # select_pane_up = "cmd+shift+k"

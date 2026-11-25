@@ -66,4 +66,15 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `ParkContext` | `plexi context park 42` | Use context unpark to restore and focus; the shortcut toggles. |
 | `OpenNotesPicker` | `plexi note open` | CLI opens its terminal picker instead of the desktop overlay. |
 | `CloseContext` | `plexi context close 42` | Honors desktop confirmation; response reports pending_confirmation. |
+| `OpenGlobalConfig` | ui-only: Opens the channel config in a host editor. CLI config commands operate on the file directly. |  |
+| `OpenWorkspaceConfig` | ui-only: Opens the active workspace config in a host editor. CLI config commands operate on the file directly. |  |
+| `StatePreset` | ui-only: Applies a visual preset. The persistent equivalent is the theme.state_preset config key. |  |
+| `EditCommands` | ui-only: Opens the commands file in a scoped host editor. |  |
+| `SwitchCommandsScope` | ui-only: Switches the focused commands editor between workspace and channel files. |  |
+| `OpenAttention` | ui-only: Shows the desktop attention queue. Agents use the existing request and notification records. |  |
+| `SetupCli` | ui-only: Installs the shell launcher and completions from the desktop. |  |
+| `UiUpcycle` | ui-only: Opens a visual command browser for a bundled descriptor. |  |
+| `CheckForUpdates` | ui-only: Starts a manual channel update check and presents its status in the desktop. |  |
+| `RestartToUpdate` | ui-only: Uses the desktop confirmation before restarting into a downloaded update. |  |
+| `CloseSelectedPanes` | ui-only: Uses the current desktop pane selection and its individual close confirmations. |  |
 | `RunUserCommand` | `plexi run name` |  |

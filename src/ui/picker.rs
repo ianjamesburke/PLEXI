@@ -8,7 +8,7 @@
 //! applies that command after the field has drawn (stint 1391).
 
 use crate::host::picker::{
-    Hit, PickerCommand, PickerState, PreviewBody, PreviewStatus, RowKey, Step,
+    Hit, InputOrigin, PickerCommand, PickerState, PreviewBody, PreviewStatus, RowKey, Step,
 };
 use crate::ui::{
     list::{ListRow, ListRowPips},
@@ -28,18 +28,18 @@ pub(crate) struct PickerInput {
     pub(crate) composing: bool,
     /// This delivery's keyboard input that follows a field edit or a pointer
     /// activation, with its position: applied after the field and rows drew.
-    pub(crate) after_draw: Vec<(usize, egui::Event)>,
+    pub(crate) after_draw: Vec<(usize, egui::Event, InputOrigin)>,
     /// Where this delivery released a button or asked for an accessibility
     /// action while the palette owned input: a row or scrim activation, if
     /// the draw finds one, acts there.
-    pub(crate) activation_at: Option<usize>,
+    pub(crate) activation_at: Option<(usize, InputOrigin)>,
     /// This delivery's edits left for the field, removed once it has drawn.
     pub(crate) fed: Vec<egui::Event>,
     /// Where this delivery last moved the pointer while the palette owned it.
     pub(crate) hover_at: Option<usize>,
     /// Keyboard input whose edit needs another field pass, in order. It
     /// precedes the next delivery and expires with the session.
-    pub(crate) waiting: Vec<egui::Event>,
+    pub(crate) waiting: Vec<(egui::Event, InputOrigin)>,
     /// The focus-stack opening this session's palette stands for.
     pub(crate) opening: Option<crate::host::focus_stack::OpeningId>,
     /// The pass whose input the open session owned when `App::logic` began.
@@ -48,7 +48,7 @@ pub(crate) struct PickerInput {
     /// once the old owner has finished the input before it.
     pub(crate) opener: Option<Vec<crate::host::keys::Action>>,
     /// The keyboard input after that Cmd+P, for the session it opens.
-    pub(crate) opening_tail: Vec<egui::Event>,
+    pub(crate) opening_tail: Vec<(egui::Event, InputOrigin)>,
     /// Buttons a session pressed and has not released: that gesture's moves
     /// and release stay the session's after it closes.
     pub(crate) held: Vec<egui::PointerButton>,
@@ -121,7 +121,9 @@ pub(crate) fn picker_key(event: &egui::Event, composing: bool) -> Option<PickerC
         Key::K if is(Modifiers::COMMAND) => Some(PickerCommand::Move(Step::Up)),
         Key::Enter if is(Modifiers::COMMAND) && !composing => Some(PickerCommand::ShowActions),
         // Enter during composition confirms it and belongs to the IME.
-        Key::Enter if is(Modifiers::NONE) && !composing => Some(PickerCommand::Accept(None)),
+        Key::Enter if is(Modifiers::NONE) && !composing => {
+            Some(PickerCommand::Accept(None, Default::default()))
+        }
         _ => None,
     }
 }

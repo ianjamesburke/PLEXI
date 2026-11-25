@@ -75,6 +75,111 @@ fn close_shortcut_closes_every_selected_pane_and_clears_the_selection() {
     assert!(h.app.host.pane_close_batch().is_none());
 }
 
+/// Two tabs beside a third pane, with the first tab active.
+fn tab_layout(h: &mut HostHarness) -> [u64; 3] {
+    let first_tab = h.add_test_pane();
+    let next_tab = h.add_test_pane();
+    let side_pane = h.add_test_pane();
+    let window = &mut h.app.windows[0];
+    let tree = &mut window.tree;
+    let first_tile = tree.tiles.find_pane(&first_tab).unwrap();
+    let next_tile = tree.tiles.find_pane(&next_tab).unwrap();
+    let side_tile = tree.tiles.find_pane(&side_pane).unwrap();
+    let tabs = tree.tiles.insert_tab_tile(vec![first_tile, next_tile]);
+    tree.root = Some(tree.tiles.insert_horizontal_tile(vec![tabs, side_tile]));
+    window.navigate_to(first_tile);
+    [first_tab, next_tab, side_pane]
+}
+
+fn deliver_keys(h: &mut HostHarness, keys: &[(egui::Key, egui::Modifiers)]) {
+    let events = keys
+        .iter()
+        .map(|&(key, modifiers)| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        })
+        .collect();
+    h.frame(egui::RawInput {
+        events,
+        ..Default::default()
+    });
+}
+
+#[test]
+fn tab_switch_then_close_in_one_batch_closes_only_the_new_tab() {
+    let mut h = HostHarness::new();
+    let [first_tab, _, side_pane] = tab_layout(&mut h);
+    select(&mut h, &[side_pane, first_tab]);
+    h.run_frames(2);
+    assert_eq!(selection(&h), Some(vec![side_pane, first_tab]));
+
+    deliver_keys(
+        &mut h,
+        &[
+            (egui::Key::CloseBracket, command()),
+            (egui::Key::W, command()),
+        ],
+    );
+
+    assert_eq!(
+        open(&h),
+        vec![first_tab, side_pane],
+        "only the new tab closes"
+    );
+}
+
+#[test]
+fn captured_selection_cannot_close_panes_after_tab_switch() {
+    let mut h = HostHarness::new();
+    let [first_tab, next_tab, side_pane] = tab_layout(&mut h);
+    select(&mut h, &[side_pane, first_tab]);
+    h.run_frames(2);
+    let id = h.app.windows[0].window_id;
+    let captured = h.app.host.pane_selection(id).unwrap().clone();
+
+    h.app.cycle_tab(true);
+    assert_eq!(h.app.focused_pane_id(), Some(next_tab));
+    assert!(!h
+        .app
+        .start_close_captured_selection(id, Some(&captured), "close_selected_panes"));
+    assert_eq!(open(&h), vec![first_tab, next_tab, side_pane]);
+}
+
+#[test]
+fn unclaimed_escape_before_tab_switch_closes_the_original_tab() {
+    let mut h = HostHarness::new();
+    let [first_tab, next_tab, side_pane] = tab_layout(&mut h);
+    let window = &mut h.app.windows[0];
+    window
+        .panes
+        .get_mut(&first_tab)
+        .unwrap()
+        .as_view_mut()
+        .unwrap()
+        .runtime = crate::host::pane::ViewRuntime::Builtin(Box::new(
+        crate::app::agents_view::AgentsPaneView::default(),
+    ));
+    h.run_frames(2);
+    assert_eq!(h.app.focused_pane_id(), Some(first_tab));
+
+    deliver_keys(
+        &mut h,
+        &[
+            (egui::Key::Escape, egui::Modifiers::NONE),
+            (egui::Key::CloseBracket, command()),
+        ],
+    );
+
+    assert_eq!(
+        open(&h),
+        vec![next_tab, side_pane],
+        "Escape closes the original tab"
+    );
+}
+
 /// Focus is chosen once, against the final layout, from the anchor's place:
 /// the spatial-neighbour rule skips the closed panes and lands on `c`, the
 /// only pane left, never on a pane the batch is about to close.

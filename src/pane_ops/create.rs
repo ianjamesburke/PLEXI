@@ -3241,13 +3241,19 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn switch_focused_commands_editor_scope(&mut self) -> bool {
-        let Some(pane_id) = self.focused_pane_id() else {
+    pub(crate) fn switch_commands_editor_scope(
+        &mut self,
+        window_id: u64,
+        pane_id: Option<PaneId>,
+    ) -> bool {
+        let Some(pane_id) = pane_id else {
             return false;
         };
-        let Some(view_pane) = self.windows[self.active_window]
-            .panes
-            .get_mut(&pane_id)
+        let Some(view_pane) = self
+            .windows
+            .iter_mut()
+            .find(|window| window.window_id == window_id)
+            .and_then(|window| window.panes.get_mut(&pane_id))
             .and_then(|p| p.as_view_mut())
         else {
             return false;
