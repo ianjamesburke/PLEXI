@@ -140,6 +140,7 @@ impl AgentEntry {
                 group: "",
                 group_rank: 0,
                 score: None,
+                file_match: None,
                 pinned: false,
                 unavailable: None,
                 actions: Vec::new(),
