@@ -1340,6 +1340,20 @@ fn palette_commands_stop() {
     );
 }
 
+#[test]
+fn palette_keyboard_shortcuts_row_paints_chord_symbol() {
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    h.with_app_mut(|app| app.open_command_palette("keyboard"));
+    h.run_steps(3);
+    h.harness().get_by_label("Keyboard shortcuts");
+    let shortcut_detail = if cfg!(target_os = "macos") {
+        "Show keyboard shortcuts reference · ⌘/"
+    } else {
+        "Show keyboard shortcuts reference · Ctrl+/"
+    };
+    painted_rect(&painted_texts(&mut h), shortcut_detail);
+}
+
 // ── Stint 1392: the Files stop ──
 
 /// Root the active context in the harness's own workspace, so the Files

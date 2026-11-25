@@ -22,7 +22,7 @@ pub(crate) fn egui_chord_tokens(
     if modifiers.shift {
         keys.push("shift");
     }
-    keys.push(key.symbol_or_name());
+    keys.push(key.name());
     keys
 }
 
@@ -82,14 +82,20 @@ fn key_label(token: &str, mac: bool) -> String {
         "backspace" | "delete" | "del" | "\u{232b}" => {
             if mac { "\u{232b}" } else { "Backspace" }.into()
         }
-        "up" | "arrowup" | "\u{2191}" => "\u{2191}".into(),
-        "down" | "arrowdown" | "\u{2193}" => "\u{2193}".into(),
-        "left" | "arrowleft" | "\u{2190}" => "\u{2190}".into(),
-        "right" | "arrowright" | "\u{2192}" => "\u{2192}".into(),
+        "up" | "arrowup" | "⏶" | "\u{2191}" => "\u{2191}".into(),
+        "down" | "arrowdown" | "⏷" | "\u{2193}" => "\u{2193}".into(),
+        "left" | "arrowleft" | "⏴" | "\u{2190}" => "\u{2190}".into(),
+        "right" | "arrowright" | "⏵" | "\u{2192}" => "\u{2192}".into(),
         "tab" => "Tab".into(),
         "space" | "\u{2423}" => if mac { "\u{2423}" } else { "Space" }.into(),
+        "minus" | "−" if mac => "-".into(),
+        "quote" => "'".into(),
         _ if token.chars().count() == 1 => token.to_uppercase(),
-        _ => token.to_string(),
+        _ => egui::Key::ALL
+            .iter()
+            .copied()
+            .find(|key| key.name().eq_ignore_ascii_case(token))
+            .map_or_else(|| token.to_owned(), |key| key.symbol_or_name().to_owned()),
     }
 }
 
@@ -438,7 +444,7 @@ pub(crate) fn key_combo_owned_width(ui: &egui::Ui, keys: &[String], trailing: Op
 
 #[cfg(test)]
 mod tests {
-    use super::{chord_text, chord_tokens};
+    use super::{chord_text, chord_tokens, egui_chord_tokens};
 
     fn toks(keys: &[&str], mac: bool) -> Vec<String> {
         chord_tokens(keys, mac)
@@ -477,6 +483,48 @@ mod tests {
         assert_eq!(toks(&["cmd", "Backspace"], true), ["\u{2318}", "\u{232b}"]);
         assert_eq!(toks(&["cmd", "Backspace"], false), ["Ctrl", "Backspace"]);
         assert_eq!(toks(&["up", "\u{2193}"], true), ["\u{2191}", "\u{2193}"]);
+    }
+
+    #[test]
+    fn named_keys_and_resolved_chords_share_display_symbols() {
+        use egui::Key;
+
+        for (key, symbol) in [
+            (Key::Slash, "/"),
+            (Key::Backslash, "\\"),
+            (Key::Comma, ","),
+            (Key::Period, "."),
+            (Key::Minus, "-"),
+            (Key::Equals, "="),
+            (Key::OpenBracket, "["),
+            (Key::CloseBracket, "]"),
+            (Key::OpenCurlyBracket, "{"),
+            (Key::CloseCurlyBracket, "}"),
+            (Key::ArrowLeft, "←"),
+            (Key::ArrowRight, "→"),
+            (Key::ArrowUp, "↑"),
+            (Key::ArrowDown, "↓"),
+            (Key::Backtick, "`"),
+            (Key::Quote, "'"),
+            (Key::Semicolon, ";"),
+            (Key::Plus, "+"),
+            (Key::Colon, ":"),
+            (Key::Pipe, "|"),
+            (Key::Questionmark, "?"),
+            (Key::Exclamationmark, "!"),
+        ] {
+            let name = key.name();
+            let expected = format!("⌘{symbol}");
+            assert_eq!(chord_text(&["cmd", name], true), expected, "{name}");
+            assert_eq!(
+                chord_text(&["cmd", &name.to_ascii_lowercase()], true),
+                expected,
+                "{name} in lowercase"
+            );
+            assert_eq!(chord_text(&["cmd", symbol], true), expected);
+            let resolved = egui_chord_tokens((egui::Modifiers::COMMAND, key));
+            assert_eq!(chord_text(&resolved, true), expected, "{key:?}");
+        }
     }
 
     #[test]
