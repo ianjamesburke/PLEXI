@@ -673,6 +673,27 @@ pub(crate) enum Lifecycle {
     Revoked,
 }
 
+/// The opaque key of one terminal incarnation. Minted only from its live
+/// authority; stored records bind to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneIncarnation(String);
+
+impl PaneIncarnation {
+    pub(crate) fn from_authority(live: &LivePaneAuthority) -> Self {
+        Self(live.durable_key().to_owned())
+    }
+
+    // Reconstitute a stored owner. Callers authenticate from the live handle.
+    pub(super) fn from_stored(value: &str) -> Option<Self> {
+        let uuid = uuid::Uuid::parse_str(value).ok()?;
+        (value == uuid.to_string()).then(|| Self(value.to_owned()))
+    }
+
+    pub(super) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// One terminal incarnation's revocable handle to its grant. See the module
 /// docs.
 #[derive(Debug)]
@@ -723,8 +744,12 @@ impl LivePaneAuthority {
 
     /// The key a persisted record binds to when it belongs to this
     /// incarnation alone.
-    pub(crate) fn durable_key(&self) -> &str {
+    fn durable_key(&self) -> &str {
         &self.durable_key
+    }
+
+    pub(crate) fn principal(&self) -> super::principal::PanePrincipal {
+        super::principal::PanePrincipal::from_authority(self)
     }
 
     pub(crate) fn grant(&self) -> &PaneAuthority {

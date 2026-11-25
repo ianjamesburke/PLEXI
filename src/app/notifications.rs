@@ -91,10 +91,17 @@ pub(crate) struct PendingNotification {
 }
 
 impl PendingNotification {
-    pub(crate) fn from_agent_event(pane_id: u64, event: &crate::agent::fleet::AgentEvent) -> Self {
+    pub(crate) fn agent_attention_id(owner: &crate::broker::principal::PanePrincipal) -> String {
+        format!("agent-attention-{}", owner.actor_id())
+    }
+
+    pub(crate) fn from_agent_event(
+        owner: &crate::broker::principal::PanePrincipal,
+        event: &crate::agent::fleet::AgentEvent,
+    ) -> Self {
         Self {
-            notify_id: format!("agent-attention-{pane_id}"),
-            sender_pane_id: pane_id,
+            notify_id: Self::agent_attention_id(owner),
+            sender_pane_id: owner.number(),
             title: event.title.clone(),
             body: event.body.clone(),
             ..Default::default()

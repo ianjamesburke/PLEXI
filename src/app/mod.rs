@@ -2487,6 +2487,19 @@ impl PlexiApp {
         self.terminal_incarnation(pane_id)?.authority().cloned()
     }
 
+    pub(crate) fn pane_principal(
+        &self,
+        pane_id: u64,
+    ) -> Option<crate::broker::principal::PanePrincipal> {
+        let principal = self.pane_authority(pane_id)
+            .filter(|live| !live.is_revoked())
+            .map(|live| live.principal());
+        if principal.is_none() {
+            log::info!("pane_authority: pane {pane_id} has no current requester");
+        }
+        principal
+    }
+
     /// The pane's ceiling, from the grant fixed at its admission (stint
     /// 1632). The grant belongs to the pane, not the mutable agent registry:
     /// a worker that changed directory or whose settings.toml was edited
@@ -2941,8 +2954,7 @@ impl PlexiApp {
             subscriber_override: Some(crate::host::event_subscriptions::plugin_subscriber_id(
                 pane_id,
             )),
-            subscriber_type_override: Some(crate::broker::ActorType::Plugin),
-            broker_actor_override: Some(subscriber_plugin_id),
+            principal: crate::broker::principal::Principal::plugin_in_pane(subscriber_plugin_id, pane_id),
             workspace_root_override: Some(workspace_root),
             subscriber_authority: crate::host::event_subscriptions::SubscriberAuthority::Plugin,
             context_id_override: context_id,
@@ -3892,7 +3904,7 @@ impl eframe::App for PlexiApp {
             match crate::broker::gate::PermissionMonitor::for_profile(&profile) {
                 Ok(monitor) => log::info!(
                     "needs_you: host opened restored queue count={}",
-                    monitor.open_needs_you().len()
+                    monitor.host_records().open().len()
                 ),
                 Err(error) => log::error!("needs_you: restored queue not opened: {error}"),
             }

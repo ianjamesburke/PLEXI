@@ -130,7 +130,10 @@ impl McpRendererView {
                 ..
             } => {
                 self.monitor.note_use(
-                    &actor,
+                    &crate::broker::principal::RecordOwner::stored(
+                        crate::broker::ActorType::Plugin,
+                        &actor,
+                    ),
                     &call,
                     &grant_id,
                     &fingerprint,
@@ -592,8 +595,8 @@ mod tests {
             .authorize("read_text_file", &params)
             .unwrap_err()
             .contains("Permission required"));
-        assert_eq!(app.monitor.all_needs_you().len(), 1);
-        let pending = app.monitor.list_pending();
+        assert_eq!(app.monitor.host_records().questions(false).len(), 1);
+        let pending = app.monitor.host_records().pending();
         app.monitor
             .approve_pending(&pending[0].pending_request_id, ApprovalChoice::Once)
             .unwrap();
@@ -610,7 +613,7 @@ mod tests {
             let mut app = configured(dir.path());
             let params = json!({"message":"hello"});
             assert!(app.authorize("echo", &params).is_err());
-            let pending = app.monitor.list_pending();
+            let pending = app.monitor.host_records().pending();
             app.monitor
                 .approve_pending(&pending[0].pending_request_id, choice)
                 .unwrap();
@@ -646,7 +649,7 @@ mod tests {
             .unwrap();
         h.hidden_frame();
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-        let pending = monitor.list_pending();
+        let pending = monitor.host_records().pending();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].tool, "mcp.fixture.connect");
         for pane in h.app.windows[h.app.active_window].panes.values_mut() {
@@ -695,7 +698,7 @@ done
         let wake: Arc<dyn crate::app::ui_mailbox::UiWake> = Arc::new(Wake);
         app.wake = Some(wake.clone());
         assert!(app.connect().is_err());
-        let pending = app.monitor.list_pending();
+        let pending = app.monitor.host_records().pending();
         app.monitor
             .approve_pending(&pending[0].pending_request_id, ApprovalChoice::Session)
             .unwrap();
@@ -714,7 +717,7 @@ done
             app.values.insert("message".into(), "hello".into());
             app.values.insert("name".into(), "Ian".into());
             assert!(app.submit().is_err());
-            let pending = app.monitor.list_pending();
+            let pending = app.monitor.host_records().pending();
             let last = pending
                 .iter()
                 .find(|p| p.tool != "mcp.fixture.connect")

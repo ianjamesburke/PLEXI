@@ -1107,8 +1107,8 @@ impl AssistantView {
             .records()
             .iter()
             .filter(|r| {
-                r.actor_type == ActorType::Agent
-                    && r.actor_id == ASSISTANT_ACTOR_ID
+                r.actor.kind() == ActorType::Agent
+                    && r.actor.id() == ASSISTANT_ACTOR_ID
                     && r.target_type == TargetType::PluginEventStream
                     && r.decision == Decision::Allow
             })
@@ -1161,7 +1161,7 @@ impl AssistantView {
             Some(&posture),
             Some(&self.workspace_root),
             app,
-            &crate::broker::principal::Principal::agent(ASSISTANT_ACTOR_ID),
+            &crate::broker::principal::Principal::agent(ASSISTANT_ACTOR_ID).expect("named agent"),
             ActorScope::User,
             Some(self.monitor.session_id()),
             &event_names,
@@ -1414,7 +1414,7 @@ impl AssistantView {
             Some(&posture),
             Some(&self.workspace_root),
             app,
-            &crate::broker::principal::Principal::agent(ASSISTANT_ACTOR_ID),
+            &crate::broker::principal::Principal::agent(ASSISTANT_ACTOR_ID).expect("named agent"),
             ActorScope::User,
             Some(self.monitor.session_id()),
             &event_names,
@@ -1460,7 +1460,7 @@ impl AssistantView {
         let mut dispatcher = ToolDispatcher::from_registry(
             crate::plexi_ai::tool_dispatch::DispatchScope::new(
                 0,
-                format!("agent:{actor_id}"),
+                crate::broker::principal::Principal::agent(format!("agent:{actor_id}")).expect("namespaced agent id"),
                 self.workspace_root.clone(),
                 self.context_id,
             ),
@@ -3265,6 +3265,10 @@ impl AssistantView {
             decision,
             evidence,
         } = write;
+        let Some(principal) = crate::broker::principal::Principal::agent(actor_id) else {
+            log::error!("assistant: refused grant for reserved identity {actor_id}");
+            return;
+        };
         // Canonicalize to match `PermissionRequest`'s workspace normalization
         // (macOS tempdirs resolve `/var` → `/private/var`).
         let workspace_root = self
@@ -3278,8 +3282,7 @@ impl AssistantView {
                 None
             };
             let mut record = GrantRecord::event_stream_allow(
-                ActorType::Agent,
-                actor_id,
+                &principal,
                 ActorScope::User,
                 target,
                 &workspace_root,
@@ -3292,8 +3295,7 @@ impl AssistantView {
             return;
         }
         let record = GrantRecord {
-            actor_type: ActorType::Agent,
-            actor_id: actor_id.to_string(),
+            actor: principal.into(),
             actor_scope,
             workspace_root: Some(workspace_root),
             target_type,
@@ -4070,7 +4072,7 @@ impl AssistantView {
         let dispatcher = ToolDispatcher::from_registry(
             crate::plexi_ai::tool_dispatch::DispatchScope::new(
                 0,
-                format!("agent:{ASSISTANT_ACTOR_ID}"),
+                crate::broker::principal::Principal::agent(format!("agent:{ASSISTANT_ACTOR_ID}")).expect("namespaced agent id"),
                 self.workspace_root.clone(),
                 self.context_id,
             ),
@@ -4332,13 +4334,13 @@ impl AssistantView {
             .records()
             .iter()
             .filter(|r| {
-                r.actor_type == ActorType::Agent
+                r.actor.kind() == ActorType::Agent
                     && ((r.target_type == TargetType::PluginConnector
-                        && r.actor_id == connector_actor_id)
+                        && r.actor.id() == connector_actor_id)
                         || (r.target_type == TargetType::HostTool
-                            && r.actor_id == connector_actor_id)
+                            && r.actor.id() == connector_actor_id)
                         || (r.target_type == TargetType::PluginEventStream
-                            && r.actor_id == ASSISTANT_ACTOR_ID))
+                            && r.actor.id() == ASSISTANT_ACTOR_ID))
             })
             .map(|r| GrantRow {
                 target_id: r.target_id.clone(),
@@ -4407,8 +4409,8 @@ impl AssistantView {
                         .records()
                         .iter()
                         .find(|r| {
-                            r.actor_type == ActorType::Agent
-                                && r.actor_id == actor_id
+                            r.actor.kind() == ActorType::Agent
+                                && r.actor.id() == actor_id
                                 && r.target_id == row.target_id
                         })
                         .map(|r| (r.target_type, r.actor_scope, r.duration, r.source));
@@ -5756,7 +5758,7 @@ enabled = ["allowed.tool"]
         {
             let store = app.grants();
             let record = store.records().last().unwrap();
-            assert_eq!(record.actor_id, "writer");
+            assert_eq!(record.actor.id(), "writer");
             assert_eq!(record.actor_scope, ActorScope::Workspace);
         }
         let tool = AiTool {
@@ -6259,8 +6261,7 @@ enabled = ["allowed.tool"]
             .canonicalize()
             .unwrap_or_else(|_| app.workspace_root.clone());
         app.grants().record(GrantRecord {
-            actor_type: ActorType::Agent,
-            actor_id,
+            actor: crate::broker::principal::Principal::agent(actor_id).unwrap().into(),
             actor_scope,
             workspace_root: Some(workspace_root),
             target_type: TargetType::PluginConnector,
@@ -6671,7 +6672,7 @@ enabled = ["allowed.tool"]
             grants_before
         );
         assert!(
-            !app.monitor.list_pending().is_empty(),
+            !app.monitor.host_records().pending().is_empty(),
             "the ask stays open so the user can retry"
         );
 
@@ -7067,7 +7068,7 @@ enabled = ["allowed.tool"]
                 assert!(error.contains("move.played"), "{error}");
                 app.pump_turn_io();
                 assert!(app.model.pending_permission.is_none(), "no sheet");
-                assert!(app.monitor.list_pending().is_empty(), "no attention item");
+                assert!(app.monitor.host_records().pending().is_empty(), "no attention item");
                 assert!(app.grants().records().is_empty(), "no grant");
                 assert!(app.live_subs.is_empty(), "no live subscription");
                 assert!(timeline.lock().unwrap().subscriptions().is_empty());
@@ -7096,8 +7097,7 @@ enabled = ["allowed.tool"]
     fn record_stream_allow(app: &AssistantView, target: &str) {
         let workspace = app.workspace_root.clone();
         app.grants().record(GrantRecord::event_stream_allow(
-            ActorType::Agent,
-            ASSISTANT_ACTOR_ID,
+            &crate::broker::principal::Principal::agent(ASSISTANT_ACTOR_ID).unwrap(),
             ActorScope::User,
             target,
             &workspace,
@@ -7122,7 +7122,7 @@ enabled = ["allowed.tool"]
             .grants()
             .records()
             .iter()
-            .find(|record| record.actor_id == ASSISTANT_ACTOR_ID)
+            .find(|record| record.actor.id() == ASSISTANT_ACTOR_ID)
             .map(|record| record.grant_id.clone())
             .unwrap();
         let drain = || {

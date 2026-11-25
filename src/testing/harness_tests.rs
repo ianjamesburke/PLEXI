@@ -518,8 +518,12 @@ fn two_harnesses_do_not_share_a_chess_tool_namespace() {
 
     fn visible_play_names(h: &HostHarness) -> Vec<String> {
         let ctx = h.app.windows[0].context_id;
-        let scope =
-            crate::plexi_ai::tool_dispatch::DispatchScope::new(0, "probe", h.workspace_root(), ctx);
+        let scope = crate::plexi_ai::tool_dispatch::DispatchScope::new(
+            0,
+            crate::broker::principal::Principal::plugin_in_pane("probe", 0),
+            h.workspace_root(),
+            ctx,
+        );
         let mut names: Vec<String> =
             crate::plexi_ai::tool_dispatch::ToolDispatcher::namespaced_for(
                 scope,
@@ -12335,7 +12339,8 @@ fn hot_reload_serviced_while_window_hidden() {
     assert!(
         crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir())
             .unwrap()
-            .list_pending()
+            .host_records()
+            .pending()
             .is_empty(),
         "an edit in a trusted folder asks nothing"
     );
@@ -12344,7 +12349,8 @@ fn hot_reload_serviced_while_window_hidden() {
     // is refused and asks again, and the edited code never runs.
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
     let trust = monitor
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .find(|entry| {
             entry.tool == crate::host::plugin_admission::TRUST_FOLDER_TOOL && entry.kind == "allow"
@@ -12360,7 +12366,8 @@ fn hot_reload_serviced_while_window_hidden() {
     assert_ne!(python_pane_title(&h, pane_id).as_deref(), Some("v3"));
     assert!(
         monitor
-            .list_pending()
+            .host_records()
+            .pending()
             .iter()
             .any(|pending| pending.tool == crate::host::plugin_admission::TRUST_FOLDER_TOOL),
         "the refused reload asks for the folder again"
@@ -16658,7 +16665,7 @@ mod pane_lifecycle_events {
         let dir = tempfile::tempdir().unwrap();
         let mon = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
             .unwrap();
-        let initial_needs_you_count = mon.list_needs_you().len();
+        let initial_needs_you_count = mon.host_records().questions(true).len();
 
         let spawn_reply = temp_response(dir.path(), "agent-spawn-ask");
         h.inject_from_pane(master_pane, crate::protocol::HostRequest::AgentSpawn {
@@ -16720,7 +16727,7 @@ mod pane_lifecycle_events {
         assert_eq!(ask_json["ok"], true);
         assert_eq!(ask_json["state"], "blocked");
         assert_eq!(
-            mon.list_needs_you().len(),
+            mon.host_records().questions(true).len(),
             initial_needs_you_count,
             "Tier 1 Blocked on a child worker with parent_pane_id must NOT file human NeedsYou"
         );
@@ -16772,7 +16779,7 @@ mod pane_lifecycle_events {
         h.hidden_frame();
 
         assert!(
-            mon.list_needs_you().len() > initial_needs_you_count,
+            mon.host_records().questions(true).len() > initial_needs_you_count,
             "Tier 2 NeedsYou must file a human NeedsYou entry"
         );
         let portal_state = match &h.app.windows[0].panes[&portal_id] {
@@ -17006,12 +17013,7 @@ mod flight_recorder_session {
             h.hidden_frame();
         }
 
-        let credential = mon.issue_credential(
-            Some(caller),
-            &format!("pane:{caller}"),
-
-
-        );
+        let credential = mon.issue_pane_credential(&h.app.pane_authority(caller).unwrap());
         let (tx, rx) = std::sync::mpsc::channel();
         let tool_timeout = crate::testing::load_aware_timeout(Duration::from_secs(5));
         tool_dispatch::register(
@@ -17044,9 +17046,9 @@ mod flight_recorder_session {
         }))
         .unwrap();
         h.inject_from_pane(caller, request);
-        pump_until(&mut h, || !mon.list_pending().is_empty());
+        pump_until(&mut h, || !mon.host_records().pending().is_empty());
         mon.approve_pending(
-            &mon.list_pending()[0].pending_request_id,
+            &mon.host_records().pending()[0].pending_request_id,
             ApprovalChoice::Once,
         )
         .unwrap();
@@ -17229,7 +17231,12 @@ mod attention_review {
             serde_json::from_str(&std::fs::read_to_string(&forged_file).unwrap()).unwrap();
         assert_eq!(forged_val["ok"], false, "{forged_val}");
         assert_eq!(forged_val["error_code"], "approval_required");
-        assert!(monitor.get_needs_you(&qid).unwrap().resolution.is_none());
+        assert!(monitor
+            .host_records()
+            .question(&qid)
+            .unwrap()
+            .resolution
+            .is_none());
 
         // The desktop answer settles the question without minting a grant
         monitor
@@ -17240,7 +17247,12 @@ mod attention_review {
             )
             .unwrap();
         assert_eq!(
-            monitor.get_needs_you(&qid).unwrap().answer.as_deref(),
+            monitor
+                .host_records()
+                .question(&qid)
+                .unwrap()
+                .answer
+                .as_deref(),
             Some("9:16")
         );
         assert_eq!(monitor.store().records().len(), grants_before);
@@ -21402,7 +21414,7 @@ ask = ["pane.send"]
     h.hidden_frame();
 
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(profile_dir.path()).unwrap();
-    let pending = monitor.list_pending();
+    let pending = monitor.host_records().pending();
     assert_eq!(
         pending.len(),
         1,
@@ -21479,7 +21491,7 @@ ask = ["pane.send"]
     );
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-    let pending = monitor.list_pending();
+    let pending = monitor.host_records().pending();
     assert_eq!(pending.len(), 1);
     let req_id = pending[0].pending_request_id.clone();
 
@@ -21510,7 +21522,7 @@ ask = ["pane.send"]
         !std::path::Path::new(&reply_2).exists(),
         "second SendToPane after Once consumption must require a new approval"
     );
-    assert_eq!(monitor.list_pending().len(), 1);
+    assert_eq!(monitor.host_records().pending().len(), 1);
 }
 
 #[test]
@@ -21589,7 +21601,7 @@ ask = ["pane.send"]
     );
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-    let pending = monitor.list_pending();
+    let pending = monitor.host_records().pending();
     assert_eq!(
         pending.len(),
         1,
@@ -21597,8 +21609,24 @@ ask = ["pane.send"]
     );
     let req_id = pending[0].pending_request_id.clone();
 
+    let reconciliation = temp_response(&ws, "sender-reconcile");
+    let origin = h.app.socket_origin_for_pids(&[lead_pid]);
+    h.app.handle_needs_you_api(
+        "reconcile",
+        &serde_json::json!({"id":"op-pane-send-1"}),
+        &origin,
+        &reconciliation,
+    );
+    let reconciled = read_json_response(&reconciliation);
+    assert_eq!(reconciled["items"][0]["id"], req_id, "{reconciled}");
+    assert_eq!(reconciled["continuations"][0]["needs_you_id"], req_id);
+    assert_eq!(
+        reconciled["continuations"][0]["run_outcome"],
+        "retry_required"
+    );
     let timed_out = monitor
-        .get_continuation(&req_id)
+        .host_records()
+        .run(&req_id)
         .expect("reconcilable request");
     assert_eq!(timed_out.operation_id.as_deref(), Some("op-pane-send-1"));
     assert_eq!(
@@ -21625,7 +21653,8 @@ ask = ["pane.send"]
         .approve_pending(&req_id, crate::broker::gate::ApprovalChoice::Once)
         .expect("approve once");
     let late = monitor
-        .get_continuation(&req_id)
+        .host_records()
+        .run(&req_id)
         .expect("late decision receipt");
     assert_eq!(late.state, crate::broker::gate::ContinuationState::Paused);
     assert_eq!(late.run_outcome.as_deref(), Some("retry_required"));
@@ -21647,7 +21676,7 @@ ask = ["pane.send"]
         !std::path::Path::new(&unrelated_reply).exists(),
         "a different payload must require its own approval"
     );
-    assert_eq!(monitor.list_pending().len(), 1);
+    assert_eq!(monitor.host_records().pending().len(), 1);
 
     // Agent retries `pane send` — must consume the Once grant and succeed without asking again.
     let reply_2 = temp_response(&ws, "send-retry-2");
@@ -21668,7 +21697,7 @@ ask = ["pane.send"]
         "retry after Allow once must consume the Once grant and succeed: {json_2}"
     );
     assert!(
-        monitor.list_pending().len() == 1,
+        monitor.host_records().pending().len() == 1,
         "the unrelated request must remain pending after an exact retry"
     );
     assert_eq!(
@@ -21708,9 +21737,10 @@ ask = ["pane.send"]
         &forged_reply,
     );
     let forged = read_json_response(&forged_reply);
+    assert_eq!(forged["ok"], false, "{forged}");
     assert_eq!(forged["error_code"], "host_owned_operation", "{forged}");
     assert_eq!(
-        monitor.get_continuation("op-pane-send-1").unwrap().state,
+        monitor.host_records().run("op-pane-send-1").unwrap().state,
         crate::broker::gate::ContinuationState::Completed
     );
 
@@ -21748,7 +21778,7 @@ ask = ["pane.send"]
     }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[lead_pid])));
     h.hidden_frame();
     assert_eq!(
-        monitor.list_pending().len(),
+        monitor.host_records().pending().len(),
         2,
         "subsequent call after Once grant was consumed must ask again"
     );
@@ -21783,7 +21813,7 @@ ask = ["pane.send"]
         "a dead caller's late approval must not write terminal input"
     );
     assert_eq!(
-        monitor.get_continuation(&disconnected_id).unwrap().state,
+        monitor.host_records().run(&disconnected_id).unwrap().state,
         crate::broker::gate::ContinuationState::Paused
     );
 
@@ -22052,11 +22082,17 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
 
     // 3. Verify permission banner actor label uses agent name for agent panes and "Terminal pane <id>" for plain terminals.
     assert_eq!(
-        h.app.approval_actor_label(&format!("pane:{oneshot_pane}")),
+        h.app
+            .approval_actor_label(&crate::broker::principal::RecordOwner::Pane(
+                h.app.pane_principal(oneshot_pane).unwrap()
+            )),
         format!("Agent oneshot (pane {oneshot_pane})")
     );
     assert_eq!(
-        h.app.approval_actor_label(&format!("pane:{human_shell}")),
+        h.app
+            .approval_actor_label(&crate::broker::principal::RecordOwner::Pane(
+                h.app.pane_principal(human_shell).unwrap()
+            )),
         format!("Terminal pane {human_shell}")
     );
 }
@@ -26494,7 +26530,7 @@ fn answer_opens_the_decision_overlay_and_never_resolves_in_the_palette() {
     let ask = monitor
         .file_needs_you(NeedsYouFile {
             kind: NeedsYouKind::PermissionRequest,
-            actor: format!("pane:{pane}"),
+            actor: crate::broker::principal::RecordOwner::Host("palette-fixture".into()),
             resource: format!("pane:{pane}"),
             summary: "Approve the review?".into(),
             expires_at: None,
@@ -26507,7 +26543,7 @@ fn answer_opens_the_decision_overlay_and_never_resolves_in_the_palette() {
     h.app.refresh_command_palette();
     assert!(!h.app.command_palette_open());
     assert!(h.app.attention_queue.decision_overlay.is_some());
-    assert!(monitor.get_needs_you(&ask).unwrap().resolution.is_none());
+    assert!(monitor.host_records().question(&ask).unwrap().resolution.is_none());
 }
 
 #[test]
@@ -26587,7 +26623,7 @@ fn agents_source_does_not_read_disk_per_query() {
     monitor
         .file_needs_you(NeedsYouFile {
             kind: NeedsYouKind::PermissionRequest,
-            actor: format!("pane:{pane}"),
+            actor: crate::broker::principal::RecordOwner::Host("palette-fixture".into()),
             resource: format!("pane:{pane}"),
             summary: "New approval".into(),
             expires_at: None,

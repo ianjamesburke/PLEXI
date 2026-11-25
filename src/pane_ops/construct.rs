@@ -162,17 +162,23 @@ impl PaneCredentials {
         &self.authority
     }
 
-    /// Revoke the handle and both credentials now. Idempotent: the tokens
-    /// are taken, so a later call (or the drop) revokes nothing further.
+    /// Revoke the handle, retire its decisions, and release both credentials.
     pub(crate) fn revoke(&mut self) {
+        let was_revoked = self.authority.is_revoked();
         self.authority.revoke();
         let call = self.call.take();
         let mcp = self.mcp.take();
-        if call.is_none() && mcp.is_none() {
+        if was_revoked && call.is_none() && mcp.is_none() {
             return;
         }
-        if let Some((monitor, token)) = call {
+        let monitor = if let Some((monitor, token)) = call {
             monitor.revoke_credential(&token);
+            Some(monitor)
+        } else {
+            PermissionMonitor::loaded(&self.authority.grant().profile)
+        };
+        if let Some(monitor) = monitor {
+            monitor.retire_pane(&self.authority.principal());
         }
         if let Some(token) = mcp {
             crate::app::host_mcp::revoke_pane_bearer(&token);

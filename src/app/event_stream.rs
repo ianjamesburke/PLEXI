@@ -172,10 +172,12 @@ pub(super) fn handle_events_subscribe(
     // The delivery key is final before the registration is enqueued, so a
     // connection that drops before reading the reply clears exactly what
     // was registered (Codex 3290 r2).
-    let subscriber_type = match &caller {
-        crate::broker::caller::SocketCaller::External(_) => ActorType::External,
-        _ => ActorType::Agent,
+    let Some(principal) = caller.principal() else {
+        log::info!("events: refused connection without a live subscriber");
+        error(&mut socket, "missing subscriber authority");
+        return;
     };
+    let subscriber_type = principal.actor_type();
     let connection = Connection {
         socket: clone,
         cancelled: Arc::new(AtomicBool::new(false)),
@@ -243,9 +245,7 @@ pub(super) fn handle_events_subscribe(
         // Never from the wire: the admitted caller names the pane.
         from_pane_id: None,
         subscriber_override: Some(connection.subscriber.clone()),
-        subscriber_type_override: Some(connection.subscriber_type),
-        // The host resolves the stable broker actor from the verified caller.
-        broker_actor_override: None,
+        principal,
         workspace_root_override: None,
         // Resolved on the host thread from the verified peer.
         subscriber_authority: crate::host::event_subscriptions::SubscriberAuthority::External,
@@ -468,8 +468,8 @@ mod tests {
         });
         let request = subscribe_rx.recv().unwrap();
         assert_eq!(
-            request.subscriber_type_override,
-            Some(ActorType::External),
+            request.principal.actor_type(),
+            ActorType::External,
             "the key is bound before enqueue"
         );
         let key = request.subscriber_override.clone().unwrap();

@@ -48,7 +48,7 @@ pub(super) enum UseSubject {
 
 struct CallerUse {
     monitor: Arc<PermissionMonitor>,
-    actor: String,
+    actor: crate::broker::principal::RecordOwner,
     call: String,
 }
 
@@ -159,7 +159,7 @@ impl UseSubject {
         let (principal, posture) = match self {
             Self::Pane(scope) => {
                 let live = scope.current()?;
-                let actor = Principal::agent(format!("pane:{}", live.pane_id()));
+                let actor = Principal::Pane(live.principal());
                 let posture = live.grant().posture().map_err(|e| e.to_string())?;
                 (actor, posture)
             }
@@ -167,7 +167,7 @@ impl UseSubject {
         };
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
             .map_err(|e| e.to_string())?;
-        let actor = principal.actor_id().to_string();
+        let actor = crate::broker::principal::RecordOwner::requester(&principal);
         let call = format!("caller-{tool}-{}", uuid::Uuid::new_v4());
         let request = AdmitRequest {
             call_id: &call,
@@ -208,6 +208,7 @@ impl CallerUse {
         outcome: &str,
     ) -> Result<(), String> {
         self.monitor.note_outcome(
+            None,
             &self.actor,
             &self.call,
             grant,
@@ -221,7 +222,7 @@ impl CallerUse {
     }
 
     fn finish_immediate(&self, tool: &str, answer: Admission) -> Result<(), String> {
-        let actor = &self.actor;
+        let actor = self.actor.label();
         match answer {
             Admission::Proceed {
                 grant_id,
@@ -260,7 +261,7 @@ impl UseSubject {
         let input = json!({"context_id": id, "root": canonical});
         let decide = PermissionMonitor::admit_for_use;
         let (caller, answer) = self.decide(tool, &input, workspace, id, decide)?;
-        let actor = &caller.actor;
+        let actor = caller.actor.label();
         let (approved, grant, fingerprint, resource) = match answer {
             UseDecision::Allowed {
                 approved,
@@ -326,7 +327,7 @@ impl UseSubject {
                 resource_id,
             } => (*approved, grant_id, fingerprint, resource_id),
             UseDecision::Required { pending_request_id } => {
-                return Err(needs_approval(tool, &caller.actor, &pending_request_id))
+                return Err(needs_approval(tool, caller.actor.label(), &pending_request_id))
             }
             UseDecision::Denied => {
                 return Err(format!(

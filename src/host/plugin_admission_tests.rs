@@ -68,7 +68,8 @@ impl Rig {
     /// The plugin-code ask waiting in the Plexi window, if one is.
     fn pending_ask(&self) -> Option<String> {
         self.monitor()
-            .list_pending()
+            .host_records()
+            .pending()
             .into_iter()
             .find(|pending| {
                 pending.tool == LOAD_INSTALLED_TOOL || pending.tool == TRUST_FOLDER_TOOL
@@ -259,7 +260,8 @@ fn host_launches_from_untrusted_folders_are_refused_and_ask() {
 
     let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
     let asks: Vec<_> = monitor
-        .list_pending()
+        .host_records()
+        .pending()
         .into_iter()
         .filter(|pending| pending.tool == TRUST_FOLDER_TOOL)
         .collect();
@@ -698,7 +700,8 @@ fn open_every_maintained_plugin(seed: fn(&str, &Path)) {
     assert_eq!(started, ids.len(), "every maintained guest starts: {ids:?}");
     let asks: Vec<_> = PermissionMonitor::for_profile(h.profile_dir())
         .unwrap()
-        .list_pending()
+        .host_records()
+        .pending()
         .into_iter()
         .filter(|pending| pending.tool == LOAD_INSTALLED_TOOL || pending.tool == TRUST_FOLDER_TOOL)
         .collect();
@@ -786,7 +789,7 @@ fn restore_with_a_saved_id_that_does_not_own_the_component_is_refused() {
     let elsewhere = tempfile::tempdir().unwrap();
     let beta = write_wasm_plugin(elsewhere.path(), "beta");
     let monitor = PermissionMonitor::for_profile(&profile).unwrap();
-    let grants_before = monitor.list_entries().len();
+    let grants_before = monitor.host_records().entries().len();
     let workspace = h.workspace_root();
     let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
     let restored = crate::pane_ops::create::restore_view_pane_in_profile(
@@ -808,7 +811,7 @@ fn restore_with_a_saved_id_that_does_not_own_the_component_is_refused() {
     let error = restored.err().expect("identity mismatch refuses");
     assert!(error.contains("belongs to 'beta'"), "{error}");
     assert_eq!(
-        monitor.list_entries().len(),
+        monitor.host_records().entries().len(),
         grants_before,
         "no grant touched"
     );
@@ -875,7 +878,8 @@ fn a_nested_python_entry_runs_the_exact_resolved_file() {
 fn trust_row(profile: &Path) -> String {
     PermissionMonitor::for_profile(profile)
         .unwrap()
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .find(|entry| entry.tool == TRUST_FOLDER_TOOL && entry.kind == "allow")
         .expect("a folder trust row")
@@ -886,7 +890,8 @@ fn trust_row(profile: &Path) -> String {
 fn waiting_ask(profile: &Path) -> Vec<String> {
     PermissionMonitor::for_profile(profile)
         .unwrap()
-        .list_pending()
+        .host_records()
+        .pending()
         .into_iter()
         .filter(|pending| pending.tool == TRUST_FOLDER_TOOL || pending.tool == LOAD_INSTALLED_TOOL)
         .map(|pending| pending.pending_request_id)
@@ -1067,7 +1072,8 @@ fn accepting_a_review_after_a_revoke_starts_nothing_and_grants_nothing() {
         .unwrap());
     let grant_rows = |monitor: &PermissionMonitor| {
         monitor
-            .list_entries()
+            .host_records()
+            .entries()
             .into_iter()
             .filter(|entry| entry.tool != TRUST_FOLDER_TOOL && entry.kind != "pending")
             .count()
@@ -1095,7 +1101,8 @@ fn accepting_a_review_after_a_revoke_starts_nothing_and_grants_nothing() {
     assert_eq!(grant_rows(&monitor), rows, "no grant row added");
     assert!(
         monitor
-            .list_entries()
+            .host_records()
+            .entries()
             .iter()
             .all(|entry| !review.missing_capabilities.contains(&entry.tool)),
         "no reviewed import granted in the broker"
@@ -1122,7 +1129,8 @@ fn accepting_a_review_after_a_revoke_starts_nothing_and_grants_nothing() {
         .expect("starts with the reviewed imports");
     assert_eq!(guest_starts_for_test(), starts + 1);
     assert!(monitor
-        .list_entries()
+        .host_records()
+        .entries()
         .iter()
         .any(|entry| review.missing_capabilities.contains(&entry.tool)));
 }
@@ -1534,7 +1542,8 @@ fn harness_with_bundled(ids: &[&str]) -> (crate::testing::HostHarness, PathBuf) 
 fn capability_rows(profile: &Path, id: &str) -> usize {
     PermissionMonitor::for_profile(profile)
         .unwrap()
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .filter(|entry| {
             entry.actor_id.ends_with(id)
@@ -1609,7 +1618,7 @@ fn a_dev_copy_publishes_its_tools_only_under_a_pane_qualified_name() {
     let names = |h: &crate::testing::HostHarness| {
         let scope = crate::plexi_ai::tool_dispatch::DispatchScope::new(
             0,
-            "agent:t1733",
+            crate::broker::principal::Principal::agent("agent:t1733").unwrap(),
             h.workspace_root(),
             context,
         );
@@ -1832,7 +1841,8 @@ fn a_failed_instantiation_after_review_leaves_no_import_grants() {
     let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
     let granted = |monitor: &PermissionMonitor| {
         monitor
-            .list_entries()
+            .host_records()
+            .entries()
             .into_iter()
             .filter(|entry| review.missing_capabilities.contains(&entry.tool))
             .count()

@@ -215,7 +215,7 @@ fn monitor() -> Arc<PermissionMonitor> {
 fn human() -> PermissionCaller {
     PermissionCaller {
         revoke_scope: crate::broker::gate::RevokeScope::Any,
-        actor_id: "user:local".to_string(),
+        owner: crate::broker::principal::RecordOwner::Host("human".into()),
     }
 }
 
@@ -310,7 +310,8 @@ fn revoke_is_seen_after_a_once_grant() {
     assert_eq!(hits(&server).len(), 2);
 
     let grant = monitor()
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .find(|entry| entry.kind == "allow" && entry.actor_id == PLUGIN)
         .expect("the always grant is listed");
@@ -343,7 +344,8 @@ fn always_allow_is_bound_to_the_host_list() {
     wait_for_title(&mut h, first, "http:");
     assert!(
         monitor()
-            .list_entries()
+            .host_records()
+            .entries()
             .iter()
             .any(|entry| entry.kind == "allow"
                 && entry.actor_id == PLUGIN
@@ -473,24 +475,29 @@ fn closing_the_pane_retires_its_asks() {
     let mut h = HostHarness::new();
     let pane = launch(&mut h, dir.path());
     let pending = wait_for_prompt(&mut h, pane, "net.http");
-    let item = monitor().get_needs_you(&pending).expect("a Needs-you item");
+    let item = monitor()
+        .host_records()
+        .question(&pending)
+        .expect("a Needs-you item");
     assert_eq!(item.details.and_then(|d| d.pane_id), Some(pane));
 
     h.app.close_pane_by_id(pane);
     h.run_frames(2);
     assert!(
-        monitor().show_pending(&pending).is_none(),
+        monitor().host_records().pending_id(&pending).is_none(),
         "the ask is gone"
     );
     assert_eq!(
         monitor()
-            .get_needs_you(&pending)
+            .host_records()
+            .question(&pending)
             .and_then(|record| record.resolution),
         Some(NeedsYouResolution::Retired)
     );
     assert!(
         !monitor()
-            .list_entries()
+            .host_records()
+            .entries()
             .iter()
             .any(|entry| entry.kind == "allow" && entry.actor_id == PLUGIN),
         "closing grants nothing"
@@ -520,7 +527,8 @@ fn one_keypress_resolves_one_ask() {
     assert_eq!(hits(&server).len(), 1);
     assert_eq!(
         monitor()
-            .get_needs_you(&pending)
+            .host_records()
+            .question(&pending)
             .and_then(|record| record.resolution),
         Some(NeedsYouResolution::Approved)
     );
@@ -546,7 +554,8 @@ fn always_deny_names_the_allow_command_and_allowing_applies_live() {
 
     guest_fetch(&mut h, pane, port, "/y");
     let deny = monitor()
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .find(|entry| entry.kind == "deny" && entry.actor_id == PLUGIN)
         .expect("the denial is listed");
@@ -630,7 +639,8 @@ fn fs_write_deny_once_refuses_and_stores_nothing() {
         .join("consent-out.txt")
         .exists());
     assert!(!monitor()
-        .list_entries()
+        .host_records()
+        .entries()
         .iter()
         .any(|entry| entry.actor_id == PLUGIN && entry.kind != "pending"));
 }
@@ -683,6 +693,7 @@ fn ai_query_deny_once_reports_the_denial() {
 #[test]
 fn prompt_lines_escape_untrusted_text() {
     let view = crate::broker::gate::PendingView {
+        owner: crate::broker::principal::RecordOwner::Host("fixture".into()),
         pending_request_id: "req_1".to_string(),
         actor_id: "probe\nAlways allow is safe".to_string(),
         tool: "net.http".to_string(),
@@ -744,7 +755,8 @@ fn a_full_pane_files_no_ask_nothing_waits_on() {
     let asks = |h: &mut HostHarness| {
         let _ = h;
         monitor()
-            .list_pending()
+            .host_records()
+            .pending()
             .into_iter()
             .filter(|view| view.actor_id == PLUGIN)
             .count()
@@ -759,7 +771,7 @@ fn a_full_pane_files_no_ask_nothing_waits_on() {
     assert_eq!(
         crate::app::attention_queue::open_needs_you_items()
             .iter()
-            .filter(|item| item.actor == PLUGIN)
+            .filter(|item| item.actor.label() == PLUGIN)
             .count(),
         consent::MAX_PARKED
     );
@@ -789,12 +801,13 @@ fn relaunch_retires_the_old_guests_asks() {
     python(&mut h, pane).relaunch_for_test().expect("relaunch");
     assert!(python(&mut h, pane).consent.waiting.is_empty());
     assert!(
-        monitor().show_pending(&old).is_none(),
+        monitor().host_records().pending_id(&old).is_none(),
         "the old ask is gone"
     );
     assert_eq!(
         monitor()
-            .get_needs_you(&old)
+            .host_records()
+            .question(&old)
             .and_then(|record| record.resolution),
         Some(NeedsYouResolution::Retired)
     );

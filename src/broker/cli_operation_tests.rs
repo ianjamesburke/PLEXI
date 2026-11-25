@@ -88,7 +88,10 @@ fn unapproved_operation_asks_and_shows_the_disclosure() {
     let (_p, ws, monitor) = monitor();
     let call = Call::new(ws.path());
     let id = pending(call.admit(&monitor));
-    let view = monitor.show_pending(&id).expect("pending is listed");
+    let view = monitor
+        .host_records()
+        .pending_id(&id)
+        .expect("pending is listed");
     assert_eq!(view.tool, "cli.op.mutate");
     assert_eq!(view.input_summary, "Board wants to run task.set");
     assert_eq!(view.resource_id.as_deref(), Some("task.set#bind-1"));

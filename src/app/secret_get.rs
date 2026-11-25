@@ -75,41 +75,46 @@ impl PlexiApp {
                 &root,
                 ctx.context_id,
             )?;
-            return crate::workspace::secrets::manager::inventory_for_context(&root);
+            let requester = origin
+                .socket_caller()
+                .and_then(crate::broker::caller::SocketCaller::principal)
+                .ok_or("permission_denied: an outside caller with no requester holds no secret inventory")?;
+            return crate::workspace::secrets::manager::inventory_for_context(&root, &requester);
         }
         // Every pane is admitted as its own principal; a pane the person
         // opened has no inventory shortcut (stint 1285).
         let Some(pane) = origin
             .socket_caller()
             .and_then(crate::broker::caller::SocketCaller::pane)
-            .map(|pane| pane.terminal_pane)
         else {
             return Err(format!(
                 "permission_denied: a {} caller holds no secret inventory; run --context from a Plexi pane.",
                 origin.class()
             ));
         };
+        let principal = pane.principal();
+        let pane = pane.terminal_pane;
         log::info!(
             "secret_list: explicit context={} pane={pane}",
             ctx.context_id
         );
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
             .map_err(|error| error.to_string())?;
-        let actor = format!("pane:{pane}");
+        let actor = principal.actor_id();
         let call = format!("secret-list-{}", uuid::Uuid::new_v4());
         let input = serde_json::json!({"path": root}).to_string();
         let posture = self.pane_ceiling(pane)?;
         match monitor.admit_with_posture(AdmitRequest {
             call_id: &call, tool: "secret.list", input_json: &input,
-            principal: &crate::broker::principal::Principal::agent(&actor), actor_scope: ActorScope::User,
+            principal: &principal, actor_scope: ActorScope::User,
             trust_origin: "plexi-cli", workspace_root: &root, context_id: ctx.context_id,
             package_id: "", instance_id: 0, target_type: TargetType::Secret,
         }, posture.as_ref()) {
             Admission::Proceed { grant_id, fingerprint, resource_id, .. } => {
                 let resource = resource_id.unwrap_or_default();
-                monitor.note_use(&actor, &call, &grant_id, &fingerprint, &resource, "")?;
-                let result = crate::workspace::secrets::manager::inventory_for_context(&root);
-                monitor.note_outcome(&actor, &call, &grant_id, &fingerprint, &resource, "", if result.is_ok() { "ok" } else { "failed" }, "", "")?;
+                monitor.note_use(&crate::broker::principal::RecordOwner::requester(&principal), &call, &grant_id, &fingerprint, &resource, "")?;
+                let result = crate::workspace::secrets::manager::inventory_for_context(&root, &principal);
+                monitor.note_outcome(None, &crate::broker::principal::RecordOwner::requester(&principal), &call, &grant_id, &fingerprint, &resource, "", if result.is_ok() { "ok" } else { "failed" }, "", "")?;
                 monitor.consume_once(&grant_id, None);
                 result
             }
@@ -218,7 +223,7 @@ impl PlexiApp {
                     };
                     let path = target.map(|p| p.display().to_string()).unwrap_or_default();
                     monitor.note_denial(
-                        &format!("pane:{id}"),
+                        &crate::broker::principal::RecordOwner::requester(&pane.principal()),
                         tool,
                         &format!("{name}@{prefix}{path}"),
                         "",
@@ -395,7 +400,7 @@ impl SecretAsk {
             log::info!("{tool}: scope unavailable: {error}");
             if let TargetError::OutsidePane { pane, .. } = &error {
                 monitor.note_denial(
-                    principal.actor_id(),
+                    &crate::broker::principal::RecordOwner::requester(principal),
                     tool,
                     &format!("environment@{}", pane.display()),
                     "",
@@ -492,7 +497,7 @@ enum Subject {
 impl Subject {
     fn principal(&self) -> Principal {
         match self {
-            Self::Pane(scope) => Principal::agent(format!("pane:{}", scope.authority.pane_id())),
+            Self::Pane(scope) => Principal::Pane(scope.authority.principal()),
             Self::Outside(..) => Principal::External,
         }
     }
@@ -578,6 +583,7 @@ impl SecretRequest {
         let posture = self.posture.as_ref();
         // Keep the same host call ID from filing through claim. The click
         // reserves its Once until this worker checks the connection and deadline.
+        let records = monitor.records_for(req.principal);
         let pending = match monitor.admit_with_posture(req, posture) {
             Admission::Denied { .. } => return Some(UseDecision::Denied),
             Admission::Proceed { .. } => None,
@@ -611,7 +617,7 @@ impl SecretRequest {
                 break reason;
             }
             if let Some(id) = &pending {
-                match monitor.approval_resolution(id) {
+                match records.decision(id) {
                     Some(
                         ApprovalChoice::Once | ApprovalChoice::Session | ApprovalChoice::Always,
                     ) => (),
@@ -643,7 +649,7 @@ impl SecretRequest {
         };
         log::info!("{tool}: {reason} pending={pending:?}");
         if let Some(id) = pending {
-            if let Err(error) = monitor.withdraw_live_ask(&id) {
+            if let Err(error) = records.withdraw_live_ask(&id) {
                 log::error!("{tool}: withdraw {id}: {error}");
             }
         }
@@ -961,9 +967,10 @@ mod list_tests {
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .unwrap();
         let pending = monitor
-            .list_entries()
+            .host_records()
+            .entries()
             .into_iter()
-            .find(|row| row.tool == "secret.list")
+            .find(|row| row.tool == "secret.list" && error.contains(&row.id))
             .unwrap();
         monitor
             .approve_pending(&pending.id, crate::broker::gate::ApprovalChoice::Once)
@@ -1025,7 +1032,7 @@ mod list_tests {
                 assert_eq!(reply["status"], "error");
                 assert!(reply["error"].as_str().unwrap().contains("empty"));
             }
-            assert!(monitor.list_needs_you().is_empty());
+            assert!(monitor.host_records().questions(true).is_empty());
         }
     }
 
@@ -1054,7 +1061,7 @@ mod list_tests {
             for choice in [ApprovalChoice::Deny, ApprovalChoice::Once] {
                 let (client, ask) = live_secret(&mut h, request.clone(), &peer);
                 assert_eq!(ask.actor_id, format!("pane:{pane}"));
-                assert_eq!(monitor.open_needs_you().len(), 1);
+                assert_eq!(monitor.host_records().open().len(), 1);
                 monitor
                     .approve_pending(&ask.pending_request_id, choice)
                     .unwrap();
@@ -1071,7 +1078,7 @@ mod list_tests {
                     super::worker_test::join().0,
                     discovery + usize::from(choice == ApprovalChoice::Once)
                 );
-                assert!(monitor.open_needs_you().is_empty());
+                assert!(monitor.host_records().open().is_empty());
             }
         }
     }
@@ -1179,7 +1186,7 @@ mod list_tests {
                 super::worker_test::join().0,
                 usize::from(kind == "folder_secret_exec")
             );
-            assert_eq!(monitor.open_needs_you().len(), 1);
+            assert_eq!(monitor.host_records().open().len(), 1);
             monitor
                 .approve_pending(&granted.pending_request_id, ApprovalChoice::Once)
                 .unwrap();
@@ -1215,7 +1222,7 @@ mod list_tests {
             let (cancel, next) = live_secret(&mut h, wire, &peer);
             drop(cancel);
             super::worker_test::join();
-            assert!(monitor.open_needs_you().is_empty());
+            assert!(monitor.host_records().open().is_empty());
             assert!(monitor
                 .approve_pending(&next.pending_request_id, ApprovalChoice::Once)
                 .is_err());
@@ -1364,12 +1371,11 @@ mod list_tests {
             .unwrap()
             .clone();
         // A standing approval, so only the missing stream withholds the value.
-        let actor = format!("pane:{pane}");
+        let actor = live.principal();
         monitor
             .store()
             .record(crate::broker::GrantRecord::event_stream_allow(
-                crate::broker::ActorType::Agent,
-                &actor,
+                &crate::broker::principal::Principal::Pane(actor.clone()),
                 crate::broker::ActorScope::User,
                 "unbacked::release",
                 &ws,
@@ -1379,8 +1385,7 @@ mod list_tests {
             ));
         let question =
             crate::broker::PermissionRequest::exact(&crate::broker::ExactBinding::event_stream(
-                crate::broker::ActorType::Agent,
-                &actor,
+                &crate::broker::principal::Principal::Pane(actor.clone()),
                 crate::broker::ActorScope::User,
                 "unbacked::release",
                 &ws,
@@ -1463,13 +1468,13 @@ mod list_tests {
         let reply = pane_get(&mut h, "FOO", denied_pid, None);
         assert_eq!(reply["status"], "denied", "{reply}");
         assert!(
-            monitor.list_pending().is_empty(),
+            monitor.host_records().pending().is_empty(),
             "posture deny must not file an approval banner"
         );
         assert!(
-            monitor.audit_records().iter().any(|row| {
+            monitor.host_records().audit().iter().any(|row| {
                 row.kind == "deny"
-                    && row.actor == format!("pane:{denied_pane}")
+                    && row.actor.label() == format!("pane:{denied_pane}")
                     && row.decision == "deny"
             }),
             "posture deny must record a denial audit row"
@@ -1521,7 +1526,7 @@ mod list_tests {
         assert_eq!(val_reply["status"], "value", "{val_reply}");
         assert_eq!(val_reply["value"], "top-secret");
 
-        let audit_json = serde_json::to_string(&monitor.audit_records()).unwrap();
+        let audit_json = serde_json::to_string(&monitor.host_records().audit()).unwrap();
         assert!(
             !audit_json.contains("top-secret"),
             "audit records must never retain real secret values: {audit_json}"
@@ -1597,7 +1602,7 @@ mod list_tests {
             "missing-snapshot SendToPane must park on an approval instead of proceeding un-gated"
         );
         let send_pending = monitor
-            .list_pending()
+            .host_records().pending()
             .into_iter()
             .find(|row| row.tool == "pane.send")
             .expect("missing-snapshot pane.send must file an approval request");
@@ -1638,7 +1643,7 @@ mod list_tests {
             serde_json::json!({"status":"denied","reason":"denied"})
         );
         assert_eq!(super::worker_test::join().0, 0);
-        assert!(monitor.open_needs_you().is_empty());
+        assert!(monitor.host_records().open().is_empty());
     }
 
     fn pane_set(
@@ -1666,14 +1671,14 @@ mod list_tests {
         let (a, first) = pane_set(&mut h, &peer, name, "first-pane-canary");
         let (b, second) = pane_set(&mut h, &peer, name, "second-pane-canary");
         assert_ne!(first, second);
-        assert_eq!(monitor.open_needs_you().len(), 2);
+        assert_eq!(monitor.host_records().open().len(), 2);
         monitor
             .approve_pending(&second, ApprovalChoice::Once)
             .unwrap();
         assert_eq!(read_client(b, name)["status"], "ok");
         assert_eq!(super::worker_test::join().0, 1);
         assert_eq!(stored().as_str(), "second-pane-canary");
-        let open = monitor.open_needs_you();
+        let open = monitor.host_records().open();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, first);
         monitor
@@ -1682,7 +1687,7 @@ mod list_tests {
         assert_eq!(read_client(a, name)["reason"], "denied");
         assert_eq!(super::worker_test::join().0, 0);
         assert_eq!(stored().as_str(), "second-pane-canary");
-        assert!(monitor.open_needs_you().is_empty());
+        assert!(monitor.host_records().open().is_empty());
         assert!(monitor
             .store()
             .records()
@@ -1714,7 +1719,7 @@ mod list_tests {
         h.hidden_frame();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while monitor
-            .audit_records()
+            .host_records().audit()
             .iter()
             .filter(|row| row.kind == "ask")
             .count()
@@ -1725,7 +1730,7 @@ mod list_tests {
         }
         drop(client);
         assert_eq!(super::worker_test::join().0, 0);
-        let open = monitor.open_needs_you();
+        let open = monitor.host_records().open();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, card);
         monitor
@@ -1792,7 +1797,7 @@ mod list_tests {
         let reason = read_client(client, "closed pane")["reason"].clone();
         assert!(reason == "revoked" || reason == "denied", "{reason}");
         assert_eq!(super::worker_test::join().0, 0);
-        assert!(monitor.open_needs_you().is_empty());
+        assert!(monitor.host_records().open().is_empty());
         assert!(monitor
             .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
             .is_err());
@@ -1820,7 +1825,7 @@ mod list_tests {
         );
         let asks = || {
             monitor
-                .audit_records()
+                .host_records().audit()
                 .iter()
                 .filter(|row| row.kind == "ask")
                 .count()
@@ -1832,7 +1837,7 @@ mod list_tests {
                 "not_found"
             );
             assert_eq!(asks(), 1);
-            assert!(monitor.open_needs_you().is_empty());
+            assert!(monitor.host_records().open().is_empty());
         }
     }
 
@@ -1853,7 +1858,7 @@ mod list_tests {
         assert_eq!(read_client(client, "dead peer")["reason"], "revoked");
         assert_eq!(super::worker_test::join().0, 0);
         let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
-        assert!(monitor.open_needs_you().is_empty());
+        assert!(monitor.host_records().open().is_empty());
     }
 
     /// A pane the person opened has no posture snapshot either, and that buys
@@ -1896,7 +1901,7 @@ mod list_tests {
                 .unwrap();
         assert!(
             monitor
-                .list_pending()
+                .host_records().pending()
                 .iter()
                 .any(|row| row.tool == "pane.send"),
             "the send files a pane.send approval request"
@@ -2013,7 +2018,7 @@ mod list_tests {
 
         let pid_a = pane_pid(&h, peer_a);
         let pid_b = pane_pid(&h, peer_b);
-        let ok_a = pane_get(&mut h, "BAR", pid_a, Some(ApprovalChoice::Always));
+        let ok_a = pane_get(&mut h, "BAR", pid_a, Some(ApprovalChoice::Session));
         assert_eq!(ok_a["status"], "value", "{ok_a}");
         assert_eq!(pane_get(&mut h, "BAR", pid_a, None)["status"], "value");
 
@@ -2073,7 +2078,7 @@ mod release_tests {
                         .store()
                         .records()
                         .iter()
-                        .filter(|record| record.actor_id == "pane:7")
+                        .filter(|record| record.actor.kind() == crate::broker::ActorType::Pane && record.actor.id() == self.pane.principal().actor_id())
                         .map(|record| record.grant_id.clone())
                         .collect();
                     assert!(!ids.is_empty(), "the read was admitted by a grant");
@@ -2151,7 +2156,7 @@ mod release_tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while store
             .monitor
-            .audit_records()
+            .host_records().audit()
             .iter()
             .filter(|row| row.kind == "ask")
             .count()
@@ -2160,7 +2165,7 @@ mod release_tests {
             assert!(std::time::Instant::now() < deadline, "read did not ask");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let pending = store.monitor.list_pending();
+        let pending = store.monitor.host_records().pending();
         assert_eq!(pending.len(), 1);
         store
             .monitor
@@ -2182,7 +2187,7 @@ mod release_tests {
         let store = fixture(DuringRead::Nothing);
         let token = crate::rpc::response_file_in(store.profile.path(), "gone", "json");
         request(&store, &token).read_and_release(&store.monitor, &store);
-        assert!(store.monitor.open_needs_you().is_empty());
+        assert!(store.monitor.host_records().open().is_empty());
         assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(!Path::new(&token).exists());
     }
@@ -2228,7 +2233,7 @@ mod release_tests {
         assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(store
             .monitor
-            .audit_records()
+            .host_records().audit()
             .iter()
             .any(|row| row.kind == "outcome" && row.decision == "backend_error"));
         assert_eq!(crate::rpc::ReplyRegistry::connected(&token), None);
@@ -2237,7 +2242,7 @@ mod release_tests {
 
     #[test]
     fn the_value_is_released_only_while_pane_and_grant_still_hold() {
-        for choice in [ApprovalChoice::Once, ApprovalChoice::Always] {
+        for choice in [ApprovalChoice::Once, ApprovalChoice::Session] {
             let released = read_while(DuringRead::Nothing, choice);
             assert_eq!(released["status"], "value", "{choice:?}: {released}");
             assert_eq!(released["value"], "canary-1716");
@@ -2266,7 +2271,7 @@ mod release_tests {
             assert_eq!(next.join().unwrap()["reason"], "denied");
         });
         assert_eq!(store.gets.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(store.monitor.open_needs_you().is_empty());
+        assert!(store.monitor.host_records().open().is_empty());
     }
 }
 
@@ -2591,7 +2596,7 @@ mod cli_tests {
         command.stderr(File::create(&path).unwrap());
         let child = prompt_on_tty(command);
         let ask = f.accept(Some("tty-canary"));
-        assert_eq!(f.monitor.open_needs_you().len(), 1);
+        assert_eq!(f.monitor.host_records().open().len(), 1);
         let stderr = || fs::read_to_string(&path).unwrap();
         until(|| stderr().contains("Waiting for approval"));
         f.decide(&ask, ApprovalChoice::Deny);
@@ -2602,7 +2607,7 @@ mod cli_tests {
         assert_eq!(stderr.matches(notice).count(), 1);
         assert!(stderr.contains("Request denied") && !stderr.contains("tty-canary"));
         assert_eq!(join().0, 0);
-        assert!(f.monitor.open_needs_you().is_empty());
+        assert!(f.monitor.host_records().open().is_empty());
         assert_eq!(
             f.listener.accept().unwrap_err().kind(),
             ErrorKind::WouldBlock
@@ -2630,7 +2635,7 @@ mod cli_tests {
                 };
                 let ask = f.accept((op == "folder-set").then_some("tty-canary"));
                 assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
-                let cards = f.monitor.open_needs_you();
+                let cards = f.monitor.host_records().open();
                 assert_eq!(cards.len(), 1);
                 assert_eq!(
                     cards[0].resource,
@@ -2664,7 +2669,7 @@ mod cli_tests {
                 );
                 assert!(!stderr.contains("tty-canary"));
                 assert_eq!(join().0, usize::from(allow));
-                assert!(f.monitor.open_needs_you().is_empty());
+                assert!(f.monitor.host_records().open().is_empty());
                 assert_eq!(
                     f.listener.accept().unwrap_err().kind(),
                     ErrorKind::WouldBlock
@@ -2709,7 +2714,7 @@ mod cli_tests {
             let b = f.command(op).current_dir(&root).spawn().unwrap();
             let second = f.accept(None);
             assert_ne!(first, second);
-            let cards = f.monitor.open_needs_you();
+            let cards = f.monitor.host_records().open();
             assert_eq!(cards.len(), 2);
             for card in cards {
                 assert!(
@@ -2731,7 +2736,7 @@ mod cli_tests {
             f.decide(&first, ApprovalChoice::Once);
             finish(a, 0);
             evidence.push_str(&join().1.join("\n"));
-            assert!(f.monitor.open_needs_you().is_empty());
+            assert!(f.monitor.host_records().open().is_empty());
             let interrupted = f.command(op).current_dir(&root).spawn().unwrap();
             let ask = f.accept(None);
             assert_eq!(
@@ -2744,7 +2749,7 @@ mod cli_tests {
                 Some(libc::SIGINT)
             );
             assert_eq!(join().0, usize::from(op == "exec"));
-            assert!(f.monitor.open_needs_you().is_empty());
+            assert!(f.monitor.host_records().open().is_empty());
             assert!(f
                 .monitor
                 .approve_pending(&ask, ApprovalChoice::Once)
@@ -2813,10 +2818,10 @@ mod cli_tests {
         assert_ne!(a, b);
         f.h.app.sync_attention_queue();
         let mut evidence = format!("{:?}", f.h.app.attention_queue.items);
-        assert_eq!(f.monitor.open_needs_you().len(), 2);
+        assert_eq!(f.monitor.host_records().open().len(), 2);
         f.decide(&a, ApprovalChoice::Once);
         finish(first, 0);
-        let open = f.monitor.open_needs_you();
+        let open = f.monitor.host_records().open();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].id, b);
         f.decide(&b, ApprovalChoice::Deny);
@@ -2839,7 +2844,7 @@ mod cli_tests {
         } else {
             assert_eq!(f.stored().as_str(), "first-1280-canary");
         }
-        assert!(f.monitor.open_needs_you().is_empty());
+        assert!(f.monitor.host_records().open().is_empty());
         evidence.push_str(&logs.lines().join("\n"));
         let audit = f.h.profile_dir().join("permission-audit.jsonl");
         evidence.push_str(&fs::read_to_string(audit).unwrap());
@@ -2905,7 +2910,7 @@ mod cli_tests {
         TIMING.replace(Timing::ExpireAtClaim);
         let (b, second) = start();
         drop(a); // Process is still live. Only A's connection is gone.
-        until(|| monitor.show_pending(&first).is_none());
+        until(|| monitor.host_records().pending_id(&first).is_none());
         assert!(monitor
             .approve_pending(&first, ApprovalChoice::Once)
             .is_err());
@@ -2934,7 +2939,7 @@ mod cli_tests {
                     String::from_utf8_lossy(&out.stdout).trim(),
                     "running 1 test"
                 );
-                until(|| f.monitor.open_needs_you().is_empty());
+                until(|| f.monitor.host_records().open().is_empty());
                 assert!(f
                     .monitor
                     .approve_pending(&ask, ApprovalChoice::Once)

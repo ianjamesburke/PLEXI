@@ -275,7 +275,7 @@ mod tests {
         std::fs::write(dir.path().join("grants.toml"), "records = []\n# tampered\n").unwrap();
 
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(dir.path()).unwrap();
-        let items = monitor.list_needs_you();
+        let items = monitor.host_records().questions(true);
         let item = items
             .iter()
             .find(|row| {
@@ -296,7 +296,8 @@ mod tests {
         );
         assert!(
             monitor
-                .list_needs_you()
+                .host_records()
+                .questions(true)
                 .iter()
                 .all(|row| row.id != item_id),
             "the profile-change item stays open"

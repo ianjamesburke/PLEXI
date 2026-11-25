@@ -335,7 +335,7 @@ impl PlexiApp {
         let needs_you = snapshot
             .source
             .as_ref()
-            .map_or_else(Vec::new, |source| source.monitor.open_needs_you());
+            .map_or_else(Vec::new, |source| source.monitor.host_records().open());
         let now = crate::platform::clock::now_secs();
         let stalled_after = self
             .config

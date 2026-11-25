@@ -170,7 +170,7 @@ fn needs_you_failed_audit_error_is_visible_in_decision_overlay() {
         .file_needs_you_with_details(
             crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Question,
-                actor: "codex".into(),
+                actor: crate::broker::principal::RecordOwner::Host("codex".into()),
                 resource: format!("pane:{pane_id}"),
                 summary: "Ready to continue the attention-cue repair on Alpha".into(),
                 expires_at: None,
@@ -215,7 +215,7 @@ fn decision_overlay_refusal_names_the_arm_delay_or_synthetic_input() {
         .file_needs_you_with_details(
             crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Question,
-                actor: "codex".into(),
+                actor: crate::broker::principal::RecordOwner::Host("codex".into()),
                 resource: format!("pane:{pane_id}"),
                 summary: "Ready to continue the release check".into(),
                 expires_at: None,
@@ -323,7 +323,9 @@ fn screenshot_attention_queue_realistic_asks_and_results() {
     monitor
         .file_needs_you(crate::broker::gate::NeedsYouFile {
             kind: crate::broker::gate::NeedsYouKind::Question,
-            actor: "agent:coder".to_string(),
+            actor: crate::broker::principal::RecordOwner::requester(
+                &crate::broker::principal::Principal::agent("agent:coder").unwrap(),
+            ),
             resource: "src/app/attention_queue.rs".to_string(),
             summary: "Should we return to parent conversation on Enter?".to_string(),
             expires_at: None,

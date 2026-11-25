@@ -270,6 +270,14 @@ impl<Op: Operation> Permit<Op> {
 }
 
 impl Permit<ReadDashboard> {
+    pub(crate) fn principal(&self) -> super::principal::Principal {
+        use super::principal::Principal;
+        match &self.subject {
+            PermitSubject::Pane(scope) => Principal::Pane(scope.authority.principal()),
+            PermitSubject::Unbound { .. } => Principal::External,
+        }
+    }
+
     /// The workspace this permit was admitted for, canonical as of admission.
     /// Every read serves this path, never the one the caller named again.
     pub(crate) fn workspace(&self) -> std::path::PathBuf {
@@ -339,6 +347,13 @@ pub(crate) fn delivery_fixture(
     plugin_id: &str,
     events: &[String],
 ) -> Permit<DeliverEvents> {
+    // An outside subscriber is keyed per connection in the timeline; its stored
+    // grants are held by the one outside principal.
+    let subscriber = match subscriber_type {
+        super::ActorType::External => crate::broker::principal::Principal::External,
+        _ => crate::broker::principal::Principal::from_actor(subscriber_type, subscriber_id, None)
+            .expect("fixture subscriber is a requester"),
+    };
     let monitor = PermissionMonitor::ephemeral();
     let workspace = std::path::Path::new("/tmp/permit-fixture");
     let questions = events
@@ -348,8 +363,7 @@ pub(crate) fn delivery_fixture(
             monitor
                 .store()
                 .record(super::GrantRecord::event_stream_allow(
-                    subscriber_type,
-                    subscriber_id,
+                    &subscriber,
                     super::ActorScope::User,
                     &target,
                     workspace,
@@ -358,8 +372,7 @@ pub(crate) fn delivery_fixture(
                     None,
                 ));
             super::PermissionRequest::exact(&super::ExactBinding::event_stream(
-                subscriber_type,
-                subscriber_id,
+                &subscriber,
                 super::ActorScope::User,
                 &target,
                 workspace,
@@ -390,8 +403,9 @@ mod tests {
 
     #[test]
     fn a_permit_commits_only_its_target_members_pane_and_live_grant() {
-        let permit = delivery_fixture(ActorType::Agent, "pane:7", "probe", &["a".into()]);
-        let target = DeliverEvents::target(ActorType::Agent, "pane:7", "probe");
+        let owner = crate::broker::principal::PanePrincipal::for_test(7);
+        let permit = delivery_fixture(ActorType::Pane, owner.actor_id(), "probe", &["a".into()]);
+        let target = DeliverEvents::target(ActorType::Pane, owner.actor_id(), "probe");
         assert!(permit.commit(&target, "a").is_ok());
         assert!(permit.commit("other", "a").is_err(), "another target");
         assert!(

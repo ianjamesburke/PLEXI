@@ -735,8 +735,7 @@ pub trait ToolCallHooks: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct DispatchScope {
     pub caller_pane_id: u64,
-    pub caller_plugin_id: String,
-    pub actor_type: crate::broker::ActorType,
+    pub principal: crate::broker::principal::Principal,
     pub actor_scope: crate::broker::ActorScope,
     pub workspace_root: std::path::PathBuf,
     pub context_id: u64,
@@ -747,21 +746,13 @@ pub struct DispatchScope {
 impl DispatchScope {
     pub fn new(
         caller_pane_id: u64,
-        caller_plugin_id: impl Into<String>,
+        principal: crate::broker::principal::Principal,
         workspace_root: impl Into<std::path::PathBuf>,
         context_id: u64,
     ) -> Self {
-        let caller_plugin_id = caller_plugin_id.into();
-        let actor_type =
-            if caller_plugin_id.starts_with("agent:") || caller_plugin_id.starts_with("pane:") {
-                crate::broker::ActorType::Agent
-            } else {
-                crate::broker::ActorType::Plugin
-            };
         Self {
             caller_pane_id,
-            caller_plugin_id,
-            actor_type,
+            principal,
             actor_scope: crate::broker::ActorScope::User,
             workspace_root: workspace_root.into(),
             context_id,
@@ -818,8 +809,6 @@ pub struct ToolDispatcher {
     host_handler: Option<HostToolHandler>,
     /// Refuses an invalid `host_tools` input before admission.
     host_input_check: Option<HostInputCheck>,
-    /// Caller identity for audit logging.
-    caller_plugin_id: String,
     /// Caller pane id for audit logging.
     caller_pane_id: u64,
     scope: DispatchScope,
@@ -841,7 +830,7 @@ impl std::fmt::Debug for ToolDispatcher {
         f.debug_struct("ToolDispatcher")
             .field("tools", &self.tools.keys().collect::<Vec<_>>())
             .field("host_tools", &self.host_tools.keys().collect::<Vec<_>>())
-            .field("caller_plugin_id", &self.caller_plugin_id)
+            .field("caller", &self.scope.principal.label())
             .field("caller_pane_id", &self.caller_pane_id)
             .field("hooks", &self.hooks.is_some())
             .field("presenter", &self.presenter.is_some())
@@ -862,7 +851,7 @@ impl ToolDispatcher {
         let visible: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
         log::info!(
             "tool_dispatch: dispatcher for caller={} pane={} viewer_context={} — {} tool(s) visible: {}",
-            scope.caller_plugin_id,
+            scope.principal.label(),
             scope.caller_pane_id,
             scope.context_id,
             tools.len(),
@@ -893,7 +882,7 @@ impl ToolDispatcher {
         let tools = registry.namespaced_snapshot_for_caller(scope.context_id);
         log::info!(
             "tool_dispatch: namespaced dispatcher caller={} viewer_context={} — {} tool(s) visible",
-            scope.caller_plugin_id,
+            scope.principal.label(),
             scope.context_id,
             tools.len(),
         );
@@ -906,7 +895,6 @@ impl ToolDispatcher {
         tools: HashMap<String, (u64, String, AiTool)>,
         registry: &ToolRegistry,
     ) -> Self {
-        let caller_plugin_id = scope.caller_plugin_id.clone();
         let caller_pane_id = scope.caller_pane_id;
         let provider_apps = tools
             .values()
@@ -924,7 +912,6 @@ impl ToolDispatcher {
             host_handler: None,
             host_input_check: None,
             cancel: crate::plexi_ai::CancelToken::new(),
-            caller_plugin_id,
             caller_pane_id,
             scope,
             monitor,
@@ -940,7 +927,7 @@ impl ToolDispatcher {
         for tool in tools {
             log::info!(
                 "tool_dispatch: caller={} registered host tool '{}'",
-                self.caller_plugin_id,
+                self.scope.principal.label(),
                 tool.name
             );
             self.host_tools.insert(tool.name.clone(), tool);
@@ -997,7 +984,7 @@ impl ToolDispatcher {
             if !self.tools.contains_key(&name) {
                 log::info!(
                     "tool_dispatch: caller={} pane={} — tool '{name}' removed by broker gate",
-                    self.caller_plugin_id,
+                    self.scope.principal.label(),
                     self.caller_pane_id,
                     name = crate::host::guest_text::shown(&name)
                 );
@@ -1015,7 +1002,7 @@ impl ToolDispatcher {
         let context = Some(self.scope.context_id);
         log::info!(
             "tool_dispatch: requested call_id={call_id} caller={} tool={name}",
-            self.scope.caller_plugin_id,
+            self.scope.principal.label(),
             name = crate::host::guest_text::shown(name),
             call_id = crate::host::guest_text::shown(&call_id)
         );
@@ -1039,7 +1026,7 @@ impl ToolDispatcher {
             "tool_call_requested",
             &call_id,
             serde_json::json!({
-                "caller": self.scope.caller_plugin_id,
+                "caller": self.scope.principal.label(),
                 "plugin_id": self.provider_of(name).0,
                 "tool": name,
                 "wait_approved": self.presenter.is_some(),
@@ -1076,7 +1063,7 @@ impl ToolDispatcher {
         if !known {
             crate::broker::gate::trace_gate(format!(
                 "tool_dispatch: tool_not_found caller={} tool={name} call_id={call_id}",
-                self.caller_plugin_id,
+                self.scope.principal.label(),
                 name = crate::host::guest_text::shown(name),
                 call_id = crate::host::guest_text::shown(&call_id)
             ));
@@ -1090,24 +1077,14 @@ impl ToolDispatcher {
             {
                 log::info!(
                     "tool_dispatch: refused before admission caller={} tool={name} call_id={call_id}",
-                    self.caller_plugin_id,
+                    self.scope.principal.label(),
                     name = crate::host::guest_text::shown(name),
                     call_id = crate::host::guest_text::shown(&call_id)
                 );
                 return ToolCallResult::err(message);
             }
         }
-        let Some(principal) = crate::broker::principal::Principal::from_actor(
-            self.scope.actor_type,
-            &self.scope.caller_plugin_id,
-            Some(self.scope.caller_pane_id),
-        ) else {
-            crate::broker::gate::trace_gate(format!(
-                "tool_dispatch: deny caller={} tool={name} call_id={call_id}: not a requesting principal",
-                self.caller_plugin_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
-            ));
-            return ToolCallResult::coded("permission_denied", &call_id, None);
-        };
+        let principal = &self.scope.principal;
         let (package, instance) = self.provider_of(name);
         let target_type = if self.host_tools.contains_key(name) {
             crate::broker::TargetType::HostTool
@@ -1119,7 +1096,7 @@ impl ToolDispatcher {
                 call_id: &call_id,
                 tool: name,
                 input_json: &input_json,
-                principal: &principal,
+                principal,
                 actor_scope: self.scope.actor_scope,
                 trust_origin: &self.scope.trust_origin,
                 workspace_root: &self.scope.workspace_root,
@@ -1137,18 +1114,19 @@ impl ToolDispatcher {
                     pending_request_id,
                     name,
                     &input_json,
-                    &self.scope.caller_plugin_id,
+                    self.scope.principal.label(),
                     resource_id.as_deref().unwrap_or(""),
                 ) {
                     Ok(presented) => presented,
                     Err(message) => {
                         log::error!(
                             "tool_dispatch: permission was not saved caller={} tool={name} call_id={call_id}: {message}",
-                            self.caller_plugin_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
+                            self.scope.principal.label(), name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
                         );
                         return ToolCallResult::err(message);
                     }
                 };
+                let records = self.monitor.records_for(&self.scope.principal);
                 let crate::plexi_ai::tool_dispatch::PresentedChoice { choice, evidence } = presented;
                 // Waiting desktop presenters observe a decision already committed by
                 // the banner. Do not submit it a second time: the monitor rejects
@@ -1156,35 +1134,26 @@ impl ToolDispatcher {
                 if self.cancel.is_cancelled() {
                     // A desktop Allow may already be committed. Cancellation
                     // must not overwrite that decision or attempt a second one.
-                    if self
-                        .monitor
-                        .approval_resolution(pending_request_id)
-                        .is_none()
-                    {
-                        if let Err(error) = self.monitor.cancel_pending(pending_request_id) {
+                    if records.decision(pending_request_id).is_none() {
+                        if let Err(error) = records.cancel(pending_request_id) {
                             // A concurrent decision can win between observation
                             // and cleanup. Only an unresolved cleanup is a fault.
-                            if self
-                                .monitor
-                                .approval_resolution(pending_request_id)
-                                .is_none()
-                            {
+                            if records.decision(pending_request_id).is_none() {
                                 log::warn!("tool_dispatch: cancelled approval cleanup: {error}");
                             }
                         }
                     }
                     return ToolCallResult::coded("cancelled", &call_id, Some(pending_request_id));
                 }
-                let decided =
-                    if self.monitor.approval_resolution(pending_request_id) == Some(choice) {
-                        Ok(())
-                    } else {
-                        match evidence {
+                let decided = if records.decision(pending_request_id) == Some(choice) {
+                    Ok(())
+                } else {
+                    match evidence {
                             Some(evidence) => {
                                 self.monitor.decide_pending(&evidence, pending_request_id, choice)
                             }
                             None if choice == crate::broker::gate::ApprovalChoice::Deny => {
-                                self.monitor.cancel_pending(pending_request_id)
+                                records.cancel(pending_request_id)
                             }
                             None => Err(format!(
                                 "permission_denied: {choice:?} on {pending_request_id} carries no desktop decision"
@@ -1217,7 +1186,7 @@ impl ToolDispatcher {
                         call_id: &call_id,
                         tool: name,
                         input_json: &input_json,
-                        principal: &principal,
+                        principal,
                         actor_scope: self.scope.actor_scope,
                         trust_origin: &self.scope.trust_origin,
                         workspace_root: &self.scope.workspace_root,
@@ -1231,7 +1200,7 @@ impl ToolDispatcher {
             } else {
                 log::info!(
                     "tool_dispatch: permission_required caller={} tool={name} pending={pending_request_id}",
-                    self.caller_plugin_id, name = crate::host::guest_text::shown(name)
+                    self.scope.principal.label(), name = crate::host::guest_text::shown(name)
                 );
                 return ToolCallResult::coded(
                     "permission_required",
@@ -1245,6 +1214,7 @@ impl ToolDispatcher {
             fingerprint,
             resource_id,
             resource_scope,
+            run,
         } = admission
         else {
             let code = match admission {
@@ -1262,7 +1232,7 @@ impl ToolDispatcher {
         if self
             .monitor
             .note_use(
-                &self.scope.caller_plugin_id,
+                &crate::broker::principal::RecordOwner::requester(&self.scope.principal),
                 &call_id,
                 &grant_id,
                 &fingerprint,
@@ -1273,7 +1243,7 @@ impl ToolDispatcher {
         {
             log::info!(
                 "tool_dispatch: blocked before execution caller={} tool={name} call_id={call_id}",
-                self.caller_plugin_id,
+                self.scope.principal.label(),
                 name = crate::host::guest_text::shown(name),
                 call_id = crate::host::guest_text::shown(&call_id)
             );
@@ -1294,7 +1264,7 @@ impl ToolDispatcher {
             }
             let envelope = authorization_envelope(
                 &grant_id,
-                &self.scope.caller_plugin_id,
+                self.scope.principal.actor_id(),
                 &package,
                 resource_id.as_deref(),
                 &call_id,
@@ -1308,7 +1278,7 @@ impl ToolDispatcher {
                 };
                 log::info!(
                     "tool_dispatch: caller={} → host tool {name} call_id={call_id} grant={grant_id}",
-                    self.caller_plugin_id,
+                    self.scope.principal.label(),
                     name = crate::host::guest_text::shown(name),
                     call_id = crate::host::guest_text::shown(&call_id)
                 );
@@ -1322,7 +1292,7 @@ impl ToolDispatcher {
             let detail: String = error.chars().take(180).collect();
             crate::broker::gate::trace_gate(format!(
                 "tool_dispatch: result code={code} caller={} tool={name} call_id={call_id} detail={detail}",
-                self.scope.caller_plugin_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id), detail = crate::host::guest_text::shown(&detail)
+                self.scope.principal.label(), name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id), detail = crate::host::guest_text::shown(&detail)
             ));
         }
         let outcome = if result.error.is_none() {
@@ -1335,7 +1305,8 @@ impl ToolDispatcher {
         if self
             .monitor
             .note_outcome(
-                &self.scope.caller_plugin_id,
+                run.as_ref(),
+                &crate::broker::principal::RecordOwner::requester(&self.scope.principal),
                 &call_id,
                 &grant_id,
                 &fingerprint,
@@ -1465,7 +1436,7 @@ impl ToolDispatcher {
             None => {
                 log::warn!(
                     "tool_dispatch: caller={} pane={} requested unknown tool {name} call_id={call_id}",
-                    self.caller_plugin_id, self.caller_pane_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
+                    self.scope.principal.label(), self.caller_pane_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
                 );
                 return ToolCallResult::err(format!(
                     "tool_not_found: no tool named {name:?} in registry"
@@ -1477,7 +1448,7 @@ impl ToolDispatcher {
 
         log::info!(
             "tool_dispatch: caller={} caller_pane={} → tool={name} provider_pane={pane_id} call_id={call_id}",
-            self.caller_plugin_id, self.caller_pane_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
+            self.scope.principal.label(), self.caller_pane_id, name = crate::host::guest_text::shown(name), call_id = crate::host::guest_text::shown(&call_id)
         );
 
         // Register the pending call before sending the event to avoid a race.
@@ -1514,7 +1485,7 @@ impl ToolDispatcher {
                         call_id: call_id.clone(),
                         name: provider_tool_name.clone(),
                         input_json,
-                        caller_id: self.caller_plugin_id.clone(),
+                        caller_id: self.scope.principal.actor_id().to_owned(),
                         authorization,
                     })
                     .is_ok()
@@ -1875,7 +1846,12 @@ mod tests {
 
         // Build a dispatcher for a caller in context A.
         let dispatcher = ToolDispatcher::from_registry(
-            DispatchScope::new(1, "app_a", "/ws-a", 100),
+            DispatchScope::new(
+                1,
+                crate::broker::principal::Principal::plugin_in_pane("app_a", 1),
+                "/ws-a",
+                100,
+            ),
             crate::broker::gate::PermissionMonitor::ephemeral(),
         );
 
@@ -1922,7 +1898,14 @@ mod tests {
                 origin(9792, pane),
             );
             let dispatcher = ToolDispatcher::namespaced_for(
-                DispatchScope::new(9791, "pane:9791", "/ws", 9792),
+                DispatchScope::new(
+                    9791,
+                    crate::broker::principal::Principal::Pane(
+                        crate::broker::principal::PanePrincipal::for_test(9791),
+                    ),
+                    "/ws",
+                    9792,
+                ),
                 crate::broker::gate::PermissionMonitor::ephemeral(),
             );
             let (replacement, replacement_rx) = std::sync::mpsc::channel();
@@ -2034,7 +2017,12 @@ mod tests {
         assert_eq!(bare["chess.play@7"].0, 7);
 
         let dispatcher = ToolDispatcher::from_parts(
-            DispatchScope::new(0, "agent:t1733", PathBuf::from("/tmp"), 70),
+            DispatchScope::new(
+                0,
+                crate::broker::principal::Principal::agent("agent:t1733").unwrap(),
+                PathBuf::from("/tmp"),
+                70,
+            ),
             crate::broker::gate::PermissionMonitor::ephemeral(),
             namespaced,
             &reg,
@@ -2111,7 +2099,12 @@ mod tests {
             seen: std::sync::Mutex::new(0),
         });
         let mut dispatcher = ToolDispatcher::from_registry(
-            DispatchScope::new(2, "agent:assistant", "/ws-hooks", 70),
+            DispatchScope::new(
+                2,
+                crate::broker::principal::Principal::agent("agent:assistant").unwrap(),
+                "/ws-hooks",
+                70,
+            ),
             crate::broker::gate::PermissionMonitor::ephemeral(),
         );
         dispatcher.set_hooks(hook.clone());
@@ -2156,8 +2149,10 @@ mod tests {
             .store()
             .record(crate::broker::GrantRecord::from_binding(
                 &crate::broker::ExactBinding {
-                    actor_type: crate::broker::ActorType::Agent,
-                    actor_id: "agent:assistant".to_string(),
+                    agent_run: None,
+                    actor: crate::broker::principal::Principal::agent("agent:assistant")
+                        .unwrap()
+                        .into(),
                     actor_scope: crate::broker::ActorScope::User,
                     trust_origin: "host".to_string(),
                     workspace_root: PathBuf::from("/ws-wasm"),
@@ -2179,7 +2174,12 @@ mod tests {
                 "g-wasm",
             ));
         let dispatcher = ToolDispatcher::from_registry(
-            DispatchScope::new(2, "agent:assistant", "/ws-wasm", 80),
+            DispatchScope::new(
+                2,
+                crate::broker::principal::Principal::agent("agent:assistant").unwrap(),
+                "/ws-wasm",
+                80,
+            ),
             monitor,
         );
         let worker = std::thread::spawn(move || {
@@ -2226,7 +2226,12 @@ mod tests {
             origin(90, 996),
         );
         let dispatcher = ToolDispatcher::from_registry(
-            DispatchScope::new(2, "agent:assistant", "/ws-denied", 90),
+            DispatchScope::new(
+                2,
+                crate::broker::principal::Principal::agent("agent:assistant").unwrap(),
+                "/ws-denied",
+                90,
+            ),
             crate::broker::gate::PermissionMonitor::ephemeral(),
         );
 

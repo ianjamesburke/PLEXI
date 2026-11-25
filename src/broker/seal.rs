@@ -382,6 +382,11 @@ pub fn append_audit(
 
 /// Walk the chain and compare the authenticated tip. Does not move the file.
 pub fn verify_audit(host: &HostProcess, path: &Path) -> Result<(), String> {
+    verified_audit(host, path).map(drop)
+}
+
+/// Return exactly the bytes whose chain and tip were authenticated.
+pub(super) fn verified_audit(host: &HostProcess, path: &Path) -> Result<String, String> {
     let audit_lock = audit_lock_for(path);
     let _audit_guard = audit_lock
         .lock()
@@ -403,7 +408,7 @@ fn audit_lock_for(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     locks.entry(path.to_path_buf()).or_default().clone()
 }
 
-fn verify_audit_unlocked(host: &HostProcess, path: &Path) -> Result<(), String> {
+fn verify_audit_unlocked(host: &HostProcess, path: &Path) -> Result<String, String> {
     let dir = profile_dir_for_path(path);
     let tip = match tip_lookup(host, path) {
         Ok(value) => value,
@@ -418,7 +423,7 @@ fn verify_audit_unlocked(host: &HostProcess, path: &Path) -> Result<(), String> 
             existing_mac_key(host, &dir)?;
             Err("audit log deleted".to_string())
         } else {
-            Ok(())
+            Ok(String::new())
         };
     }
     existing_mac_key(host, &dir)?;
@@ -428,7 +433,7 @@ fn verify_audit_unlocked(host: &HostProcess, path: &Path) -> Result<(), String> 
         return if tip.is_some() {
             Err("audit log emptied".to_string())
         } else {
-            Ok(())
+            Ok(String::new())
         };
     }
     let Some(tip) = tip else {
@@ -471,7 +476,7 @@ fn verify_audit_unlocked(host: &HostProcess, path: &Path) -> Result<(), String> 
     if tip != expected_tip {
         return Err("audit tip mismatch".to_string());
     }
-    Ok(())
+    Ok(raw)
 }
 
 pub fn reject_untrusted_audit(host: &HostProcess, path: &Path, reason: &str) {

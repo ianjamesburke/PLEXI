@@ -1247,7 +1247,7 @@ fn palette_enter_after_focus_approval_runs_no_row() {
     let id = monitor
         .file_needs_you(crate::broker::gate::NeedsYouFile {
             kind: crate::broker::gate::NeedsYouKind::Question,
-            actor: "codex".into(),
+            actor: crate::broker::principal::RecordOwner::Host("codex".into()),
             resource: "pane:1".into(),
             summary: "Continue?".into(),
             expires_at: None,
@@ -1267,7 +1267,8 @@ fn palette_enter_after_focus_approval_runs_no_row() {
     assert!(palette_activations().is_empty(), "no palette row ran");
     assert!(
         monitor
-            .get_needs_you(&id)
+            .host_records()
+            .question(&id)
             .is_some_and(|record| record.resolution.is_none()),
         "the request is still pending"
     );
@@ -1508,7 +1509,7 @@ fn palette_agents_stop_with_preview() {
         monitor
             .file_needs_you(crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Question,
-                actor: format!("pane:{id}"),
+                actor: crate::broker::principal::RecordOwner::Host("palette-fixture".into()),
                 resource: format!("pane:{id}"),
                 summary: "Ship the release today?".into(),
                 expires_at: None,

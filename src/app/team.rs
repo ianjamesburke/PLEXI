@@ -21,8 +21,10 @@ mod tests {
     /// A pane holding nothing in the grant store.
     fn bare_pane_caller(pane: u64) -> crate::agent::runs::AgentsCaller {
         crate::agent::runs::AgentsCaller::Principal {
-            principal: crate::broker::principal::Principal::agent(format!("pane:{pane}")),
-            pane: Some(pane),
+            principal: crate::broker::principal::Principal::Pane(
+                crate::broker::principal::PanePrincipal::for_test(pane),
+            ),
+            acting_for: None,
             agent: None,
             context_root: None,
             context_denied: false,

@@ -9,6 +9,7 @@
 //! child. A child that asks for a tool the parent does not hold is refused
 //! and audited. Reporting metadata (`reports_to`) grants no rights.
 
+use crate::broker::principal::RecordOwner;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, Write};
@@ -114,53 +115,41 @@ pub fn authenticate_run_token(token: &str) -> Option<RunAuth> {
 /// predates this build) follows alpha's rules, which had no owner.
 /// The owner recorded for a run host code started. No principal's actor id
 /// takes this form.
-const HOST_RUN_OWNER: &str = "host";
-
-fn run_owners() -> &'static Mutex<HashMap<String, String>> {
-    static OWNERS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+fn run_owners() -> &'static Mutex<HashMap<String, RecordOwner>> {
+    static OWNERS: OnceLock<Mutex<HashMap<String, RecordOwner>>> = OnceLock::new();
     OWNERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Whether `caller` may act on `run_id` by ownership: host code always; a
-/// socket principal when it is the live owner, or when the run has no live
-/// owner record (alpha's rule, logged; stint 1716 replaces it).
-fn owner_admits(run_id: &str, caller: Option<&str>) -> bool {
+fn owner_admits(run_id: &str, caller: Option<&RecordOwner>) -> bool {
     let Some(caller) = caller else {
         return true;
     };
-    match run_owners()
+    run_owners()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(run_id)
-    {
-        Some(owner) => owner == caller,
-        None => {
-            log::info!(
-                "agents_api: run={run_id} has no live owner record; caller={caller} admitted by alpha's rule (stint 1716)"
-            );
-            true
-        }
-    }
+        == Some(caller)
 }
 
 /// The run's token for `owner` (`None` is host code). A fresh run records
-/// its owner in memory; a retry is answered for that owner, or under
-/// alpha's rule when the run has no live owner record.
+/// its owner in memory. A requester retry needs that same owner.
 fn remember_token(
     workspace: &Path,
     run_id: &str,
     actor_id: &str,
-    owner: Option<&str>,
+    owner: Option<&RecordOwner>,
     fresh: bool,
 ) -> Result<String, Value> {
     if fresh {
         // Host code owns the runs it starts (teams, the dashboard): no
         // socket principal acts on them while this host lives.
-        let recorded = owner.unwrap_or(HOST_RUN_OWNER);
+        let recorded = owner
+            .cloned()
+            .unwrap_or_else(|| RecordOwner::Host("host".into()));
         run_owners()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(run_id.to_string(), recorded.to_string());
+            .insert(run_id.to_string(), recorded.clone());
         log::info!("agents_api: run={run_id} owner={recorded}");
     } else if !owner_admits(run_id, owner) {
         return Err(not_run_owner(run_id, owner));
@@ -183,10 +172,10 @@ fn remember_token(
     Ok(token)
 }
 
-fn not_run_owner(run_id: &str, caller: Option<&str>) -> Value {
+fn not_run_owner(run_id: &str, caller: Option<&RecordOwner>) -> Value {
     log::info!(
         "agents_api: refused run={run_id} caller={} outcome=not_run_owner",
-        caller.unwrap_or("host")
+        caller.map_or("host", RecordOwner::label)
     );
     json!({
         "ok": false,
@@ -195,13 +184,10 @@ fn not_run_owner(run_id: &str, caller: Option<&str>) -> Value {
     })
 }
 
-/// Only the run's live owner, host code, or (with no live owner record)
-/// anyone alpha admitted acts on `run_id`.
+/// A requester acting on a run must match the owner held by this host.
 fn require_run_owner(run_id: &str, caller: &AgentsCaller) -> Result<(), Value> {
-    let caller = match caller {
-        AgentsCaller::Principal { principal, .. } => Some(principal.actor_id()),
-        AgentsCaller::Host { .. } => None,
-    };
+    let caller = caller.owner();
+    let caller = caller.as_ref();
     if owner_admits(run_id, caller) {
         Ok(())
     } else {
@@ -357,6 +343,7 @@ macro_rules! host_gate {
 
 /// Record a delegated allow. The row's source is `Delegated`, never the
 /// person's, and its duration is the delegator's (stint 1285).
+#[allow(clippy::too_many_arguments)]
 fn record_scope_allow(
     workspace: &Path,
     actor_id: &str,
@@ -365,10 +352,15 @@ fn record_scope_allow(
     expires_at: Option<i64>,
     duration: GrantDuration,
     bound_run: Option<&str>,
+    requester: Option<&crate::broker::principal::PanePrincipal>,
 ) {
+    let Some(principal) = crate::broker::principal::Principal::agent(actor_id) else {
+        log::error!("agents: refused delegated grant for reserved identity {actor_id}");
+        return;
+    };
     let binding = crate::broker::ExactBinding {
-        actor_type: ActorType::Agent,
-        actor_id: actor_id.to_string(),
+        agent_run: None,
+        actor: principal.into(),
         actor_scope: ActorScope::Workspace,
         trust_origin: "host".to_string(),
         workspace_root: workspace.to_path_buf(),
@@ -403,15 +395,20 @@ fn record_scope_allow(
     }
     record.kind = kind;
     record.expires_at = expires_at;
-    record.bound_operation_id = bound_run.map(str::to_string);
+    record.agent_run_id = bound_run.map(str::to_string);
+    record.run_requester_pane = bound_run
+        .and(requester)
+        .cloned()
+        .map(crate::broker::RunRequester::Pane);
     {
         let mut store = gate.store();
         store.records_mut().retain(|existing| {
-            !(existing.actor_type == ActorType::Agent
-                && existing.actor_id == actor_id
+            !(existing.actor.kind() == ActorType::Agent
+                && existing.actor.id() == actor_id
                 && existing.workspace_root.as_deref() == Some(workspace)
                 && existing.target_id == tool
-                && existing.bound_operation_id.is_none())
+                && existing.bound_run().is_none()
+                && bound_run.is_none())
         });
         store.record(record);
         store.save();
@@ -536,6 +533,7 @@ fn read_agent(dir: &Path) -> Result<AgentAuthorityRecord, String> {
         .map_err(|error| format!("read {}: {error}", path.display()))?;
     let record: AgentAuthorityRecord = serde_json::from_str(&raw)
         .map_err(|error| format!("agent.json in {}: {error}", dir.display()))?;
+    super::check_named_agent_id(&record.id, &path)?;
     if let Some(grant) = record.grants.iter().find(|grant| parse_grant_tool(&grant.tool).is_err()) {
         return Err(format!(
             "agent.json in {}: grant tool '{}' is not a tool name",
@@ -629,27 +627,51 @@ struct RefusalContext<'a> {
     reason: &'a str,
     parent_run: Option<&'a str>,
     run_id: Option<&'a str>,
-    caller_pane: Option<u64>,
+    caller_pane: Option<&'a crate::broker::principal::PanePrincipal>,
+}
+
+fn request_owner(
+    pane: Option<&crate::broker::principal::PanePrincipal>,
+    actor: &str,
+) -> crate::broker::principal::RecordOwner {
+    use crate::broker::principal::RecordOwner;
+    if let Some(owner) = pane {
+        return RecordOwner::Pane(owner.clone());
+    }
+    if actor == crate::broker::principal::EXTERNAL_ID {
+        return RecordOwner::requester(&Principal::External);
+    }
+    Principal::agent(actor)
+        .as_ref()
+        .map(RecordOwner::requester)
+        .unwrap_or_else(|| RecordOwner::Host(actor.into()))
 }
 
 fn deny_with_request(ctx: RefusalContext<'_>) -> Value {
     let call_id = format!("call_{}", uuid::Uuid::new_v4());
     let gate = host_gate!();
-    gate.note_denial(ctx.actor, &call_id, ctx.tool, "agents-api", "deny");
+    gate.note_denial(
+        &request_owner(ctx.caller_pane, ctx.actor),
+        &call_id,
+        ctx.tool,
+        "agents-api",
+        "deny",
+    );
     let effective_parent_run = ctx.parent_run.or(ctx.run_id).map(str::to_string);
     let effective_run_id = ctx.run_id.or(ctx.parent_run).map(str::to_string);
     let needs_you_id = gate
         .file_needs_you_with_details(
             NeedsYouFile {
                 kind: NeedsYouKind::PermissionRequest,
-                actor: ctx.actor.to_string(),
+                actor: request_owner(ctx.caller_pane, ctx.actor),
                 resource: ctx.tool.to_string(),
                 summary: ctx.reason.to_string(),
                 expires_at: None,
                 run_tag: effective_parent_run.clone(),
             },
             Some(NeedsYouDetails {
-                pane_id: ctx.caller_pane,
+                pane_id: ctx.caller_pane.map(|p| p.number()),
+                grant_actor: Some(ctx.actor.to_owned()),
                 tool: Some(ctx.tool.to_string()),
                 parent_run: effective_parent_run.clone(),
                 run_id: effective_run_id,
@@ -682,7 +704,7 @@ fn subset_denied(
     parent: &[CeilingRow],
     requested: &[ToolGrant],
     parent_run: Option<&str>,
-    caller_pane: Option<u64>,
+    caller_pane: Option<&crate::broker::principal::PanePrincipal>,
 ) -> Option<Value> {
     for grant in requested {
         // Only an allow carries authority: `ask` still reaches the person on
@@ -718,7 +740,7 @@ struct CreateAgent<'a> {
     parent_grants: &'a [CeilingRow],
     denial_actor: &'a str,
     parent_run: Option<&'a str>,
-    caller_pane: Option<u64>,
+    caller_pane: Option<&'a crate::broker::principal::PanePrincipal>,
 }
 
 fn create_agent(req: CreateAgent<'_>) -> Value {
@@ -808,6 +830,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
             earlier(grant.expires_at, parent.and_then(|row| row.expires_at)),
             duration,
             parent.and_then(|row| row.bound_run.as_deref()),
+            req.caller_pane,
         );
     }
     log::info!(
@@ -823,7 +846,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
 struct IssueRun<'a> {
     workspace: &'a Path,
     /// The socket principal starting the run; `None` for host code.
-    owner: Option<&'a str>,
+    owner: Option<&'a RecordOwner>,
     agent: &'a AgentAuthorityRecord,
     parent_run: Option<&'a str>,
     admission_id: &'a str,
@@ -864,6 +887,9 @@ fn issue_run(req: IssueRun<'_>) -> Value {
         .iter()
         .find(|run| run.agent_id == agent.id && run.admission_id == admission_id)
     {
+        if !owner_admits(&existing.id, owner) {
+            return not_run_owner(&existing.id, owner);
+        }
         // A retry is only the same success if the first attempt was charged
         // (stint 1441): a run with no ledger row never returns ok.
         match ledger::has_agent_run_row(&existing.id) {
@@ -1073,6 +1099,7 @@ fn grants_from_value(value: &Value) -> Result<Vec<ToolGrant>, String> {
 fn sealed_ceiling(
     workspace: &Path,
     principal: &Principal,
+    requester: Option<&crate::broker::principal::PanePrincipal>,
     run: Option<&str>,
 ) -> Vec<CeilingRow> {
     let gate = host_gate!(Vec::new());
@@ -1080,16 +1107,18 @@ fn sealed_ceiling(
     let now = gate.now_secs();
     let actor_type = principal.actor_type();
     let actor_id = principal.actor_id();
-    let pane_instance = actor_id
-        .strip_prefix("pane:")
-        .and_then(|pane| pane.parse::<u64>().ok())
-        .filter(|pane| *pane != 0);
+
     let store = gate.store();
     store
         .records()
         .iter()
         .filter(|rec| {
-            if rec.consumed
+            if rec.actor.principal().is_none()
+                || matches!(
+                    rec.run_requester_pane,
+                    Some(crate::broker::RunRequester::LegacyNumber(_))
+                )
+                || rec.consumed
                 || rec.duration == GrantDuration::Once
                 || rec.target_id.is_empty()
                 || !rec.duration_admissible()
@@ -1110,18 +1139,16 @@ fn sealed_ceiling(
                 if Some(bound) != run {
                     return false;
                 }
-                if pane_instance.is_some() {
-                    return rec.run_requester_pane == pane_instance;
+                if let Some(crate::broker::RunRequester::Pane(owner)) = &rec.run_requester_pane {
+                    if requester != Some(owner) {
+                        return false;
+                    }
+                    if matches!(principal, Principal::Pane(_)) {
+                        return true;
+                    }
                 }
             }
-            let own = rec.actor_type == actor_type && rec.actor_id == actor_id;
-            let pane_bound = pane_instance.is_some_and(|pane| {
-                rec.bound_operation_id.as_deref() == Some(actor_id)
-                    || (rec.resource_scope == crate::broker::ResourceScope::Pane
-                        && rec.resource_id.as_deref() == Some(actor_id))
-                    || (rec.instance_id == Some(pane) && rec.actor_type != ActorType::Agent)
-            });
-            own || pane_bound
+            rec.actor.kind() == actor_type && rec.actor.id() == actor_id
         })
         .map(|rec| CeilingRow {
             tool: rec.target_id.clone(),
@@ -1167,7 +1194,7 @@ pub(crate) enum AgentsCaller {
     /// A socket caller with a principal: a pane, or an outside process.
     Principal {
         principal: Principal,
-        pane: Option<u64>,
+        acting_for: Option<crate::broker::principal::PanePrincipal>,
         /// The team member the caller's pane is bound to.
         agent: Option<String>,
         /// The live context root the caller is scoped to; `None` for an
@@ -1187,6 +1214,18 @@ impl AgentsCaller {
         matches!(self, Self::Principal { context_denied: true, .. })
     }
 
+    fn owner(&self) -> Option<RecordOwner> {
+        match self {
+            Self::Principal { principal, .. } => Some(
+                self.pane_owner()
+                    .cloned()
+                    .map(RecordOwner::Pane)
+                    .unwrap_or_else(|| RecordOwner::requester(principal)),
+            ),
+            Self::Host { .. } => None,
+        }
+    }
+
     fn actor(&self) -> String {
         match self {
             Self::Principal { principal, .. } => principal.actor_id().to_string(),
@@ -1194,11 +1233,19 @@ impl AgentsCaller {
         }
     }
 
-    pub(crate) fn pane(&self) -> Option<u64> {
+    fn pane_owner(&self) -> Option<&crate::broker::principal::PanePrincipal> {
         match self {
-            Self::Principal { pane, .. } => *pane,
+            Self::Principal {
+                principal: Principal::Pane(p),
+                ..
+            } => Some(p),
+            Self::Principal { acting_for, .. } => acting_for.as_ref(),
             Self::Host { .. } => None,
         }
+    }
+
+    pub(crate) fn pane(&self) -> Option<u64> {
+        self.pane_owner().map(|pane| pane.number())
     }
 
     /// What this caller can delegate in `workspace`: its own sealed rows,
@@ -1208,8 +1255,15 @@ impl AgentsCaller {
         match self {
             Self::Principal {
                 agent: Some(agent), ..
-            } => sealed_ceiling(workspace, &Principal::agent(actor_of(agent)), run),
-            Self::Principal { principal, .. } => sealed_ceiling(workspace, principal, run),
+            } => sealed_ceiling(
+                workspace,
+                &Principal::agent(actor_of(agent)).expect("namespaced agent id"),
+                self.pane_owner(),
+                run,
+            ),
+            Self::Principal { principal, .. } => {
+                sealed_ceiling(workspace, principal, self.pane_owner(), run)
+            }
             Self::Host { ceiling } => ceiling.clone(),
         }
     }
@@ -1224,7 +1278,7 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
         Err(error) => return json!({"ok": false, "error_code": "invalid_argument", "error": error}),
     };
     host_gate!().expire_soft_grants();
-    let caller_pane = caller.pane();
+    let caller_pane = caller.pane_owner();
     // Every pane is scoped to its context root, a pane the person opened
     // included; an outside process to no context (stint 1285).
     let (context_root, context_denied) = match caller {
@@ -1242,7 +1296,15 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
         let actor = caller.actor();
         let call_id = format!("agents-api-{op}-{}", uuid::Uuid::new_v4());
         let resource = workspace.display().to_string();
-        host_gate!().note_denial(&actor, &call_id, &resource, op, "context_scope_violation");
+        host_gate!().note_denial(
+            &caller
+                .owner()
+                .unwrap_or_else(|| crate::broker::principal::RecordOwner::Host("host".into())),
+            &call_id,
+            &resource,
+            op,
+            "context_scope_violation",
+        );
         log::info!(
             "agents_api: op={op} denied caller={actor} workspace={} outside caller context root {context_root:?}",
             workspace.display()
@@ -1316,7 +1378,7 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
                 Err(error) => json!({"ok": false, "error_code": "io_error", "error": error}),
             }
         }
-        "list_grants" => list_grants(&workspace),
+        "list_grants" => list_grants(&workspace, caller),
         "spawn_run" => {
             let agent_id = payload
                 .get("agent")
@@ -1346,7 +1408,8 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
             if !retry && matches!(caller, AgentsCaller::Principal { .. }) {
                 let agent_rows: Vec<ToolGrant> = sealed_ceiling(
                     &workspace,
-                    &Principal::agent(actor_of(&agent.id)),
+                    &Principal::agent(actor_of(&agent.id)).expect("namespaced agent id"),
+                    None,
                     None,
                 )
                 .into_iter()
@@ -1369,13 +1432,10 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
                     return refused;
                 }
             }
-            let owner = match caller {
-                AgentsCaller::Principal { principal, .. } => Some(principal.actor_id().to_string()),
-                AgentsCaller::Host { .. } => None,
-            };
+            let owner = caller.owner();
             issue_run(IssueRun {
                 workspace: &workspace,
-                owner: owner.as_deref(),
+                owner: owner.as_ref(),
                 agent: &agent,
                 parent_run: None,
                 admission_id: &admission,
@@ -1398,7 +1458,9 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
             })
         }
         "list_runs" => match load_runs(&workspace) {
-            Ok(runs) => {
+            Ok(mut runs) => {
+                let owner = caller.owner();
+                runs.retain(|run| owner_admits(&run.id, owner.as_ref()));
                 log::info!("agents_api: listed {} run(s)", runs.len());
                 json!({"ok": true, "runs": runs})
             }
@@ -1406,6 +1468,9 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
         },
         "show_run" => {
             let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Err(error) = require_run_owner(id, caller) {
+                return error;
+            }
             match find_run(&workspace, id) {
                 Ok(run) => json!({"ok": true, "run": run}),
                 Err(error) => error,
@@ -1413,42 +1478,71 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
         }
         "finish_run" => {
             let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if let Err(refused) = require_run_owner(id, caller) {
+            // Finishing only removes authority. A run whose owner left with an
+            // earlier host can be stopped by any admitted caller, as on alpha,
+            // so a restart never strands its agent (stint 1743). Reissuing its
+            // token still needs the host.
+            let ownerless = !run_owners()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(id);
+            if ownerless {
+                log::info!("agents_api: finish of ownerless run={id} admitted: its owner left with an earlier host");
+            } else if let Err(refused) = require_run_owner(id, caller) {
                 return refused;
             }
             finish_run(&workspace, id)
         }
-        "delegate" => delegate(
-            &workspace,
-            payload
+        "delegate" => {
+            let parent_run = payload
                 .get("parent_run")
-                .and_then(|v| v.as_str())
-                .unwrap_or(""),
-            payload.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-            match payload.get("grants").map(grants_from_value).transpose() {
-                Ok(Some(grants)) => grants,
-                Ok(None) => Vec::new(),
-                Err(error) => {
-                    return json!({"ok": false, "error_code": "invalid_argument", "error": error})
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            // A host-created team run may be delegated from under the existing ceiling checks.
+            // A socket-created run also requires its original owner.
+            let host_run = matches!(
+                run_owners()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(parent_run),
+                Some(RecordOwner::Host(_))
+            );
+            if !host_run {
+                if let Err(error) = require_run_owner(parent_run, caller) {
+                    return error;
                 }
-            },
-            caller,
-        ),
+            }
+            delegate(
+                &workspace,
+                parent_run,
+                payload.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                match payload.get("grants").map(grants_from_value).transpose() {
+                    Ok(Some(grants)) => grants,
+                    Ok(None) => Vec::new(),
+                    Err(error) => {
+                        return json!({"ok": false, "error_code": "invalid_argument", "error": error})
+                    }
+                },
+                caller,
+            )
+        }
         "call" => {
             let run_id = payload.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
             if let Err(refused) = require_run_owner(run_id, caller) {
                 return refused;
             }
             invoke(
-            &workspace,
-            run_id,
-            payload.get("tool").and_then(|v| v.as_str()).unwrap_or(""),
-            payload
-                .get("input_json")
-                .and_then(|v| v.as_str())
-                .unwrap_or("{}"),
-            caller_pane,
-        )
+                &workspace,
+                run_id,
+                payload.get("tool").and_then(|v| v.as_str()).unwrap_or(""),
+                payload
+                    .get("input_json")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}"),
+                caller
+                    .owner()
+                    .unwrap_or_else(|| RecordOwner::Host("host".into())),
+            )
         }
         other => {
             json!({"ok": false, "error_code": "invalid_argument", "error": format!("unknown agents op {other}")})
@@ -1456,7 +1550,7 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
     }
 }
 
-fn list_grants(workspace: &Path) -> Value {
+fn list_grants(workspace: &Path, caller: &AgentsCaller) -> Value {
     let gate = host_gate!();
     gate.expire_soft_grants();
     let store = gate.store();
@@ -1464,7 +1558,16 @@ fn list_grants(workspace: &Path) -> Value {
         .records()
         .iter()
         .filter(|rec| {
-            rec.actor_type == ActorType::Agent
+            rec.actor.kind() == ActorType::Agent
+                && (matches!(caller, AgentsCaller::Host { .. })
+                    || (!crate::broker::principal::is_legacy_pane_label(rec.actor.id())
+                        && match &rec.run_requester_pane {
+                            Some(crate::broker::RunRequester::Pane(pane)) => {
+                                caller.pane_owner() == Some(pane)
+                            }
+                            Some(_) => false,
+                            None => true,
+                        }))
                 && !rec.consumed
                 && (rec.duration != GrantDuration::Session
                     || rec.session_id.as_deref() == Some(gate.session_id()))
@@ -1472,17 +1575,21 @@ fn list_grants(workspace: &Path) -> Value {
                     || rec.workspace_root.is_none())
         })
         .map(|rec| {
-            let agent = rec.actor_id.strip_prefix("agent:").unwrap_or(&rec.actor_id);
+            let agent = rec
+                .actor
+                .id()
+                .strip_prefix("agent:")
+                .unwrap_or(rec.actor.id());
             json!({
                 "grant_id": rec.grant_id,
-                "actor_id": rec.actor_id,
+                "actor_id": rec.actor.id(),
                 "agent": agent,
                 "tool": rec.target_id,
                 "decision": rec.decision.as_str(),
                 "kind": rec.kind.as_str(),
                 "created_at": rec.created_at,
                 "expires_at": rec.expires_at,
-                "run_id": rec.bound_operation_id,
+                "run_id": rec.bound_run(),
             })
         })
         .collect();
@@ -1527,7 +1634,7 @@ fn delegate(
     grants: Vec<ToolGrant>,
     caller: &AgentsCaller,
 ) -> Value {
-    let caller_pane = caller.pane();
+    let caller_pane = caller.pane_owner();
     let parent = match find_run(workspace, parent_run) {
         Ok(run) => run,
         Err(error) => return error,
@@ -1540,7 +1647,8 @@ fn delegate(
     let ceiling = meet_ceilings(
         &sealed_ceiling(
             workspace,
-            &Principal::agent(parent.actor_id.clone()),
+            &Principal::agent(actor_of(&parent.agent_id)).expect("namespaced agent id"),
+            caller_pane,
             Some(parent_run),
         ),
         &caller.ceiling(workspace, Some(parent_run)),
@@ -1601,13 +1709,10 @@ fn delegate(
     };
     let admission = format!("delegate:{parent_run}:{name}");
     // The child run belongs to whoever delegated it.
-    let owner = match caller {
-        AgentsCaller::Principal { principal, .. } => Some(principal.actor_id().to_string()),
-        AgentsCaller::Host { .. } => None,
-    };
+    let owner = caller.owner();
     let spawned = issue_run(IssueRun {
         workspace,
-        owner: owner.as_deref(),
+        owner: owner.as_ref(),
         agent: &child,
         parent_run: Some(parent_run),
         admission_id: &admission,
@@ -1630,12 +1735,18 @@ fn invoke(
     run_id: &str,
     tool: &str,
     input_json: &str,
-    caller_pane: Option<u64>,
+    requester: RecordOwner,
 ) -> Value {
     let run = match find_run(workspace, run_id) {
         Ok(run) => run,
         Err(error) => return error,
     };
+    let scope = crate::broker::AgentRunScope {
+        id: run.id.clone(),
+        parent: run.parent_run.clone(),
+        requester,
+    };
+    let caller_pane = scope.requester.pane();
     if !run.active {
         return deny_with_request(RefusalContext {
             workspace,
@@ -1650,7 +1761,8 @@ fn invoke(
     // The run file only narrows. A tool it does not list runs when a desktop
     // approval sealed a row for this run; the gate below still decides.
     let listed = run.grants.iter().find(|grant| grant.tool == tool);
-    if listed.is_none() && !host_gate!().run_holds_approval(workspace, &run.actor_id, &run.id, tool) {
+    if listed.is_none() && !host_gate!().run_holds_approval(workspace, &run.actor_id, &scope, tool)
+    {
         return deny_with_request(RefusalContext {
             workspace,
             actor: &run.actor_id,
@@ -1673,19 +1785,23 @@ fn invoke(
         });
     }
     let call_id = format!("call_{}", uuid::Uuid::new_v4());
-    let admission = host_gate!().admit(AdmitRequest {
-        call_id: &call_id,
-        tool,
-        input_json,
-        principal: &crate::broker::principal::Principal::agent(&run.actor_id),
-        actor_scope: ActorScope::Workspace,
-        trust_origin: "host",
-        workspace_root: workspace,
-        context_id: 0,
-        package_id: PACKAGE,
-        instance_id: 0,
-        target_type: TargetType::HostTool,
-    });
+    let admission = host_gate!().admit_agent_run(
+        AdmitRequest {
+            call_id: &call_id,
+            tool,
+            input_json,
+            principal: &crate::broker::principal::Principal::agent(actor_of(&run.agent_id))
+                .expect("namespaced agent id"),
+            actor_scope: ActorScope::Workspace,
+            trust_origin: "host",
+            workspace_root: workspace,
+            context_id: 0,
+            package_id: PACKAGE,
+            instance_id: 0,
+            target_type: TargetType::HostTool,
+        },
+        &scope,
+    );
     match admission {
         Admission::Denied { code } => {
             log::info!(
@@ -1697,14 +1813,15 @@ fn invoke(
                 .file_needs_you_with_details(
                     NeedsYouFile {
                         kind: NeedsYouKind::PermissionRequest,
-                        actor: run.actor_id.clone(),
+                        actor: request_owner(caller_pane, &run.actor_id),
                         resource: tool.to_string(),
                         summary: format!("tool '{tool}' was denied by the permission gate"),
                         expires_at: None,
                         run_tag: Some(effective_parent.to_string()),
                     },
                     Some(NeedsYouDetails {
-                        pane_id: caller_pane,
+                        pane_id: caller_pane.map(|p| p.number()),
+                        grant_actor: Some(run.actor_id.clone()),
                         tool: Some(tool.to_string()),
                         parent_run: Some(effective_parent.to_string()),
                         run_id: Some(run.id.clone()),
@@ -1747,8 +1864,12 @@ fn invoke(
         } => {
             let resource = resource_id.unwrap_or_default();
             if host_gate!()
-                .note_use(
-                    &run.actor_id,
+                .note_run_use(
+                    &crate::broker::principal::RecordOwner::stored(
+                        crate::broker::ActorType::Agent,
+                        &run.actor_id,
+                    ),
+                    &scope,
                     &call_id,
                     &grant_id,
                     &fingerprint,
@@ -1767,7 +1888,7 @@ fn invoke(
                     caller_pane,
                 });
             }
-            let body = execute_tool(workspace, &run, tool, input_json);
+            let body = execute_tool(workspace, &run, tool, input_json, caller_pane);
             host_gate!().consume_once(&grant_id, Some("agents-api"));
             log::info!(
                 "agents_api: executed tool={tool} actor={} run={} call_id={call_id}",
@@ -1779,7 +1900,13 @@ fn invoke(
     }
 }
 
-fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str) -> Value {
+fn execute_tool(
+    workspace: &Path,
+    run: &RunRecord,
+    tool: &str,
+    input_json: &str,
+    caller_pane: Option<&crate::broker::principal::PanePrincipal>,
+) -> Value {
     let input: Value = serde_json::from_str(input_json).unwrap_or_else(|_| json!({}));
     match tool {
         "agents.list" => match list_agent_authorities(workspace, false) {
@@ -1811,12 +1938,13 @@ fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str)
                 reports_to: None,
                 parent_grants: &sealed_ceiling(
                     workspace,
-                    &Principal::agent(run.actor_id.clone()),
+                    &Principal::agent(actor_of(&run.agent_id)).expect("namespaced agent id"),
+                    caller_pane,
                     Some(&run.id),
                 ),
                 denial_actor: &run.actor_id,
                 parent_run: Some(&run.id),
-                caller_pane: None,
+                caller_pane,
             })
         }
         "agents.ping" | "agents.review" | "agents.admin" => json!({
@@ -1831,17 +1959,43 @@ fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str)
     }
 }
 
-pub fn projection(workspace: &Path) -> Value {
+pub fn host_projection(workspace: &Path) -> Value {
+    projection(
+        workspace,
+        &AgentsCaller::Host {
+            ceiling: Vec::new(),
+        },
+    )
+}
+
+pub(crate) fn principal_projection(workspace: &Path, principal: Principal) -> Value {
+    projection(
+        workspace,
+        &AgentsCaller::Principal {
+            principal,
+            acting_for: None,
+            agent: None,
+            context_root: None,
+            context_denied: false,
+        },
+    )
+}
+
+fn projection(workspace: &Path, caller: &AgentsCaller) -> Value {
     let workspace = crate::platform::path::canonical_or_self(workspace);
-    let host = AgentsCaller::Host { ceiling: Vec::new() };
     let agents = handle_request(
         "list_agents",
         &json!({"workspace": workspace, "all": true}),
-        &host,
+        caller,
     );
-    let runs = handle_request("list_runs", &json!({"workspace": &workspace}), &host);
-    let pending = serde_json::to_value(host_gate!().list_pending_in_workspace(&workspace))
-        .unwrap_or(json!([]));
+    let runs = handle_request("list_runs", &json!({"workspace": &workspace}), caller);
+    let gate = host_gate!();
+    let records = match caller {
+        AgentsCaller::Principal { principal, .. } => gate.records_for(principal),
+        AgentsCaller::Host { .. } => gate.host_records(),
+    };
+    let pending =
+        serde_json::to_value(records.pending_in_workspace(&workspace)).unwrap_or(json!([]));
     json!({
         "ok": true,
         "agents": agents.get("agents").cloned().unwrap_or(json!([])),
@@ -1851,7 +2005,7 @@ pub fn projection(workspace: &Path) -> Value {
 }
 
 pub fn pane_lines(workspace: &Path) -> Vec<String> {
-    let body = projection(workspace);
+    let body = host_projection(workspace);
     let mut lines = Vec::new();
     if let Some(pending) = body.get("needs_you").and_then(|v| v.as_array()) {
         for item in pending {
@@ -1886,6 +2040,8 @@ pub fn pane_lines(workspace: &Path) -> Vec<String> {
 }
 
 pub struct McpAuth {
+    pub acting_for: Option<crate::broker::principal::PanePrincipal>,
+    pub principal: Principal,
     pub workspace: PathBuf,
     pub run_id: Option<String>,
     pub actor_id: Option<String>,
@@ -1900,7 +2056,10 @@ pub struct McpAuth {
 /// admitted as itself through the same monitor; an ungranted call becomes a
 /// pending approval rather than a second permission system.
 pub fn mcp_call(auth: &McpAuth, tool: &str, input_json: &str) -> Result<String, String> {
-    let caller_pane = (auth.pane_id != 0).then_some(auth.pane_id);
+    let caller_pane = match &auth.principal {
+        Principal::Pane(owner) => Some(owner),
+        _ => auth.acting_for.as_ref(),
+    };
     let value = if let Some(run_id) = &auth.run_id {
         if tool == "agents.delegate" {
             let input: Value = serde_json::from_str(input_json).unwrap_or_else(|_| json!({}));
@@ -1930,8 +2089,9 @@ pub fn mcp_call(auth: &McpAuth, tool: &str, input_json: &str) -> Result<String, 
                     };
                 // The run delegates as its own agent principal.
                 let caller = AgentsCaller::Principal {
-                    principal: Principal::agent(auth.actor_id.clone().unwrap_or_default()),
-                    pane: caller_pane,
+                    principal: Principal::agent(auth.actor_id.clone().unwrap_or_default())
+                        .ok_or("invalid run actor")?,
+                    acting_for: caller_pane.cloned(),
                     agent: None,
                     context_root: None,
                     context_denied: false,
@@ -1945,7 +2105,16 @@ pub fn mcp_call(auth: &McpAuth, tool: &str, input_json: &str) -> Result<String, 
                 )
             }
         } else {
-            invoke(&auth.workspace, run_id, tool, input_json, caller_pane)
+            invoke(
+                &auth.workspace,
+                run_id,
+                tool,
+                input_json,
+                caller_pane
+                    .cloned()
+                    .map(RecordOwner::Pane)
+                    .unwrap_or_else(|| RecordOwner::requester(&auth.principal)),
+            )
         }
     } else {
         admit_pane(auth, tool, input_json)
@@ -1959,7 +2128,7 @@ pub fn mcp_call(auth: &McpAuth, tool: &str, input_json: &str) -> Result<String, 
 }
 
 fn admit_pane(auth: &McpAuth, tool: &str, input_json: &str) -> Value {
-    let actor = format!("mcp:pane:{}", auth.pane_id);
+    let actor = auth.principal.actor_id();
     let call_id = format!("call_{}", uuid::Uuid::new_v4());
     // Admitted under the pane's ceiling, with the broker's grant precedence.
     let admission = host_gate!().admit_with_posture(
@@ -1967,7 +2136,7 @@ fn admit_pane(auth: &McpAuth, tool: &str, input_json: &str) -> Value {
             call_id: &call_id,
             tool,
             input_json,
-            principal: &crate::broker::principal::Principal::agent(&actor),
+            principal: &auth.principal,
             actor_scope: ActorScope::User,
             trust_origin: "host",
             workspace_root: &auth.workspace,
@@ -2047,6 +2216,10 @@ mod tests {
     fn pane_agents_call_is_admitted_under_its_ceiling() {
         let fix = Fixture::new();
         let auth = |posture| McpAuth {
+            acting_for: None,
+            principal: Principal::Pane(crate::broker::principal::PanePrincipal::for_test(
+                42_016_320,
+            )),
             workspace: fix.ws().to_path_buf(),
             run_id: None,
             actor_id: None,
@@ -2095,8 +2268,8 @@ mod tests {
     /// A pane caller, as the host classifies one.
     fn pane_caller(pane: u64, agent: Option<&str>) -> AgentsCaller {
         AgentsCaller::Principal {
-            principal: Principal::agent(format!("pane:{pane}")),
-            pane: Some(pane),
+            principal: Principal::Pane(crate::broker::principal::PanePrincipal::for_test(pane)),
+            acting_for: None,
             agent: agent.map(str::to_string),
             context_root: None,
             context_denied: false,
@@ -2381,7 +2554,7 @@ mod tests {
             .join("agents")
             .join("rogue")
             .exists());
-        let audit = monitor().unwrap().audit_records();
+        let audit = monitor().unwrap().host_records().audit();
         assert!(
             audit
                 .iter()
@@ -2435,7 +2608,7 @@ mod tests {
             }), &test_host());
         assert_eq!(review["error_code"], "permission_required", "{review}");
         let pending = review["pending_request_id"].as_str().unwrap();
-        let listed = monitor().unwrap().list_pending();
+        let listed = monitor().unwrap().host_records().pending();
         assert!(listed
             .iter()
             .any(|row| row.pending_request_id == pending && row.actor_id == "agent:scout"));
@@ -2456,6 +2629,8 @@ mod tests {
 
         let listed = mcp_call(
             &McpAuth {
+                acting_for: None,
+                principal: Principal::agent("agent:worker").unwrap(),
                 workspace: fix.ws().to_path_buf(),
                 run_id: Some(spawned["run"]["id"].as_str().unwrap().to_string()),
                 actor_id: Some("agent:worker".to_string()),
@@ -2528,13 +2703,16 @@ mod tests {
                 "grants": ["assistant.turn=allow"],
             }), &pane_caller(7, Some("worker")));
         assert_eq!(narrowed["ok"], true, "{narrowed}");
+        let bare_caller = pane_caller(9, None);
         let empty = handle_request(
             "create_agent",
             &json!({
                 "workspace": fix.ws(),
                 "name": "bare",
                 "grants": ["assistant.turn=allow"],
-            }), &pane_caller(9, None));
+            }),
+            &bare_caller,
+        );
         assert_eq!(empty["error_code"], "permission_denied", "{empty}");
         let ny_id = empty["needs_you_id"].as_str().expect("needs_you_id");
         monitor()
@@ -2547,7 +2725,9 @@ mod tests {
                 "workspace": fix.ws(),
                 "name": "bare",
                 "grants": ["assistant.turn=allow"],
-            }), &pane_caller(9, None));
+            }),
+            &bare_caller,
+        );
         assert_eq!(retried["ok"], true, "{retried}");
     }
 
@@ -2643,6 +2823,7 @@ mod tests {
         assert_eq!(spawned["ok"], true, "{spawned}");
         let parent_run = spawned["run"]["id"].as_str().unwrap().to_string();
 
+        let requester = pane_caller(42, None);
         let refused = handle_request(
             "delegate",
             &json!({
@@ -2650,7 +2831,9 @@ mod tests {
                 "parent_run": parent_run,
                 "name": "scout",
                 "grants": ["agents.admin=allow"],
-            }), &pane_caller(42, None));
+            }),
+            &requester,
+        );
         assert_eq!(refused["ok"], false, "{refused}");
         assert_eq!(refused["error_code"], "permission_denied", "{refused}");
         let needs_you_id = refused["needs_you_id"]
@@ -2662,27 +2845,30 @@ mod tests {
         let audit_path = crate::config::config_dir().join("permission-audit.jsonl");
         let audit_raw = fs::read_to_string(&audit_path).expect("permission-audit.jsonl must exist");
         assert!(
-            audit_raw.contains("agents.admin") && audit_raw.contains("agent:worker"),
+            audit_raw.contains("agents.admin") && audit_raw.contains("pane:42"),
             "expected deny audit row in permission-audit.jsonl, got:\n{audit_raw}"
         );
-        let audit_rows = monitor().unwrap().audit_records();
+        let audit_rows = monitor().unwrap().host_records().audit();
         assert!(
             audit_rows.iter().any(|row| {
                 row.kind == "deny"
                     && row.resource_id == "agents.admin"
-                    && row.actor == "agent:worker"
+                    && Some(&row.actor) == requester.owner().as_ref()
             }),
-            "expected deny AuditFact in monitor().unwrap().audit_records(), got: {audit_rows:?}"
+            "expected deny AuditFact in monitor().unwrap().host_records().audit(), got: {audit_rows:?}"
         );
 
         // 2. The refusal appears in `plexi needs-you list --json` (`list_needs_you`).
-        let items = monitor().unwrap().list_needs_you();
+        let items = monitor().unwrap().host_records().questions(true);
         let entry = items
             .iter()
             .find(|item| item.id == needs_you_id)
             .expect("refusal must appear in needs-you list");
         assert_eq!(entry.kind, NeedsYouKind::PermissionRequest);
-        assert_eq!(entry.actor, "agent:worker");
+        assert_eq!(
+            entry.details.as_ref().unwrap().grant_actor.as_deref(),
+            Some("agent:worker")
+        );
         assert_eq!(entry.resource, "agents.admin");
         let entry_json = serde_json::to_value(entry).unwrap();
         assert_eq!(entry_json["kind"], "permission_request");
@@ -2728,7 +2914,9 @@ mod tests {
                 "parent_run": parent_run,
                 "name": "scout",
                 "grants": ["agents.admin=allow"],
-            }), &pane_caller(42, None));
+            }),
+            &requester,
+        );
         assert_eq!(delegated["ok"], true, "{delegated}");
 
         // Finish `parent_run` and start a new run of `worker`: the new run must NOT hold `agents.admin`.
@@ -2926,7 +3114,7 @@ mod tests {
     /// gone) alpha's rules apply: no owner check. Durable ownership is stint
     /// 1716.
     #[test]
-    fn run_ownership_lives_with_the_host_and_ownerless_runs_follow_alpha() {
+    fn run_ownership_lives_with_the_host_and_ownerless_runs_can_only_be_stopped() {
         let fix = Fixture::new();
         create(&fix, "worker", &["agents.ping=ask"]);
         let grants = crate::config::config_dir().join("grants.toml");
@@ -2956,24 +3144,34 @@ mod tests {
         assert_eq!(replayed["ok"], true, "a replayed finish answers as alpha: {replayed}");
         assert_eq!(snapshot(), before, "run start and finish wrote the grant store");
 
-        // After a restart the run has no live owner record. The owner retries
-        // and finishes; alpha's rule admits any caller for such a run, and
-        // that is asserted here until stint 1716 makes ownership durable.
+        // A pane needs its original live ownership link after a restart.
         let restarted = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-restart"});
         let second = handle_request("spawn_run", &restarted, &owner);
         let second_id = second["run"]["id"].as_str().unwrap().to_string();
         forget_run_for_test(&second_id);
         let retry = handle_request("spawn_run", &restarted, &owner);
-        assert_eq!(retry["ok"], true, "{retry}");
-        assert!(retry["run_token"].is_string(), "{retry}");
+        assert_eq!(retry["ok"], false, "{retry}");
+        assert!(retry["run_token"].is_null(), "{retry}");
         let stranger_retry = handle_request("spawn_run", &restarted, &stranger);
-        assert_eq!(stranger_retry["ok"], true, "alpha's rule (stint 1716): {stranger_retry}");
+        assert_eq!(
+            stranger_retry["ok"], false,
+            "orphaned run: {stranger_retry}"
+        );
+        // Stopping it removes authority only, so a restart never strands
+        // the agent: any admitted caller may finish it (stint 1743).
         let finished = handle_request(
             "finish_run",
             &json!({"workspace": fix.ws(), "id": second_id}),
-            &owner,
+            &stranger,
         );
         assert_eq!(finished["ok"], true, "{finished}");
+        assert!(!find_run(fix.ws(), &second_id).unwrap().active);
+        let next = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-after"}),
+            &owner,
+        );
+        assert_eq!(next["ok"], true, "the cleared agent spawns again: {next}");
         assert_eq!(snapshot(), before, "no grant-store write");
     }
 
@@ -3000,12 +3198,8 @@ mod tests {
         );
         assert_eq!(fresh["ok"], false, "a fresh start still needs the allow: {fresh}");
         let retried = handle_request("spawn_run", &start, &pane);
-        assert_eq!(retried["ok"], true, "{retried}");
-        let token = retried["run_token"].as_str().expect("a bearer");
-        let auth = authenticate_run_token(token).expect("the bearer authenticates");
-        assert_eq!(auth.run_id, run_id);
-        assert_eq!(auth.actor_id, "agent:worker");
-        assert_eq!(auth.workspace, crate::platform::path::canonical_or_self(fix.ws()));
+        assert_eq!(retried["error_code"], "permission_denied", "{retried}");
+        assert!(retried["run_token"].is_null());
     }
 
     /// Design 1285 section 4, condition 3: the dashboard projection of one
@@ -3017,19 +3211,21 @@ mod tests {
         let fix = Fixture::new();
         let other = tempfile::tempdir().unwrap();
         let ask = |workspace: &Path, marker: &str| {
-            let Admission::Required { pending_request_id } = monitor().unwrap().admit(AdmitRequest {
-                call_id: &format!("call-{marker}"),
-                tool: "agents.review",
-                input_json: &json!({"marker": marker}).to_string(),
-                principal: &Principal::agent("agent:worker"),
-                actor_scope: ActorScope::Workspace,
-                trust_origin: "host",
-                workspace_root: &crate::platform::path::canonical_or_self(workspace),
-                context_id: 0,
-                package_id: PACKAGE,
-                instance_id: 0,
-                target_type: TargetType::HostTool,
-            }) else {
+            let Admission::Required { pending_request_id } =
+                monitor().unwrap().admit(AdmitRequest {
+                    call_id: &format!("call-{marker}"),
+                    tool: "agents.review",
+                    input_json: &json!({"marker": marker}).to_string(),
+                    principal: &Principal::agent("agent:worker").expect("named agent"),
+                    actor_scope: ActorScope::Workspace,
+                    trust_origin: "host",
+                    workspace_root: &crate::platform::path::canonical_or_self(workspace),
+                    context_id: 0,
+                    package_id: PACKAGE,
+                    instance_id: 0,
+                    target_type: TargetType::HostTool,
+                })
+            else {
                 panic!("expected a pending request");
             };
             pending_request_id
@@ -3037,7 +3233,7 @@ mod tests {
         let mine = ask(fix.ws(), "alpha-1285");
         let theirs = ask(other.path(), "bravo-1285");
         let listed = |workspace: &Path| -> Vec<String> {
-            projection(workspace)["needs_you"]
+            host_projection(workspace)["needs_you"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -3046,7 +3242,7 @@ mod tests {
         };
         assert_eq!(listed(fix.ws()), vec![mine.clone()]);
         assert_eq!(listed(other.path()), vec![theirs.clone()]);
-        let body = projection(fix.ws()).to_string();
+        let body = host_projection(fix.ws()).to_string();
         assert!(!body.contains("bravo-1285"), "another workspace's summary leaked: {body}");
     }
 
@@ -3191,12 +3387,12 @@ mod tests {
             audit_raw.contains("expire") && audit_raw.contains("agents.review"),
             "expected expire audit row in permission-audit.jsonl, got:\n{audit_raw}"
         );
-        let audit_rows = monitor().unwrap().audit_records();
+        let audit_rows = monitor().unwrap().host_records().audit();
         assert!(
             audit_rows.iter().any(|row| {
                 row.kind == "expire" && row.resource_id == "agents.review" && row.decision == "ask"
             }),
-            "expected expire AuditFact in monitor().unwrap().audit_records(), got: {audit_rows:?}"
+            "expected expire AuditFact in monitor().unwrap().host_records().audit(), got: {audit_rows:?}"
         );
 
         // `list_grants` and `agent.json` reflect the reverted `ask` decision.

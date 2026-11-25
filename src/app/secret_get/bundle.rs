@@ -1,5 +1,6 @@
 //! Freeze the host's selection before asking. Read values only after the claim.
 use super::*;
+use crate::broker::principal::RecordOwner;
 use crate::cli::run::{resolve_command_target, ResolvedRunTarget};
 use crate::protocol::{
     ApprovedBundle, BundleDefinition, BundleValue, SecretBundleReply, SecretInput,
@@ -234,12 +235,12 @@ impl SecretRequest {
             stream_reply(&self.reply_path, json!({"status":"denied"}));
             return Ok(());
         };
-        let actor = principal.actor_id();
+        let actor = RecordOwner::requester(&principal);
         let audit = format!(
             "{resource_id} names={}",
             bundle.names.keys().cloned().collect::<Vec<_>>().join(",")
         );
-        monitor.note_use(actor, &call, &grant_id, &fingerprint, &audit, "")?;
+        monitor.note_use(&actor, &call, &grant_id, &fingerprint, &audit, "")?;
         let result = bundle.fetch(secrets::folder_store(), secrets::system_store(), &|| {
             self.client_connected()
         });
@@ -248,8 +249,14 @@ impl SecretRequest {
             SecretBundleReply::Missing { .. } => "missing",
             _ => "failed",
         };
+        let run = monitor
+            .records_for(&principal)
+            .run(&call)
+            .filter(|record| record.correlation_id.as_deref() == Some(call.as_str()))
+            .map(|record| record.handle());
         monitor.note_outcome(
-            actor,
+            run.as_ref(),
+            &actor,
             &call,
             &grant_id,
             &fingerprint,
@@ -334,11 +341,12 @@ mod tests {
             cwd: pane.clone(),
             command: None,
         };
+        let principal = Principal::Pane(crate::broker::principal::PanePrincipal::for_test(7));
         let Err(reply) = ask.discover_target(
             "secret.exec",
             "environment".into(),
             Some(&pane),
-            &Principal::agent("pane:7"),
+            &principal,
             &monitor,
         ) else {
             panic!("nested pane reached bundle admission");
@@ -350,9 +358,9 @@ mod tests {
             .unwrap()
             .contains("outside the pane context"));
         assert!(reply.get("values").is_none());
-        assert!(monitor.list_needs_you().is_empty());
-        assert!(monitor.audit_records().iter().any(|row| {
-            row.actor == "pane:7"
+        assert!(monitor.host_records().open().is_empty());
+        assert!(monitor.host_records().audit().iter().any(|row| {
+            row.actor == RecordOwner::requester(&principal)
                 && row.call_id == "secret.exec"
                 && row.decision == "context_scope_violation"
         }));

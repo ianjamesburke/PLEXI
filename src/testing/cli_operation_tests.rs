@@ -193,7 +193,8 @@ impl E2e {
 
     fn pending() -> Vec<crate::broker::gate::PendingView> {
         Self::monitor()
-            .list_pending()
+            .host_records()
+            .pending()
             .into_iter()
             .filter(|p| p.tool.starts_with("cli.op."))
             .collect()
@@ -374,7 +375,8 @@ fn revocation_of_a_remembered_operation_survives_a_restart() {
         t.as_deref().is_some_and(|t| t.starts_with("cliop:ok:r1:"))
     });
     let grant = E2e::monitor()
-        .list_entries()
+        .host_records()
+        .entries()
         .into_iter()
         .find(|row| row.tool == "cli.op.read" && row.kind == "allow")
         .expect("the remembered grant is in the Permissions inventory");
@@ -385,7 +387,8 @@ fn revocation_of_a_remembered_operation_survives_a_restart() {
     let monitor = PermissionMonitor::reload_for_test(&crate::config::config_dir());
     assert!(
         monitor
-            .list_entries()
+            .host_records()
+            .entries()
             .iter()
             .all(|row| !(row.tool == "cli.op.read" && row.kind == "allow")),
         "a revoked grant must not come back after restart"
@@ -428,9 +431,15 @@ fn relaunch_retires_the_old_guests_cli_operation_asks() {
     assert!(e2e.h.app.reload_view_pane(pane, "test"), "relaunch");
 
     let monitor = E2e::monitor();
-    assert!(monitor.show_pending(&old).is_none(), "the old ask is gone");
+    assert!(
+        monitor.host_records().pending_id(&old).is_none(),
+        "the old ask is gone"
+    );
     assert_eq!(
-        monitor.get_needs_you(&old).and_then(|r| r.resolution),
+        monitor
+            .host_records()
+            .question(&old)
+            .and_then(|r| r.resolution),
         Some(NeedsYouResolution::Retired)
     );
     assert!(
@@ -448,11 +457,14 @@ fn relaunch_retires_the_old_guests_cli_operation_asks() {
     );
     for (who, id) in [("sibling pane", &sibling_ask), ("other plugin", &other_ask)] {
         assert!(
-            monitor.show_pending(id).is_some(),
+            monitor.host_records().pending_id(id).is_some(),
             "{who}'s ask is untouched"
         );
         assert_eq!(
-            monitor.get_needs_you(id).and_then(|r| r.resolution),
+            monitor
+                .host_records()
+                .question(id)
+                .and_then(|r| r.resolution),
             None,
             "{who}'s ask is still open"
         );

@@ -2709,6 +2709,7 @@ impl PlexiApp {
             format!("failed to create terminal pane for agent role '{role}': {error}")
         })?;
         pane.ephemeral = ephemeral;
+        pane.parent_owner = parent_pane_id.and_then(|id| self.pane_principal(id));
         pane.parent_pane_id = parent_pane_id;
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
@@ -5113,7 +5114,8 @@ default = true
         assert!(result.is_err(), "the start fails");
         let rows = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir())
             .unwrap()
-            .list_entries()
+            .host_records()
+            .entries()
             .into_iter()
             .filter(|entry| entry.actor_id.ends_with("t1733-py"))
             .count();

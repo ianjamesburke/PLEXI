@@ -113,7 +113,12 @@ enum SubmitPhase {
 /// heals.
 pub(crate) struct PendingSubmit {
     pub pane_id: u64,
-    pub operation_id: Option<String>,
+    pub operation: Option<(
+        String,
+        crate::broker::gate::RunHandle,
+        crate::host::plugin_timeline::AdmittedScope,
+    )>,
+    target: Option<crate::broker::principal::PanePrincipal>,
     /// Plain JSON response file, like the agent-boot path. `None` when the
     /// caller wanted the sequence run but no answer — the host still settles,
     /// submits and confirms, and logs the outcome.
@@ -194,7 +199,7 @@ pub(crate) const SEND_APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) struct PendingSendApproval {
     pub pending_request_id: String,
     pub operation_id: String,
-    pub caller_pane_id: u64,
+    pub owner: crate::broker::principal::PanePrincipal,
     pub pane_id: u64,
     pub text: String,
     pub submit: bool,
@@ -744,7 +749,8 @@ impl PlexiApp {
         );
         self.pending_submits.push(PendingSubmit {
             pane_id,
-            operation_id: None,
+            operation: None,
+            target: self.pane_principal(pane_id),
             response_file,
             phase: SubmitPhase::Settle {
                 until: requested_at + SUBMIT_SETTLE_MAX,
@@ -769,9 +775,26 @@ impl PlexiApp {
         let now = Instant::now();
         let mut still_pending = Vec::with_capacity(self.pending_submits.len());
         for mut submit in std::mem::take(&mut self.pending_submits) {
+            if let Some((id, _, requester)) = &submit.operation {
+                if requester.current().is_err()
+                    || self.pane_principal(requester.authority.pane_id()).as_ref()
+                        != Some(&requester.authority.principal())
+                    || submit.target.is_none()
+                    || submit.target != self.pane_principal(submit.pane_id)
+                {
+                    log::info!("pane_submit: discarded stale submit operation={id}");
+                    if let Some(path) = &submit.response_file {
+                        crate::rpc::write_json_response(
+                            path,
+                            serde_json::json!({"error":"pane lifetime or scope changed", "error_code":"outcome_unknown", "operation_id":id}),
+                        );
+                    }
+                    continue;
+                }
+            }
             match self.advance_submit(&mut submit, now) {
                 Some(mut reply) => {
-                    if let Some(operation_id) = &submit.operation_id {
+                    if let Some((operation_id, handle, _)) = &submit.operation {
                         let monitor = crate::broker::gate::PermissionMonitor::for_profile(
                             &crate::config::config_dir(),
                         )
@@ -782,9 +805,9 @@ impl PlexiApp {
                             // Text or Enter may already have been delivered.
                             crate::broker::gate::ContinuationState::OutcomeUnknown
                         };
-                        if let Err(error) = monitor.and_then(|monitor| {
-                            monitor.complete_continuation(operation_id, state, None)
-                        }) {
+                        if let Err(error) = monitor
+                            .and_then(|monitor| monitor.complete_continuation(handle, state, None))
+                        {
                             log::error!(
                                 "pane_submit: could not record operation={operation_id}: {error}"
                             );
@@ -1686,6 +1709,21 @@ impl PlexiApp {
         let mut remaining_items = Vec::new();
         let mut approved_to_dispatch = Vec::new();
         for item in items {
+            if self.pane_principal(item.owner.number()).as_ref() != Some(&item.owner) {
+                log::info!(
+                    "pane_send: released waiter for retired requester pending={}",
+                    item.pending_request_id
+                );
+                if let Some(reply) = &item.response_file {
+                    crate::rpc::write_json_response(
+                        reply,
+                        serde_json::json!({
+                            "error": "requesting pane lifetime ended", "error_code": "permission_denied"
+                        }),
+                    );
+                }
+                continue;
+            }
             let caller_exited = item
                 .origin
                 .socket_caller()
@@ -1697,7 +1735,11 @@ impl PlexiApp {
                     .and_then(crate::rpc::ReplyRegistry::connected)
                     == Some(false);
             if caller_exited || now >= item.expires_at {
-                let detached = monitor.detach_pane_send_waiter(&item.pending_request_id);
+                let detached = monitor.detach_pane_send_waiter(
+                    &item.owner,
+                    &item.operation_id,
+                    &item.pending_request_id,
+                );
                 if let Err(error) = &detached {
                     log::error!(
                         "pane_send_approval: could not persist detached waiter pending={}: {error}",
@@ -1728,7 +1770,12 @@ impl PlexiApp {
                 }
                 continue;
             }
-            match monitor.approval_resolution(&item.pending_request_id) {
+            match monitor
+                .records_for(&crate::broker::principal::Principal::Pane(
+                    item.owner.clone(),
+                ))
+                .decision(&item.pending_request_id)
+            {
                 Some(
                     crate::broker::gate::ApprovalChoice::Once
                     | crate::broker::gate::ApprovalChoice::Session
@@ -1738,7 +1785,7 @@ impl PlexiApp {
                     log::info!(
                         "pane_send_approval: pending={} approved; dispatching send from pane {} to pane {}",
                         item.pending_request_id,
-                        item.caller_pane_id,
+                        item.owner.number(),
                         item.pane_id
                     );
                     approved_to_dispatch.push(item);
@@ -1750,7 +1797,7 @@ impl PlexiApp {
                     log::info!(
                         "pane_send_approval: pending={} denied for pane {} -> pane {}",
                         item.pending_request_id,
-                        item.caller_pane_id,
+                        item.owner.number(),
                         item.pane_id
                     );
                     if let Some(ref rf) = item.response_file {

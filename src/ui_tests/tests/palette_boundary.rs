@@ -294,7 +294,7 @@ fn file_question() -> String {
     monitor
         .file_needs_you(crate::broker::gate::NeedsYouFile {
             kind: crate::broker::gate::NeedsYouKind::Question,
-            actor: "codex".into(),
+            actor: crate::broker::principal::RecordOwner::Host("codex".into()),
             resource: "pane:1".into(),
             summary: "Continue?".into(),
             expires_at: None,
@@ -372,7 +372,8 @@ fn pending_enter_never_completes_beneath_an_approval() {
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
     assert!(
         monitor
-            .get_needs_you(&id)
+            .host_records()
+            .question(&id)
             .is_some_and(|record| record.resolution.is_none()),
         "the request is still pending"
     );

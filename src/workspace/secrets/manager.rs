@@ -151,12 +151,22 @@ pub fn secret_inventory_report(cwd: &Path, global_only: bool) -> Result<SecretIn
             });
         }
     }
-    inventory_for_scope(cwd, global_only || !allowed, pane_root.as_deref(), skipped)
+    inventory_for_scope(
+        cwd,
+        global_only || !allowed,
+        pane_root.as_deref(),
+        skipped,
+        None,
+    )
 }
 
 /// Only the host may use this after admitting an explicit context request.
-pub(crate) fn inventory_for_context(root: &Path) -> Result<SecretInventory, String> {
-    inventory_for_scope(root, false, Some(root), Vec::new())
+/// The grant column shows only `requester`'s own rows (stint 1743).
+pub(crate) fn inventory_for_context(
+    root: &Path,
+    requester: &crate::broker::principal::Principal,
+) -> Result<SecretInventory, String> {
+    inventory_for_scope(root, false, Some(root), Vec::new(), Some(requester))
 }
 
 /// Reconcile first, list names without reading values, then attach the same
@@ -166,6 +176,7 @@ fn inventory_for_scope(
     global_only: bool,
     pane_root: Option<&Path>,
     mut skipped: Vec<SkippedSecrets>,
+    requester: Option<&crate::broker::principal::Principal>,
 ) -> Result<SecretInventory, String> {
     match super::reconcile_index_with_keychain() {
         Ok(report) if !report.is_noop() => log::info!(
@@ -200,7 +211,14 @@ fn inventory_for_scope(
     let mut entries = Vec::new();
     let (uses, permissions, grant_details_unavailable) =
         match PermissionMonitor::for_profile(&crate::config::config_dir()) {
-            Ok(monitor) => (monitor.secret_last_uses()?, monitor.list_entries(), None),
+            Ok(monitor) => (
+                monitor.secret_last_uses()?,
+                match requester {
+                    Some(principal) => monitor.records_for(principal).entries(),
+                    None => monitor.host_records().entries(),
+                },
+                None,
+            ),
             Err(error) => {
                 log::info!("secrets_manager: listing names without grant details: {error}");
                 (
@@ -524,7 +542,7 @@ mod tests {
         assert!(!audit.contains("canary-"));
         assert!(!audit.contains("SENTINEL_SECRET_0948_DO_NOT_LEAK"));
         assert!(!audit.contains("with spaces"));
-        let rows = monitor.audit_records();
+        let rows = monitor.host_records().audit();
         assert_eq!(
             rows.iter()
                 .filter(|r| r.kind == "secret_mutation" && r.decision == "ok")
@@ -577,7 +595,7 @@ mod tests {
             );
             assert_eq!(result.is_ok(), audited == "ok", "{result:?}");
             assert_eq!(store.deletes(), 1);
-            let rows = monitor.audit_records();
+            let rows = monitor.host_records().audit();
             let last = &rows[rows.len() - 1];
             assert_eq!(
                 (last.operation_id.as_str(), last.decision.as_str()),
@@ -759,6 +777,15 @@ mod inventory_tests {
             .grant
             .iter()
             .any(|grant| grant.contains("inventory-reader") && grant.contains("allow")));
+        // A requester's inventory shows its own grant rows only (stint 1743).
+        let stranger = crate::broker::principal::Principal::agent("inventory-stranger").unwrap();
+        let theirs = inventory_for_context(root.path(), &stranger).unwrap();
+        let seen = theirs
+            .entries
+            .iter()
+            .find(|e| e.name == name && e.target == SecretTarget::Global)
+            .unwrap();
+        assert!(seen.grant.is_empty(), "{:?}", seen.grant);
         let json = serde_json::to_value(entry).unwrap();
         assert_eq!(json["scope"], "global");
         assert!(json["last_used"].is_number());

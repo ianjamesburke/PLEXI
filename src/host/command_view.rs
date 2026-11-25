@@ -1,6 +1,6 @@
 //! Live command view over agents API records.
 //!
-//! The pane and `agents-dashboard --follow` read [`crate::agent::runs::projection`].
+//! Host views use [`crate::agent::runs::host_projection`].
 //! A socket reader reaches it only through [`read`], which commits against the
 //! caller's [`ReadDashboard`] permit (stint 1716).
 //! This module does not keep a board. `enqueue`, `pause`, and `block` are not
@@ -36,7 +36,7 @@ pub fn publish(workspace: &Path, summary: &str) {
         revision
     };
     log::info!("command_view: revision={revision} {summary}");
-    let payload = crate::agent::runs::projection(workspace);
+    let payload = crate::agent::runs::host_projection(workspace);
     let timeline = crate::host::plugin_timeline::global();
     let Ok(mut timeline) = timeline.lock() else {
         log::warn!("command_view: timeline lock failed");
@@ -51,7 +51,7 @@ pub fn publish(workspace: &Path, summary: &str) {
 /// handed over only while the permit still covers the workspace, so a revoke,
 /// a scope move or a closed pane stops the next read.
 pub(crate) fn read(permit: &Permit<ReadDashboard>) -> Result<Value, String> {
-    let body = crate::agent::runs::projection(&permit.workspace());
+    let body = crate::agent::runs::principal_projection(&permit.workspace(), permit.principal());
     permit.recheck()?;
     Ok(body)
 }

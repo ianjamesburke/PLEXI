@@ -34,15 +34,19 @@ pub const NO_ASKS_HINT: &str = "No open asks in queue";
 /// Unresolved Needs-you records from the loaded profile monitor, oldest first.
 pub(crate) fn open_needs_you_items() -> Vec<crate::broker::gate::NeedsYouRecord> {
     let mut items = PermissionMonitor::loaded(&crate::config::config_dir())
-        .map(|monitor| monitor.open_needs_you())
+        .map(|monitor| monitor.host_records().open())
         .unwrap_or_default();
     items.sort_by_key(|item| item.created_at);
     items
 }
 
-pub(crate) fn retire_requester_approvals(panes: &[u64], context: Option<u64>) {
+pub(crate) fn retire_requester_approvals(app: &PlexiApp, panes: &[u64], context: Option<u64>) {
     if let Some(monitor) = PermissionMonitor::loaded(&crate::config::config_dir()) {
-        monitor.retire_requester_approvals(panes, context);
+        let owners: Vec<_> = panes
+            .iter()
+            .filter_map(|id| app.pane_principal(*id))
+            .collect();
+        monitor.retire_requester_approvals(&owners, panes, context);
     }
 }
 
@@ -543,6 +547,24 @@ impl PlexiApp {
         });
     }
 
+    /// A desktop history row stays visible when its source terminal has gone.
+    /// Only the same lifetime can supply a live destination or a pane title.
+    pub(super) fn record_source_pane(
+        &self,
+        owner: &crate::broker::principal::RecordOwner,
+        hint: Option<u64>,
+    ) -> Option<u64> {
+        use crate::broker::principal::RecordOwner;
+        match owner {
+            RecordOwner::Pane(pane) => self
+                .pane_principal(pane.number())
+                .filter(|current| current == pane)
+                .map(|current| current.number()),
+            RecordOwner::Legacy(_) => None,
+            RecordOwner::Actor { .. } | RecordOwner::Host(_) => hint,
+        }
+    }
+
     /// Resolve `(context_id, pane_id, pane_name, context_path)` for a queue item
     /// from its optional pane and context bindings, without drifting with the
     /// currently focused window when either binding is known.
@@ -665,7 +687,7 @@ impl PlexiApp {
                 log::error!("attention: no permission monitor in this process: {error}");
                 PermissionMonitor::ephemeral()
             });
-        for (p_idx, pending) in monitor.list_pending().into_iter().enumerate() {
+        for (p_idx, pending) in monitor.host_records().pending().into_iter().enumerate() {
             let req_id = pending.pending_request_id.clone();
             if self.attention_queue.answered_ask_ids.contains(&req_id) || seen_ids.contains(&req_id)
             {
@@ -674,17 +696,11 @@ impl PlexiApp {
             let explicit_ctx = pending
                 .context_id
                 .filter(|&id| id != 0 && live_context_ids.contains(&id));
-            let explicit_pane = pending
-                .actor_id
-                .strip_prefix("pane:")
+            let hint = pending
+                .resource_id
+                .as_deref()
+                .and_then(|s| s.strip_prefix("pane:"))
                 .and_then(|s| s.parse::<u64>().ok())
-                .or_else(|| {
-                    pending
-                        .resource_id
-                        .as_deref()
-                        .and_then(|s| s.strip_prefix("pane:"))
-                        .and_then(|s| s.parse::<u64>().ok())
-                })
                 .or_else(|| {
                     pending.instance_id.filter(|&pid| {
                         pid != 0
@@ -693,6 +709,7 @@ impl PlexiApp {
                             })
                     })
                 });
+            let explicit_pane = self.record_source_pane(&pending.owner, hint);
             let (context_id, pane_id, pane_name, context_path) =
                 self.resolve_queue_item_origin(explicit_pane, explicit_ctx);
             let created_ms = 500_000 + p_idx as u64;
@@ -728,12 +745,13 @@ impl PlexiApp {
                 context_id,
                 context_path,
                 summary: if monitor
-                    .get_continuation(&req_id)
+                    .host_records()
+                    .run(&req_id)
                     .is_some_and(|record| record.run_outcome.as_deref() == Some("retry_required"))
                 {
                     format!(
                         "{} stopped waiting. Approve, then retry {}.",
-                        self.approval_actor_label(&pending.actor_id),
+                        self.approval_actor_label(&pending.owner),
                         pending.tool.replace("__", " / ")
                     )
                 } else if is_secret {
@@ -741,7 +759,7 @@ impl PlexiApp {
                 } else if is_cli_operation {
                     format!(
                         "{} wants to run a program on this computer",
-                        self.approval_actor_label(&pending.actor_id)
+                        self.approval_actor_label(&pending.owner)
                     )
                 } else if pending.tool == crate::host::plugin_admission::TRUST_FOLDER_TOOL {
                     "A plugin folder wants to load in Plexi".to_string()
@@ -753,26 +771,44 @@ impl PlexiApp {
                 } else {
                     format!(
                         "{} wants to use {}",
-                        self.approval_actor_label(&pending.actor_id),
+                        self.approval_actor_label(&pending.owner),
                         pending.tool.replace("__", " / ")
                     )
                 },
                 command_text: cmd_text,
-                options: if is_outside_dashboard_read {
-                    outside_dashboard_ask_options()
-                } else if is_secret {
-                    default_ask_options()
+                options: {
+                    let options = if is_outside_dashboard_read {
+                        outside_dashboard_ask_options()
+                    } else if pending.tool == "pane.send" {
+                        pane_send_ask_options()
+                    } else if is_cli_operation {
+                        cli_operation_ask_options()
+                    } else if is_plugin_admission {
+                        plugin_admission_ask_options()
+                    } else {
+                        default_ask_options()
+                    };
+                    options
                         .into_iter()
-                        .filter(|o| o.key != "allow_always")
+                        .filter_map(|mut option| {
+                            if option.key == "allow_always" {
+                                if is_secret {
+                                    return None;
+                                }
+                                if !ApprovalChoice::Always.allowed_for(&pending.owner) {
+                                    pending.owner.pane()?;
+                                    option.key = "allow_session".to_string();
+                                    option.label = if pending.tool == "pane.send" {
+                                        "Allow any text to any pane until this pane closes"
+                                    } else {
+                                        "Allow until this pane closes"
+                                    }
+                                    .to_string();
+                                }
+                            }
+                            Some(option)
+                        })
                         .collect()
-                } else if pending.tool == "pane.send" {
-                    pane_send_ask_options()
-                } else if is_cli_operation {
-                    cli_operation_ask_options()
-                } else if is_plugin_admission {
-                    plugin_admission_ask_options()
-                } else {
-                    default_ask_options()
                 },
                 created_at_ms: created_ms,
                 locked: false,
@@ -780,7 +816,7 @@ impl PlexiApp {
             });
         }
 
-        for item in monitor.open_needs_you() {
+        for item in monitor.host_records().open() {
             if self.attention_queue.answered_ask_ids.contains(&item.id)
                 || self.attention_queue.dismissed_ids.contains(&item.id)
                 || seen_ids.contains(&item.id)
@@ -792,11 +828,7 @@ impl PlexiApp {
                 .as_ref()
                 .and_then(|d| d.pane_id)
                 .filter(|&id| id != 0)
-                .or_else(|| {
-                    item.actor
-                        .strip_prefix("pane:")
-                        .and_then(|s| s.parse::<u64>().ok())
-                })
+                .or_else(|| item.actor.pane().map(|owner| owner.number()))
                 .or_else(|| {
                     item.resource
                         .strip_prefix("pane:")
@@ -808,6 +840,7 @@ impl PlexiApp {
                         .and_then(|s| s.strip_prefix("pane:"))
                         .and_then(|s| s.parse::<u64>().ok())
                 });
+            let explicit_pane = self.record_source_pane(&item.actor, explicit_pane);
             let explicit_ctx = item
                 .details
                 .as_ref()
@@ -1251,7 +1284,8 @@ impl PlexiApp {
             .and_then(|rid| {
                 PermissionMonitor::for_profile(&crate::config::config_dir())
                     .ok()?
-                    .open_needs_you()
+                    .host_records()
+                    .open()
                     .into_iter()
                     .find(|r| r.id == rid)
                     .map(|r| r.resource)
@@ -1261,7 +1295,8 @@ impl PlexiApp {
             if let Ok(monitor) = PermissionMonitor::for_profile(&crate::config::config_dir()) {
                 ids.extend(
                     monitor
-                        .open_needs_you()
+                        .host_records()
+                        .open()
                         .into_iter()
                         .filter(|r| r.kind == NeedsYouKind::Integrity && r.resource == resource)
                         .map(|r| r.id),
@@ -1501,12 +1536,9 @@ impl PlexiApp {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .ok()?;
-        for rec in monitor.open_needs_you() {
-            let rec_pid = rec.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
-                rec.actor
-                    .strip_prefix("pane:")
-                    .and_then(|s| s.parse::<u64>().ok())
-            });
+        for rec in monitor.host_records().open() {
+            let rec_pid =
+                self.record_source_pane(&rec.actor, rec.details.as_ref().and_then(|d| d.pane_id));
             if rec_pid == Some(pane_id) {
                 if let Some(p_str) = rec.details.as_ref().and_then(|d| d.preview_refs.first()) {
                     let p = PathBuf::from(p_str);
@@ -1828,6 +1860,7 @@ impl PlexiApp {
                 };
                 let choice = match option.key.as_str() {
                     "allow_always" => ApprovalChoice::Always,
+                    "allow_session" => ApprovalChoice::Session,
                     "deny" => ApprovalChoice::Deny,
                     _ => ApprovalChoice::Once,
                 };
@@ -2901,6 +2934,76 @@ impl InputViewportRect for egui::InputState {
 mod tests {
     use super::*;
 
+    /// Stint 1743: a pane lifetime is offered once or deny, never a
+    /// standing allow, whatever it asks for; a named agent keeps Always.
+    #[test]
+    fn a_pane_owner_is_offered_a_pane_lifetime_allow() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let root = crate::platform::path::canonical_or_self(&h.workspace_root());
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+        let pane_owner =
+            crate::broker::principal::Principal::Pane(h.app.pane_principal(pane).unwrap());
+        let agent = crate::broker::principal::Principal::agent("agent:options-fixture").unwrap();
+        let mut asks = Vec::new();
+        for (principal, tool, target) in [
+            (
+                &pane_owner,
+                "agents.review",
+                crate::broker::TargetType::HostTool,
+            ),
+            (
+                &pane_owner,
+                "pane.send",
+                crate::broker::TargetType::HostTool,
+            ),
+            (&agent, "agents.review", crate::broker::TargetType::HostTool),
+        ] {
+            let call = format!("options-{tool}-{}", principal.actor_id());
+            let crate::broker::gate::Admission::Required { pending_request_id } =
+                monitor.admit(crate::broker::gate::AdmitRequest {
+                    call_id: &call,
+                    tool,
+                    input_json: &serde_json::json!({"marker": call}).to_string(),
+                    principal,
+                    actor_scope: crate::broker::ActorScope::Workspace,
+                    trust_origin: "host",
+                    workspace_root: &root,
+                    context_id: 0,
+                    package_id: "agents",
+                    instance_id: 0,
+                    target_type: target,
+                })
+            else {
+                panic!("{tool} must ask");
+            };
+            asks.push(pending_request_id);
+        }
+        h.app.sync_attention_queue();
+        let options = |id: &str| {
+            &h.app
+                .attention_queue
+                .items
+                .iter()
+                .find(|bar| bar.id == id)
+                .unwrap_or_else(|| panic!("no card for {id}"))
+                .options
+        };
+        let keys = |id: &str| -> Vec<&str> { options(id).iter().map(|o| o.key.as_str()).collect() };
+        assert_eq!(keys(&asks[0]), ["allow_once", "allow_session", "deny"]);
+        assert_eq!(keys(&asks[1]), ["allow_once", "allow_session", "deny"]);
+        assert_eq!(keys(&asks[2]), ["allow_once", "allow_always", "deny"]);
+        let pane_send_label = &options(&asks[1])[1].label;
+        assert!(
+            pane_send_label.contains("any text to any pane"),
+            "{pane_send_label}"
+        );
+        assert!(
+            pane_send_label.contains("until this pane closes"),
+            "{pane_send_label}"
+        );
+    }
+
     #[test]
     fn pane_send_always_option_names_caller_breadth_and_expiry() {
         let options = pane_send_ask_options();
@@ -2919,10 +3022,11 @@ mod tests {
         use crate::broker::{ActorScope, TargetType};
 
         let mut h = HostHarness::new();
-        let pane = h.add_test_pane();
+        let pane = h.add_focused_terminal();
         let context = h.app.router.active().context_id;
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
-        let principal = crate::broker::principal::Principal::agent(format!("pane:{pane}"));
+        let principal =
+            crate::broker::principal::Principal::Pane(h.app.pane_principal(pane).unwrap());
         let workspace = h.workspace_root();
         let id = match monitor.admit(AdmitRequest {
             call_id: "close-requester-test",
@@ -2947,11 +3051,15 @@ mod tests {
         h.app.close_pane_by_id(pane);
         h.app.sync_attention_queue();
         assert_eq!(
-            monitor.get_needs_you(&id).unwrap().resolution,
+            monitor.host_records().question(&id).unwrap().resolution,
             Some(NeedsYouResolution::Retired)
         );
         assert_eq!(h.app.attention_queue.ask_count(), before - 1);
-        assert!(!monitor.list_needs_you().iter().any(|row| row.id == id));
+        assert!(!monitor
+            .host_records()
+            .questions(true)
+            .iter()
+            .any(|row| row.id == id));
         let list_path = workspace.join("needs-you-list.json");
         h.app
             .observe_needs_you(&crate::broker::caller::RequestOrigin::HostSystem, "list", None, None, list_path.to_str().unwrap());
@@ -2971,14 +3079,16 @@ mod tests {
         assert_eq!(monitor.store().records().len(), grants);
         assert_eq!(
             monitor
-                .get_continuation("close-requester-op")
+                .host_records()
+                .run("close-requester-op")
                 .unwrap()
                 .state,
             ContinuationState::Canceled
         );
         assert_eq!(
             monitor
-                .get_continuation(&id)
+                .host_records()
+                .run(&id)
                 .unwrap()
                 .run_outcome
                 .as_deref(),
@@ -2993,9 +3103,9 @@ mod tests {
         use crate::host::context::{Context, Window};
 
         let mut h = HostHarness::new();
-        let survivor = h.add_test_pane();
-        let first = h.add_test_pane();
-        let second = h.add_test_pane();
+        let survivor = h.add_focused_terminal();
+        let first = h.add_focused_terminal();
+        let second = h.add_focused_terminal();
         let root = h.app.router.active().context_id;
         h.app.set_context_columns(root, vec![vec![survivor]]);
         let context = h.app.next_window_id;
@@ -3029,6 +3139,8 @@ mod tests {
             context_id: context,
             tree_history: Default::default(),
         });
+        h.app
+            .set_context_columns(context, vec![vec![first], vec![second]]);
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let workspace = h.workspace_root();
         let mut ids = Vec::new();
@@ -3041,7 +3153,8 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let principal = crate::broker::principal::Principal::agent(format!("pane:{actor}"));
+            let principal =
+                crate::broker::principal::Principal::Pane(h.app.pane_principal(actor).unwrap());
             let call = format!("context-close-{i}");
             let args = format!(r#"{{"pane_id":42,"operation_id":"context-close-{i}"}}"#);
             let Admission::Required { pending_request_id } = monitor.admit(AdmitRequest {
@@ -3070,16 +3183,20 @@ mod tests {
         h.app.sync_attention_queue();
         for id in &ids[..3] {
             assert_eq!(
-                monitor.get_needs_you(id).unwrap().resolution,
+                monitor.host_records().question(id).unwrap().resolution,
                 Some(NeedsYouResolution::Retired)
             );
             assert!(monitor.approve_pending(id, ApprovalChoice::Once).is_err());
             assert_eq!(
-                monitor.get_continuation(id).unwrap().state,
+                monitor.host_records().run(id).unwrap().state,
                 crate::broker::gate::ContinuationState::Canceled
             );
         }
-        assert!(monitor.list_needs_you().iter().any(|row| row.id == ids[3]));
+        assert!(monitor
+            .host_records()
+            .questions(true)
+            .iter()
+            .any(|row| row.id == ids[3]));
         assert_eq!(h.app.attention_queue.ask_count(), before - 3);
     }
 
@@ -3091,7 +3208,7 @@ mod tests {
         use crate::host::pane::{Pane, PortalPane};
 
         let mut h = HostHarness::new();
-        let pane = h.add_test_pane();
+        let pane = h.add_focused_terminal();
         let context = h.app.next_window_id;
         h.app.next_window_id += 1;
         let window_id = h.app.next_window_id;
@@ -3140,7 +3257,8 @@ mod tests {
         h.app.windows[0].tree = egui_tiles::Tree::new("parent", tile, tiles);
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let workspace = h.workspace_root();
-        let principal = crate::broker::principal::Principal::agent(format!("pane:{pane}"));
+        let principal =
+            crate::broker::principal::Principal::Pane(h.app.pane_principal(pane).unwrap());
         let Admission::Required {
             pending_request_id: id,
         } = monitor.admit(AdmitRequest {
@@ -3162,7 +3280,7 @@ mod tests {
         h.app.dissolve_portal(context);
         assert!(h.app.windows.iter().any(|w| w.panes.contains_key(&pane)));
         assert_eq!(
-            monitor.get_needs_you(&id).unwrap().resolution,
+            monitor.host_records().question(&id).unwrap().resolution,
             Some(NeedsYouResolution::Retired)
         );
         assert!(monitor.approve_pending(&id, ApprovalChoice::Once).is_err());
@@ -3208,8 +3326,9 @@ mod tests {
             let store = InMemoryKeychain::new();
             store.set("plexi:ws:CANARY", PROTECTED_VALUE).unwrap();
             let actor = SecretActor {
+                // A named agent: a pane is offered no standing choices.
                 kind: crate::broker::ActorType::Agent,
-                id: format!("pane:{pane_id}"),
+                id: "agent:decision-fixture".to_owned(),
             };
             let scope = SecretScope::Workspace {
                 id: "ws".into(),
@@ -3292,7 +3411,10 @@ mod tests {
         /// Zero decision, zero grant, zero execution, overlay still open.
         fn assert_undecided(&self, origin: &str) {
             assert!(
-                self.monitor.show_pending(&self.pending_id).is_some(),
+                self.monitor
+                    .host_records()
+                    .pending_id(&self.pending_id)
+                    .is_some(),
                 "{origin}: pending request was resolved"
             );
             assert!(
@@ -3302,7 +3424,8 @@ mod tests {
             assert!(
                 !self
                     .monitor
-                    .list_entries()
+                    .host_records()
+                    .entries()
                     .iter()
                     .any(|e| e.kind == "allow" || e.kind == "deny"),
                 "{origin}: a grant or denial was minted"
@@ -3620,7 +3743,10 @@ mod tests {
         fn assert_decided(&self, choice: crate::broker::gate::ApprovalChoice) {
             use crate::broker::gate::ApprovalChoice;
             assert!(
-                self.monitor.show_pending(&self.pending_id).is_none(),
+                self.monitor
+                    .host_records()
+                    .pending_id(&self.pending_id)
+                    .is_none(),
                 "genuine decision left the request pending"
             );
             assert_eq!(
@@ -3638,7 +3764,8 @@ mod tests {
             );
             let entry_kind = self
                 .monitor
-                .list_entries()
+                .host_records()
+                .entries()
                 .iter()
                 .map(|e| e.kind.clone())
                 .collect::<Vec<_>>();
@@ -3895,7 +4022,8 @@ mod tests {
         h.app.sync_attention_queue();
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let item = monitor
-            .open_needs_you()
+            .host_records()
+            .open()
             .into_iter()
             .find(|item| item.kind == NeedsYouKind::BlockedRun)
             .unwrap();
@@ -3922,7 +4050,8 @@ mod tests {
             AttentionDestination::SourcePane(pane_id)
         );
         assert!(monitor
-            .get_needs_you(&item.id)
+            .host_records()
+            .question(&item.id)
             .unwrap()
             .resolution
             .is_none());
@@ -3958,7 +4087,8 @@ mod tests {
         for ask in &asks {
             assert_eq!(
                 monitor
-                    .get_continuation(&ask.id)
+                    .host_records()
+                    .run(&ask.id)
                     .and_then(|c| c.needs_you_id),
                 Some(ask.id.clone()),
                 "each request must keep its own continuation"
@@ -3968,12 +4098,13 @@ mod tests {
             .resolve_needs_you_from(&asks[0].id, false, crate::broker::gate::ResolveSurface::Desktop)
             .unwrap();
         assert!(monitor
-            .get_needs_you(&asks[1].id)
+            .host_records()
+            .question(&asks[1].id)
             .unwrap()
             .resolution
             .is_none());
         assert_eq!(
-            monitor.get_continuation(&asks[1].id).unwrap().state,
+            monitor.host_records().run(&asks[1].id).unwrap().state,
             crate::broker::gate::ContinuationState::WaitingUser
         );
     }
@@ -3987,7 +4118,7 @@ mod tests {
             .file_needs_you_with_details(
                 NeedsYouFile {
                     kind: NeedsYouKind::PermissionRequest,
-                    actor: "test-agent".into(),
+                    actor: crate::broker::principal::RecordOwner::Host("test-agent".into()),
                     resource: "test-tool".into(),
                     summary: "Allow test tool?".into(),
                     expires_at: None,
@@ -4410,7 +4541,9 @@ mod tests {
             .file_needs_you_with_details(
                 NeedsYouFile {
                     kind: NeedsYouKind::Question,
-                    actor: "agent:unbound".into(),
+                    actor: crate::broker::principal::RecordOwner::requester(
+                        &crate::broker::principal::Principal::agent("agent:unbound").unwrap(),
+                    ),
                     resource: "task".into(),
                     summary: "Choose a branch".into(),
                     expires_at: None,
@@ -4437,7 +4570,12 @@ mod tests {
         h.app.arm_decision_overlay_for_test();
         assert!(h.app.pick_decision_overlay_option(0));
         assert_eq!(
-            monitor.get_needs_you(&id).unwrap().answer.as_deref(),
+            monitor
+                .host_records()
+                .question(&id)
+                .unwrap()
+                .answer
+                .as_deref(),
             Some("Alpha")
         );
         assert_eq!(h.app.active_focused_pane_id(), Some(focused));
@@ -4576,13 +4714,15 @@ mod tests {
         let pane_id = h.add_focused_terminal();
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let mut permission_id = None;
+        let owner = h.app.pane_principal(pane_id).unwrap();
         if with_choices {
-            // Rich asks use the answer branch; agent reports reuse the same run tag.
+            // Rich asks use the answer branch; agent reports reuse the same run
+            // tag, within the pane's own incarnation (stint 1743).
             monitor
                 .file_needs_you_with_details(
                     NeedsYouFile {
                         kind: NeedsYouKind::Question,
-                        actor: "test-agent".into(),
+                        actor: crate::broker::principal::RecordOwner::Pane(owner),
                         resource: format!("pane:{pane_id}"),
                         summary: "Which branch should I use?".into(),
                         expires_at: None,
@@ -4601,7 +4741,7 @@ mod tests {
                     .file_needs_you_with_details(
                         NeedsYouFile {
                             kind: NeedsYouKind::PermissionRequest,
-                            actor: "test-agent".into(),
+                            actor: crate::broker::principal::RecordOwner::Pane(owner),
                             resource: "test-tool".into(),
                             summary: "Allow test tool?".into(),
                             expires_at: None,
@@ -4618,7 +4758,8 @@ mod tests {
         report_attention(&mut h, pane_id);
         let id = permission_id.unwrap_or_else(|| {
             monitor
-                .open_needs_you()
+                .host_records()
+                .open()
                 .into_iter()
                 .find(|item| item.kind == NeedsYouKind::Question)
                 .unwrap()
@@ -4640,7 +4781,12 @@ mod tests {
         monitor.fail_audit(true);
         let accepted = h.app.pick_decision_overlay_option(0);
         // Prove the failure reached audit, rather than a desktop-origin refusal.
-        assert!(monitor.get_needs_you(&id).unwrap().resolution.is_none());
+        assert!(monitor
+            .host_records()
+            .question(&id)
+            .unwrap()
+            .resolution
+            .is_none());
         assert!(
             !accepted,
             "failed audit must not report a successful decision"
@@ -4665,14 +4811,28 @@ mod tests {
 
         // Same report must keep the unresolved broker id visible, not just a fallback.
         report_attention(&mut h, pane_id);
-        assert!(monitor.open_needs_you().iter().any(|item| item.id == id));
+        assert!(monitor
+            .host_records()
+            .open()
+            .iter()
+            .any(|item| item.id == id));
         assert!(h.app.attention_queue.items.iter().any(|bar| bar.id == id));
         monitor.fail_audit(false);
         assert!(h.app.pick_decision_overlay_option(0));
-        assert!(monitor.get_needs_you(&id).unwrap().resolution.is_some());
+        assert!(monitor
+            .host_records()
+            .question(&id)
+            .unwrap()
+            .resolution
+            .is_some());
         if with_choices {
             assert_eq!(
-                monitor.get_needs_you(&id).unwrap().answer.as_deref(),
+                monitor
+                    .host_records()
+                    .question(&id)
+                    .unwrap()
+                    .answer
+                    .as_deref(),
                 Some("Alpha")
             );
         }
@@ -4710,7 +4870,7 @@ mod tests {
         h.app.rename_context(0, "ctx-alpha");
         let a1 = h.add_test_pane();
         let a2 = h.add_test_pane();
-        let a3 = h.add_test_pane();
+        let a3 = h.add_focused_terminal();
         if let Some(p) = h.app.windows[0]
             .panes
             .get_mut(&a1)
@@ -4733,16 +4893,20 @@ mod tests {
             p.name = Some("a3".to_string());
         }
 
+        let pane_5 = h.add_focused_terminal();
         let ctx_beta = h.app.create_context_without_pty("ctx-beta", None);
         let beta_idx = h.app.router.active_idx();
-        let pane_5 = h.add_test_pane();
         h.app.set_context_columns(ctx_beta, vec![vec![pane_5]]);
 
+        h.app
+            .set_context_columns(ctx_alpha, vec![vec![a1], vec![a2], vec![a3]]);
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::Question,
-                actor: "claude-code".to_string(),
+                actor: crate::broker::principal::RecordOwner::Pane(
+                    h.app.pane_principal(a3).unwrap(),
+                ),
                 resource: format!("pane:{a3}"),
                 summary: "claude-code is blocked".to_string(),
                 expires_at: None,
@@ -4752,7 +4916,9 @@ mod tests {
         monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::Question,
-                actor: "codex".to_string(),
+                actor: crate::broker::principal::RecordOwner::Pane(
+                    h.app.pane_principal(pane_5).unwrap(),
+                ),
                 resource: format!("pane:{pane_5}"),
                 summary: "codex is blocked".to_string(),
                 expires_at: None,
@@ -4801,7 +4967,7 @@ mod tests {
         let notice_id = monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::Integrity,
-                actor: "app-update".to_string(),
+                actor: crate::broker::principal::RecordOwner::Host("app-update".to_string()),
                 resource: format!("pane:{pane_id}"),
                 summary: "Plexi updated in the background".to_string(),
                 expires_at: None,
@@ -4846,7 +5012,11 @@ mod tests {
         assert!(overlay.options[0].recommended);
         assert_eq!(overlay.options[0].label, "Acknowledge");
         assert!(
-            monitor.open_needs_you().iter().any(|r| r.id == notice_id),
+            monitor
+                .host_records()
+                .open()
+                .iter()
+                .any(|r| r.id == notice_id),
             "notice must remain open while Decision Overlay is displayed"
         );
 
@@ -4866,7 +5036,8 @@ mod tests {
         assert!(h.app.attention_queue.decision_overlay.is_none());
 
         let record = monitor
-            .get_needs_you(&notice_id)
+            .host_records()
+            .question(&notice_id)
             .expect("resolved notice record");
         assert_eq!(
             record.resolution,
@@ -4878,7 +5049,7 @@ mod tests {
         let auto_notice_id = monitor
             .file_needs_you(NeedsYouFile {
                 kind: NeedsYouKind::Integrity,
-                actor: "app-update".to_string(),
+                actor: crate::broker::principal::RecordOwner::Host("app-update".to_string()),
                 resource: "auto-clear-resource".to_string(),
                 summary: "Background maintenance completed".to_string(),
                 expires_at: None,
@@ -4890,7 +5061,8 @@ mod tests {
         h.app.toggle_attention_queue_list();
         assert!(!h.app.attention_queue.open);
         let auto_record = monitor
-            .get_needs_you(&auto_notice_id)
+            .host_records()
+            .question(&auto_notice_id)
             .expect("auto-cleared notice record");
         assert_eq!(
             auto_record.resolution,
@@ -5456,7 +5628,8 @@ mod tests {
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !monitor
-            .list_needs_you()
+            .host_records()
+            .questions(true)
             .iter()
             .any(|item| item.summary == QUESTION)
         {
@@ -5498,7 +5671,8 @@ mod tests {
         // A later incarnation under the same pane number, as after a
         // restart, reads nothing: not by list, not by id.
         let id = monitor
-            .list_needs_you()
+            .host_records()
+            .questions(true)
             .into_iter()
             .find(|item| item.summary == QUESTION)
             .unwrap()
@@ -5536,6 +5710,217 @@ mod tests {
         assert!(
             !show(&mut h, later, "show-later.json"),
             "a reused number shows nothing"
+        );
+    }
+
+    #[test]
+    fn reused_pane_number_cannot_read_an_earlier_panes_ask() {
+        use serde_json::{json, Value};
+
+        let mut h = HostHarness::new();
+        PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let pane = h.add_focused_terminal();
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .terminal_incarnation_mut()
+            .unwrap()
+            .agent_role = Some("worker".into());
+        let fleet_state = |h: &HostHarness| {
+            h.app
+                .agent_inputs()
+                .into_iter()
+                .find(|input| input.pane_id == pane && input.live)
+                .unwrap()
+                .state
+        };
+        let other = h.add_focused_terminal();
+        let call = |h: &mut HostHarness, pane, op: &str, payload: &Value| -> Value {
+            let origin = h.origin_from_pane(pane);
+            assert_eq!(origin.class(), "pane", "{origin:?}");
+            let response = crate::rpc::response_file_in(h.profile_dir(), op, "json");
+            if op == "list" {
+                h.app.observe_needs_you(&origin, op, None, None, &response);
+            } else {
+                h.app.handle_needs_you_api(op, payload, &origin, &response);
+            }
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap()
+        };
+
+        let ask = call(
+            &mut h,
+            pane,
+            "ask",
+            &json!({"summary": "Proceed?", "choices": ["yes", "no"]}),
+        );
+        assert_eq!(ask["ok"], true, "{ask}");
+        let id = ask["id"].as_str().unwrap();
+        let by_id = json!({"id": id});
+        let listed = call(&mut h, pane, "list", &json!({}));
+        assert_eq!(listed["items"][0]["id"], id, "{listed}");
+        let shown = call(&mut h, pane, "show", &by_id);
+        assert_eq!(shown["item"]["id"], id, "{shown}");
+        assert_eq!(shown["continuation"]["needs_you_id"], id, "{shown}");
+        assert_eq!(call(&mut h, other, "list", &json!({}))["items"], json!([]));
+        assert_eq!(call(&mut h, other, "show", &by_id)["ok"], false);
+
+        assert_eq!(fleet_state(&h), crate::protocol::AgentState::NeedsYou);
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .terminal_incarnation_mut()
+            .unwrap();
+        let grant = terminal.authority().unwrap().grant().clone();
+        terminal.replace_grant_for_test(grant);
+        assert_ne!(fleet_state(&h), crate::protocol::AgentState::NeedsYou);
+        h.app.sync_attention_queue();
+        let historical = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.id == id)
+            .unwrap();
+        assert_eq!(
+            historical.pane_id, 0,
+            "desktop history must not navigate to the replacement"
+        );
+
+        assert_eq!(call(&mut h, pane, "list", &json!({}))["items"], json!([]));
+        assert_eq!(call(&mut h, pane, "show", &by_id)["ok"], false);
+        let completion = call(&mut h, pane, "complete", &by_id);
+        assert_eq!(completion["ok"], false, "{completion}");
+        // Another incarnation's record does not resolve at all.
+        assert!(
+            completion["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown continuation"),
+            "{completion}"
+        );
+    }
+
+    /// A tagged retry and a later `done` report from a pane reusing an earlier
+    /// pane's number touch only their own incarnation's rows (stint 1743).
+    #[test]
+    fn reused_pane_number_neither_reuses_nor_withdraws_an_earlier_panes_ask() {
+        use serde_json::{json, Value};
+
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let call = |h: &mut HostHarness, op: &str, payload: &Value| -> Value {
+            let origin = h.origin_from_pane(pane);
+            let response = crate::rpc::response_file_in(h.profile_dir(), op, "json");
+            h.app.handle_needs_you_api(op, payload, &origin, &response);
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap()
+        };
+        let retry = json!({"summary": "Proceed?", "run_tag": "op-1"});
+        let first = call(&mut h, "ask", &retry);
+        let first_id = first["id"].as_str().unwrap().to_string();
+        let again = call(&mut h, "ask", &retry);
+        assert_eq!(
+            again["id"],
+            first_id.as_str(),
+            "same incarnation retries reuse"
+        );
+
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .terminal_incarnation_mut()
+            .unwrap();
+        let grant = terminal.authority().unwrap().grant().clone();
+        terminal.replace_grant_for_test(grant);
+
+        let later = call(&mut h, "ask", &retry);
+        let later_id = later["id"].as_str().unwrap();
+        assert_ne!(
+            later_id, first_id,
+            "a reused number files its own row: {later}"
+        );
+        assert_eq!(call(&mut h, "show", &json!({"id": later_id}))["ok"], true);
+
+        h.app.sync_attention_queue();
+        for id in [first_id.as_str(), later_id] {
+            assert!(
+                h.app.attention_queue.items.iter().any(|item| item.id == id),
+                "desktop missing {id}"
+            );
+        }
+
+        // The later pane reporting done withdraws only its own question.
+        h.app.withdraw_agent_attention_items(pane);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let open = |id: &str| {
+            monitor
+                .host_records()
+                .question(id)
+                .is_some_and(|i| i.resolution.is_none())
+        };
+        assert!(open(&first_id), "the earlier pane's question stays open");
+        assert!(
+            !open(later_id),
+            "the later pane's own question is withdrawn"
+        );
+    }
+
+    /// Two incarnations reusing one pane number and one operation id each show
+    /// and complete their own record (stint 1743).
+    #[test]
+    fn reused_pane_number_completes_its_own_operation_id() {
+        use serde_json::{json, Value};
+
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let call = |h: &mut HostHarness, op: &str, payload: &Value| -> Value {
+            let origin = h.origin_from_pane(pane);
+            let response = crate::rpc::response_file_in(h.profile_dir(), op, "json");
+            h.app.handle_needs_you_api(op, payload, &origin, &response);
+            serde_json::from_slice(&std::fs::read(response).unwrap()).unwrap()
+        };
+        let ask = json!({"summary": "Proceed?", "run_tag": "op-1"});
+        let op = json!({"id": "op-1", "state": "completed", "receipt": "done"});
+        let first = call(&mut h, "ask", &ask)["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .terminal_incarnation_mut()
+            .unwrap();
+        let grant = terminal.authority().unwrap().grant().clone();
+        terminal.replace_grant_for_test(grant);
+        let second = call(&mut h, "ask", &ask)["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(first, second);
+
+        let shown = call(&mut h, "show", &op);
+        assert_eq!(
+            shown["continuation"]["needs_you_id"],
+            second.as_str(),
+            "{shown}"
+        );
+        let done = call(&mut h, "complete", &op);
+        assert_eq!(done["ok"], true, "{done}");
+        assert_eq!(
+            done["continuation"]["needs_you_id"],
+            second.as_str(),
+            "{done}"
+        );
+
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let earlier = monitor.host_records().run(&first).unwrap();
+        assert_ne!(
+            earlier.state,
+            crate::broker::gate::ContinuationState::Completed,
+            "the earlier incarnation's record is untouched"
         );
     }
 

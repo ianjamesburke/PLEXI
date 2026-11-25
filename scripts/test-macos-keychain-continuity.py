@@ -76,13 +76,21 @@ def pane_command(binary, root):
     return script, reported, listed
 
 
-def asked(listed):
+def asked(listed, previous_id=None):
     """The question in the pane's own latest listing, once it is there."""
     try:
         items = json.loads(listed.read_text(errors="replace"))["items"]
     except (OSError, ValueError, KeyError):
         return None
-    return next((item for item in items if item.get("summary") == QUESTION), None)
+    if previous_id and any(item.get("id") == previous_id for item in items):
+        raise AssertionError("the replacement pane listed the earlier pane's question")
+    return next((item for item in items if item.get("id") and item.get("summary") == QUESTION), None)
+
+
+def log_since(path, offset):
+    """The log text written after byte `offset` (a file size), so the offset and
+    the slice are in the same unit."""
+    return path.read_bytes()[offset:].decode(errors="replace")
 
 
 def run_host(binary, env, until):
@@ -149,12 +157,13 @@ def main(args):
         installed_b = install(args.package_b.resolve(), channel, root, env)
         if installed_a == installed_b:
             raise AssertionError("installer did not activate a different generation")
-        # B's pane is a new incarnation and may not read A's question. It asks
-        # the identical question instead: the host reuses A's open record,
-        # by id, only if that record survived the upgrade under its seal.
-        filed = re.compile(rf"needs_you: pane \d+ filed question as {re.escape(original['id'])}$", re.M)
-        run_host(installed_b, env, lambda _listed: filed.search(first_log.read_text(errors="replace")[before:]))
-        second_log = first_log.read_text(errors="replace")[before:]
+        # B's pane is a new incarnation and may not read A's question, and its
+        # own ask files a new record. The host's restore log names every open
+        # item it loaded from the sealed journal, so A's exact id there proves
+        # the record survived the upgrade under its seal.
+        restored = re.compile(rf"needs_you: restored open item {re.escape(original['id'])}$", re.M)
+        run_host(installed_b, env, lambda listed: asked(listed, original["id"]) and restored.search(log_since(first_log, before)))
+        second_log = log_since(first_log, before)
         forbidden = ("key unreadable", "rotated unreadable permission mac key", "unverified grants", "created host permission mac key")
         if any(marker in second_log for marker in forbidden):
             raise AssertionError(f"package B did not retain the host seal: {second_log[-4000:]}")

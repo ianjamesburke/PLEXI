@@ -334,15 +334,17 @@ impl PlexiApp {
     /// Esc/Deny refuses. Resolving the consent fires the transport's reply.
     pub(crate) fn draw_event_consent_modal(&mut self, ctx: &egui::Context) {
         use crate::host::event_subscriptions::ConsentChoice;
-        let (request, subscriber, verb, target) = match self.pending_event_consents.front() {
-            Some(c) => (
-                c.request_id,
-                c.subscriber_id.clone(),
-                c.action_verb(),
-                c.target_label(),
-            ),
-            None => return,
-        };
+        let (request, subscriber, verb, target, standing) =
+            match self.pending_event_consents.front() {
+                Some(c) => (
+                    c.request_id,
+                    c.principal.label().to_owned(),
+                    c.action_verb(),
+                    c.target_label(),
+                    ConsentChoice::standing_for(&c.principal),
+                ),
+                None => return,
+            };
         let now = std::time::Instant::now();
         self.event_consent_guard
             .present(request, ctx.cumulative_pass_nr(), now);
@@ -353,7 +355,7 @@ impl PlexiApp {
             ctx.request_repaint_after(self.event_consent_guard.remaining(now));
         }
         let colors = self.colors;
-        let actions = event_consent_actions();
+        let actions = event_consent_actions(standing);
         let response =
             event_consent_modal(&actions)
                 .consent_input(input)
@@ -366,30 +368,30 @@ impl PlexiApp {
                     crate::ui::typography::caption(ui, target, &colors);
                 });
 
-        let choice = if response.selected == Some("allow_once") {
-            Some(ConsentChoice::AllowOnce)
-        } else if response.selected == Some("allow_always") {
-            Some(ConsentChoice::AllowAlways)
-        } else if response.dismissed || response.selected == Some("deny") {
+        let choice = if response.dismissed {
             Some(ConsentChoice::Deny)
         } else {
-            None
+            [ConsentChoice::AllowOnce, standing, ConsentChoice::Deny]
+                .into_iter()
+                .find(|choice| response.selected == Some(choice.decision_key()))
         };
 
         if let Some(choice) = choice {
             // A standing grant needs this dialog's evidence for this request.
             let evidence = match choice {
-                ConsentChoice::AllowAlways => match self.event_consent_guard.witness(crate::broker::consent::ConsentDecision {
-                    displayed: request,
-                    target: &request.to_string(),
-                    choice: "allow_always",
-                    refuses: false,
-                    now,
-                    synthetic: self.synthetic_input_frame,
-                }) {
+                ConsentChoice::AllowAlways | ConsentChoice::AllowPane => match self
+                    .event_consent_guard
+                    .witness(crate::broker::consent::ConsentDecision {
+                        displayed: request,
+                        target: &request.to_string(),
+                        choice: choice.decision_key(),
+                        refuses: false,
+                        now,
+                        synthetic: self.synthetic_input_frame,
+                    }) {
                     Ok(evidence) => Some(evidence),
                     Err(error) => {
-                        log::info!("event_consent: always not applied: {error}");
+                        log::info!("event_consent: standing decision refused: {error}");
                         return;
                     }
                 },
@@ -539,7 +541,10 @@ pub(crate) fn quit_save_failure_actions() -> [crate::ui::dialog::DialogAction<'s
 }
 
 /// The actions of this dialog, shared with its keyboard test (stint 1493).
-pub(crate) fn event_consent_actions() -> [crate::ui::dialog::DialogAction<'static>; 3] {
+fn event_consent_actions(
+    standing: crate::host::event_subscriptions::ConsentChoice,
+) -> [crate::ui::dialog::DialogAction<'static>; 3] {
+    use crate::host::event_subscriptions::ConsentChoice;
     [
         crate::ui::dialog::DialogAction::new(
             "allow_once",
@@ -552,8 +557,12 @@ pub(crate) fn event_consent_actions() -> [crate::ui::dialog::DialogAction<'stati
             egui::Key::Enter,
         )),
         crate::ui::dialog::DialogAction::new(
-            "allow_always",
-            "Always",
+            standing.decision_key(),
+            if standing == ConsentChoice::AllowPane {
+                "Allow until this pane closes"
+            } else {
+                "Always"
+            },
             crate::ui::button::ButtonKind::Secondary,
         )
         .shortcut(crate::ui::dialog::DialogShortcut::new(
@@ -642,7 +651,9 @@ mod keyboard_reach_tests {
     fn consent_and_quit_without_saving_dialogs_do_not_trap_focus() {
         let quit = super::quit_save_failure_actions();
         assert!(!super::quit_save_failure_modal(&quit).traps_focus());
-        let consent = super::event_consent_actions();
+        let consent = super::event_consent_actions(
+            crate::host::event_subscriptions::ConsentChoice::AllowPane,
+        );
         assert!(!super::event_consent_modal(&consent).traps_focus());
         let review = super::raw_wasm_review_actions();
         assert!(!super::raw_wasm_review_modal(&review).traps_focus());

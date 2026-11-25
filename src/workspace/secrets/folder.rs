@@ -360,7 +360,14 @@ pub(super) fn admitted_read_with(
             resource_id: resource,
         } => {
             if monitor
-                .note_use(&actor.id, &call_id, &grant_id, &fingerprint, &resource, "")
+                .note_use(
+                    &crate::broker::principal::RecordOwner::requester(&principal),
+                    &call_id,
+                    &grant_id,
+                    &fingerprint,
+                    &resource,
+                    "",
+                )
                 .is_err()
             {
                 log::info!(
@@ -379,7 +386,8 @@ pub(super) fn admitted_read_with(
             };
             if monitor
                 .note_outcome(
-                    &actor.id,
+                    None,
+                    &crate::broker::principal::RecordOwner::requester(&principal),
                     &call_id,
                     &grant_id,
                     &fingerprint,
@@ -635,7 +643,7 @@ mod tests {
             ReadResult::PermissionRequired { .. }
         ));
 
-        let audit = serde_json::to_string(&audit_as_json(&monitor.audit_records())).unwrap();
+        let audit = serde_json::to_string(&audit_as_json(&monitor.host_records().audit())).unwrap();
         assert!(audit.contains("FOLDER_E2E_SECRET"));
         assert!(audit.contains("ask"));
         assert!(!audit.contains(value));
@@ -720,7 +728,7 @@ mod tests {
             .map(|fact| {
                 serde_json::json!({
                     "kind": fact.kind,
-                    "actor": fact.actor,
+                    "actor": fact.actor.label(),
                     "call_id": fact.call_id,
                     "grant_id": fact.grant_id,
                     "resource_id": fact.resource_id,
@@ -816,7 +824,7 @@ mod tests {
             matches!(again, ReadResult::PermissionRequired { .. }),
             "a second read must ask again"
         );
-        let blob = serde_json::to_string(&audit_as_json(&monitor.audit_records())).unwrap();
+        let blob = serde_json::to_string(&audit_as_json(&monitor.host_records().audit())).unwrap();
         assert!(blob.contains("allow_once"));
         assert!(blob.contains("FOLDER_E2E_SECRET"));
         assert!(!blob.contains(value));
@@ -867,8 +875,10 @@ mod approval_retry_tests {
         let monitor = PermissionMonitor::ephemeral();
         let root = tempfile::tempdir().unwrap();
         let actor = SecretActor {
-            kind: ActorType::Agent,
-            id: "pane:0957-concurrent".into(),
+            kind: ActorType::Pane,
+            id: crate::broker::principal::PanePrincipal::for_test(957)
+                .actor_id()
+                .to_owned(),
         };
         const INPUT: &str = r#"{"name":"FOO","scope":"global"}"#;
         let first = admitted_read(
@@ -931,8 +941,10 @@ mod approval_retry_tests {
             let monitor = PermissionMonitor::ephemeral();
             let root = tempfile::tempdir().unwrap();
             let actor = SecretActor {
-                kind: ActorType::Agent,
-                id: "pane:0957".into(),
+                kind: ActorType::Pane,
+                id: crate::broker::principal::PanePrincipal::for_test(957)
+                    .actor_id()
+                    .to_owned(),
             };
             let reads = std::cell::Cell::new(0);
             let read = || {
@@ -971,7 +983,7 @@ mod approval_retry_tests {
             }
             assert_eq!(reads.get(), 1);
             assert!(
-                monitor.list_pending().is_empty(),
+                monitor.host_records().pending().is_empty(),
                 "an approved retry must not post a new banner"
             );
             let expected = match failure {
@@ -980,7 +992,8 @@ mod approval_retry_tests {
                 _ => "backend_error",
             };
             assert!(monitor
-                .audit_records()
+                .host_records()
+                .audit()
                 .iter()
                 .any(|row| row.decision == expected));
             // A different command still needs its own approval: do not turn a

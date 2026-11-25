@@ -130,34 +130,16 @@ impl PlexiApp {
             // A verified pane subscribes under its own grant, at one
             // scope snapshot, exactly as its MCP bearer would (stint 1632).
             req.subscriber_authority = Self::subscriber_authority(req.socket_caller.as_ref());
-            // An outside process is authorized as the one external identity;
-            // each connection keeps its own delivery key, so two of its
-            // subscriptions never drain one queue (stint 1285).
-            if let Some(crate::broker::caller::SocketCaller::External(_)) =
-                req.socket_caller.as_ref()
-            {
-                req.subscriber_type_override = Some(crate::broker::ActorType::External);
-                req.broker_actor_override =
-                    Some(crate::broker::principal::EXTERNAL_ID.to_string());
-            }
             if let crate::host::event_subscriptions::SubscriberAuthority::Pane(admitted) =
                 &req.subscriber_authority
             {
                 req.workspace_root_override = Some(admitted.authority.scope().workspace_root);
             }
         }
-        if req.cancelled.is_some() {
-            req.broker_actor_override = Some(
-                crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(
-                    req.from_pane_id,
-                )
-                .1,
-            );
-        }
         // When a parent master pane subscribes to its spawned child worker's
         // `plexi.pane::lifecycle` stream across a sub-context boundary, bind the
-        // subscription to the child pane's context and grant a session-scoped
-        // allow so Tier 1 escalation (`Worker -> Master`) does not prompt the human.
+        // subscription to that child's context and grant a session allow for
+        // that child so Tier 1 escalation (`Worker -> Master`) does not prompt.
         if req.publisher_plugin_id == crate::host::pane_lifecycle::PUBLISHER {
             if let (Some(caller_id), Some(target_pane_id)) = (
                 req.from_pane_id,
@@ -168,16 +150,19 @@ impl PlexiApp {
                 let target_parent = self
                     .windows
                     .iter()
-                    .find_map(|win| win.panes.get(&target_pane_id))
-                    .and_then(|p| p.as_terminal())
-                    .and_then(|t| t.parent_pane_id)
-                    .or_else(|| {
-                        self.host
-                            .pane_lifecycle
-                            .get(&target_pane_id)
-                            .and_then(|s| s.parent_pane_id)
-                    });
-                if target_parent == Some(caller_id) {
+                    .find_map(|window| window.panes.get(&target_pane_id))
+                    .and_then(|pane| pane.as_terminal())
+                    .and_then(|term| term.parent_owner.as_ref());
+                let requester = match &req.subscriber_authority {
+                    crate::host::event_subscriptions::SubscriberAuthority::Pane(scope) => {
+                        scope.current().ok().map(|live| live.principal())
+                    }
+                    _ => None,
+                };
+                if let Some(parent) = requester
+                    .as_ref()
+                    .filter(|p| p.number() == caller_id && Some(*p) == target_parent)
+                {
                     let target_ctx_id = self
                         .windows
                         .iter()
@@ -196,11 +181,11 @@ impl PlexiApp {
                         req.context_id_override = Some(t_ctx_id);
                     }
                     if let Some(ref ws) = req.workspace_root_override {
-                        let actor = req.broker_actor_override.clone().unwrap_or_else(|| {
-                            crate::host::event_subscriptions::HostSubscriptionService::resolve_cli_subscriber(req.from_pane_id).1
-                        });
-                        self.host_subscriptions
-                            .allow_parent_child_lifecycle(&actor, ws);
+                        self.host_subscriptions.allow_parent_child_lifecycle(
+                            parent,
+                            target_pane_id,
+                            ws,
+                        );
                     }
                 }
             }
@@ -343,13 +328,16 @@ impl PlexiApp {
         let SocketCaller::Pane(pane) = socket else {
             return Ok(crate::agent::runs::AgentsCaller::Principal {
                 principal,
-                pane: None,
+                acting_for: None,
                 agent: None,
                 context_root: None,
                 context_denied: false,
             });
         };
         let pane_id = pane.terminal_pane;
+        if self.pane_principal(pane_id).as_ref() != Some(&pane.authority.principal()) {
+            return Err("the pane requester has expired".into());
+        }
         let context_root = self.pane_context_authority_root(pane_id);
         let path_of = |key: &str| {
             payload
@@ -370,7 +358,7 @@ impl PlexiApp {
         );
         Ok(crate::agent::runs::AgentsCaller::Principal {
             principal,
-            pane: Some(pane_id),
+            acting_for: None,
             agent,
             context_root,
             context_denied,
@@ -381,13 +369,16 @@ impl PlexiApp {
     /// caller reports only for its own pane, by its terminal or the view
     /// covering it. Host code reports for any pane.
     fn foreign_report(
+        &self,
         origin: &crate::broker::caller::RequestOrigin,
         target: crate::spatial::tiling::PaneId,
     ) -> Option<String> {
         use crate::broker::caller::SocketCaller;
         match origin.socket_caller()? {
             SocketCaller::Pane(pane)
-                if pane.visible_pane == target || pane.terminal_pane == target =>
+                if (pane.visible_pane == target || pane.terminal_pane == target)
+                    && self.pane_principal(pane.terminal_pane).as_ref()
+                        == Some(&pane.authority.principal()) =>
             {
                 None
             }
@@ -409,14 +400,12 @@ impl PlexiApp {
         &self,
         pane_id: crate::spatial::tiling::PaneId,
         kind: crate::broker::gate::NeedsYouKind,
-        actor: String,
         summary: String,
         session_id: Option<String>,
     ) -> Result<String, String> {
-        let pane_incarnation = self
-            .terminal_incarnation(pane_id)
-            .and_then(|terminal| terminal.authority())
-            .map(|authority| authority.durable_key().to_string());
+        let owner = self
+            .pane_principal(pane_id)
+            .ok_or("pane has no live authority")?;
         let filed =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .map_err(|error| error.to_string())
@@ -424,7 +413,7 @@ impl PlexiApp {
                     monitor.file_needs_you_with_details(
                         crate::broker::gate::NeedsYouFile {
                             kind,
-                            actor,
+                            actor: crate::broker::principal::RecordOwner::Pane(owner),
                             resource: format!("pane:{pane_id}"),
                             summary,
                             expires_at: None,
@@ -434,7 +423,6 @@ impl PlexiApp {
                         },
                         Some(crate::broker::gate::NeedsYouDetails {
                             pane_id: Some(pane_id),
-                            pane_incarnation,
                             session_id,
                             ..Default::default()
                         }),
@@ -979,7 +967,7 @@ impl PlexiApp {
                         (None, None)
                     }
                 };
-                self.withdraw_agent_attention_items(*pane_id, session_id.as_deref());
+                self.withdraw_agent_attention_items(*pane_id);
                 if !self.pane_has_parent_agent(*pane_id) {
                     let done_title = if summary_str.trim().is_empty() {
                         format!("{agent_label} done")
@@ -993,10 +981,13 @@ impl PlexiApp {
                         crate::broker::gate::PermissionMonitor::for_profile(&profile_dir)
                             .map_err(|error| error.to_string())
                             .and_then(|monitor| {
+                                let owner = self
+                                    .pane_principal(*pane_id)
+                                    .ok_or("pane has no live authority")?;
                                 monitor.file_needs_you_with_details(
                                     crate::broker::gate::NeedsYouFile {
                                         kind: crate::broker::gate::NeedsYouKind::AgentDone,
-                                        actor: format!("pane:{pane_id}"),
+                                        actor: crate::broker::principal::RecordOwner::Pane(owner),
                                         resource,
                                         summary: done_title,
                                         expires_at: None,
@@ -1280,7 +1271,7 @@ impl PlexiApp {
                                     serde_json::json!({"ok": false, "error_code": "permission_denied", "error": error})
                                 },
                             ),
-                            None => crate::agent::runs::projection(&workspace),
+                            None => crate::agent::runs::host_projection(&workspace),
                         },
                         Ok(permit) => {
                             let served = match &permit {
@@ -3207,7 +3198,10 @@ impl PlexiApp {
                 let peer = origin
                     .socket_caller()
                     .and_then(crate::broker::caller::SocketCaller::pane)
-                    .map(|pane| pane.terminal_pane);
+                    .and_then(|pane| {
+                        self.pane_principal(pane.terminal_pane)
+                            .filter(|owner| *owner == pane.authority.principal())
+                    });
                 let outside = matches!(
                     origin,
                     crate::broker::caller::RequestOrigin::Socket(
@@ -3233,7 +3227,10 @@ impl PlexiApp {
                 }
                 // A pane whose authority was never established sends nothing
                 // under it, and is told why (stint 1632).
-                if let Some(Err(error)) = peer.map(|caller| self.pane_ceiling(caller)) {
+                if let Some(Err(error)) = peer
+                    .as_ref()
+                    .map(|caller| self.pane_ceiling(caller.number()))
+                {
                     log::info!("pane_ipc: send_to_pane: caller pane_id={peer:?} refused: {error}");
                     if let Some(rf) = response_file {
                         write_json_response(
@@ -3244,13 +3241,13 @@ impl PlexiApp {
                     return;
                 }
                 let caller_and_posture = peer
-                    .and_then(|caller| match self.pane_ceiling(caller) {
+                    .and_then(|caller| match self.pane_ceiling(caller.number()) {
                         Ok(Some(posture)) => Some((caller, Some(posture))),
                         // Refused, with its reason, above.
                         Err(_) => None,
                         Ok(None) => {
                             log::info!(
-                                "pane_ipc: send_to_pane: caller pane_id={caller} has no posture snapshot — pane.send defaults to broker Ask (target pane_id={pane_id})"
+                                "pane_ipc: send_to_pane: caller pane_id={} has no posture snapshot — pane.send defaults to broker Ask (target pane_id={pane_id})", caller.number()
                             );
                             Some((caller, None))
                         }
@@ -3308,7 +3305,10 @@ impl PlexiApp {
                 // payload must not create another ask under a used ID.
                 if let Some((caller, _)) = &caller_and_posture {
                     let monitor = pane_send_monitor.clone();
-                    if let Some(existing) = monitor.get_continuation(&send_operation_id) {
+                    if let Some(existing) = monitor
+                        .records_for(&crate::broker::principal::Principal::Pane(caller.clone()))
+                        .run(&send_operation_id)
+                    {
                         let text_fingerprint = crate::broker::gate::fingerprint_args(
                             &serde_json::json!({"text": text_with_newlines}).to_string(),
                         )
@@ -3319,11 +3319,10 @@ impl PlexiApp {
                         let context_id = self
                             .windows
                             .iter()
-                            .find(|window| window.panes.contains_key(caller))
+                            .find(|window| window.panes.contains_key(&caller.number()))
                             .map(|window| window.context_id)
                             .unwrap_or_default();
-                        if existing.actor != format!("pane:{caller}")
-                            || existing.context_id != Some(context_id)
+                        if existing.context_id != Some(context_id)
                             || existing.request_fingerprint.as_deref() != Some(fingerprint.as_str())
                         {
                             if let Some(rf) = response_file {
@@ -3358,7 +3357,7 @@ impl PlexiApp {
                 let admission = caller_and_posture.map(|(caller, posture)| {
                     let monitor = pane_send_monitor.clone();
                     let root = self
-                        .pane_context_authority_root(caller)
+                        .pane_context_authority_root(caller.number())
                         .unwrap_or_else(crate::config::config_dir);
                     // Bind a one-time authorization to the text without putting
                     // terminal input into the permission summary or audit log.
@@ -3366,13 +3365,13 @@ impl PlexiApp {
                         &serde_json::json!({"text": text_with_newlines}).to_string(),
                     ).expect("serializing a string produces valid canonical JSON");
                     let input = serde_json::json!({"pane_id": pane_id, "submit": submit, "paste": paste, "text_fingerprint": text_fingerprint, "operation_id": send_operation_id}).to_string();
-                    let actor = format!("pane:{caller}");
+                    let actor = crate::broker::principal::Principal::Pane(caller.clone());
                     let adm = monitor.admit_with_posture(
                         crate::broker::gate::AdmitRequest {
                             call_id: "pane-send",
                             tool: "pane.send",
                             input_json: &input,
-                            principal: &crate::broker::principal::Principal::agent(&actor),
+                            principal: &actor,
                             actor_scope: crate::broker::ActorScope::Workspace,
                             trust_origin: "host",
                             workspace_root: &root,
@@ -3381,7 +3380,7 @@ impl PlexiApp {
                             context_id: self
                                 .windows
                                 .iter()
-                                .find(|window| window.panes.contains_key(&caller))
+                                .find(|window| window.panes.contains_key(&caller.number()))
                                 .map(|window| window.context_id)
                                 .unwrap_or_default(),
                             target_type: crate::broker::TargetType::Capability,
@@ -3425,7 +3424,7 @@ impl PlexiApp {
                                 crate::app::pane_wait::PendingSendApproval {
                                     pending_request_id,
                                     operation_id: send_operation_id.clone(),
-                                    caller_pane_id: caller,
+                                    owner: caller,
                                     pane_id: *pane_id,
                                     text: text.clone(),
                                     submit: *submit,
@@ -3448,6 +3447,7 @@ impl PlexiApp {
                         }
                     }
                     proceed_or_none => {
+                        let mut send_run = None;
                         if let Some((
                             caller,
                             crate::broker::gate::Admission::Proceed { fingerprint, .. },
@@ -3457,18 +3457,20 @@ impl PlexiApp {
                             let context_id = self
                                 .windows
                                 .iter()
-                                .find(|window| window.panes.contains_key(caller))
+                                .find(|window| window.panes.contains_key(&caller.number()))
                                 .map(|window| window.context_id)
                                 .unwrap_or_default();
                             let claim = monitor.claim_pane_send(
                                 &send_operation_id,
-                                &format!("pane:{caller}"),
+                                caller,
                                 context_id,
-                                *pane_id,
                                 fingerprint,
                             );
                             let reply = match claim {
-                                Ok(crate::broker::gate::PaneSendClaim::Claimed) => None,
+                                Ok(crate::broker::gate::PaneSendClaim::Claimed(handle)) => {
+                                    send_run = Some(handle);
+                                    None
+                                }
                                 Ok(crate::broker::gate::PaneSendClaim::Completed) => Some(
                                     serde_json::json!({"ok":true, "duplicate":true, "operation_id":send_operation_id}),
                                 ),
@@ -3542,8 +3544,7 @@ impl PlexiApp {
                                             if proceed_or_none.is_some() {
                                                 if let Some(wait) = self.pending_submits.last_mut()
                                                 {
-                                                    wait.operation_id =
-                                                        Some(send_operation_id.clone());
+                                                    wait.operation = send_run.clone().and_then(|run| origin.socket_caller().and_then(|c| c.pane()).map(|pane| (send_operation_id.clone(), run, crate::host::plugin_timeline::AdmittedScope::of(&pane.authority))));
                                                 }
                                             }
                                             deferred = response_file.is_some();
@@ -3598,7 +3599,7 @@ impl PlexiApp {
                         )) = proceed_or_none
                         {
                             let monitor = pane_send_monitor.clone();
-                            let actor = format!("pane:{caller}");
+                            let actor = crate::broker::principal::RecordOwner::Pane(caller.clone());
                             let resource = resource_id.unwrap_or_default();
                             let use_record = monitor.note_use(
                                 &actor,
@@ -3611,6 +3612,7 @@ impl PlexiApp {
                             let effect_succeeded = send_res.is_ok();
                             let outcome_record = if !*submit || !effect_succeeded {
                                 monitor.note_outcome(
+                                    send_run.as_ref(),
                                     &actor,
                                     "pane-send",
                                     &grant_id,
@@ -3713,6 +3715,7 @@ impl PlexiApp {
                     key.chars().count()
                 );
                 if self.refuse_synthetic_approval(
+                    &origin,
                     *pane_id,
                     Some(key),
                     None,
@@ -3925,6 +3928,7 @@ impl PlexiApp {
                             .map(|rect| rect.min + egui::vec2(*x, *y))
                     });
                 if self.refuse_synthetic_approval(
+                    &origin,
                     *pane_id,
                     None,
                     click_abs,
@@ -4619,6 +4623,7 @@ impl PlexiApp {
                 };
                 if approval_verb
                     && self.refuse_synthetic_approval(
+                        &origin,
                         *pane_id,
                         None,
                         None,
@@ -4627,38 +4632,7 @@ impl PlexiApp {
                 {
                     // The surface itself refused.
                 } else if approval_verb {
-                    let pending_id = self
-                        .synthetic_approval_target(*pane_id, None, None)
-                        .or_else(|| {
-                            crate::broker::gate::PermissionMonitor::for_profile(
-                                &crate::config::config_dir(),
-                            )
-                            .ok()?
-                            .list_pending()
-                            .into_iter()
-                            .next()
-                            .map(|row| row.pending_request_id)
-                        })
-                        .unwrap_or_else(|| "none".to_string());
-                    if let Ok(monitor) = crate::broker::gate::PermissionMonitor::for_profile(
-                        &crate::config::config_dir(),
-                    ) {
-                        monitor.refuse_client_resolve(&pending_id);
-                    }
-                    log::info!(
-                        "permission_monitor: refused synthetic action pane={pane_id} action={action} pending={pending_id}"
-                    );
-                    if let Some(path) = response_file.as_deref() {
-                        crate::rpc::write_json_response(
-                            path,
-                            serde_json::json!({
-                                "ok": false,
-                                "error_code": "permission_denied",
-                                "error": "synthetic input cannot resolve a permission",
-                                "pending_request_id": pending_id,
-                            }),
-                        );
-                    }
+                    self.deny_synthetic_decision(&origin, *pane_id, None, response_file.as_deref());
                 } else {
                     let result = match self
                         .windows
@@ -4727,7 +4701,7 @@ impl PlexiApp {
                 event,
                 blocked_reason,
             } => {
-                if let Some(error) = Self::foreign_report(&origin, *pane_id) {
+                if let Some(error) = self.foreign_report(&origin, *pane_id) {
                     log::info!("pane_ipc: kind=set_agent_state refused: {error}");
                     return;
                 }
@@ -4882,7 +4856,6 @@ impl PlexiApp {
                 let mut found = false;
                 let mut dirty = false;
                 let mut has_parent_pane = false;
-                let mut effective_session_id = session_id.clone();
                 for win in &mut self.windows {
                     if let Some(pane) = win.panes.get_mut(pane_id) {
                         if let Some(t) = pane.as_terminal_mut() {
@@ -4892,9 +4865,6 @@ impl PlexiApp {
                                     t.agent_session_id = Some(sid.clone());
                                     dirty = true;
                                 }
-                            }
-                            if effective_session_id.is_none() {
-                                effective_session_id = t.agent_session_id.clone();
                             }
                             if t.agent_harness.is_none() {
                                 if let Some(h) = crate::cli::AgentHarness::parse(agent) {
@@ -5030,22 +5000,14 @@ impl PlexiApp {
                             crate::broker::gate::NeedsYouKind::BlockedRun
                         };
                         // Fire-and-forget: a failure is traced, with no caller to tell.
-                        let _ = self.file_pane_needs_you(
-                            *pane_id,
-                            kind,
-                            agent.clone(),
-                            summary,
-                            session_id.clone(),
-                        );
+                        let _ =
+                            self.file_pane_needs_you(*pane_id, kind, summary, session_id.clone());
                     } else if !matches!(
                         state,
                         crate::protocol::AgentState::NeedsYou
                             | crate::protocol::AgentState::Blocked
                     ) {
-                        self.withdraw_agent_attention_items(
-                            *pane_id,
-                            effective_session_id.as_deref(),
-                        );
+                        self.withdraw_agent_attention_items(*pane_id);
                     }
                     // Fast path: answer a parked `pane new --agent` spawn the
                     // frame the hook report lands. The host-observed detector
@@ -5796,7 +5758,7 @@ impl PlexiApp {
                 summary,
                 response_file,
             } => {
-                if let Some(error) = Self::foreign_report(&origin, *pane_id) {
+                if let Some(error) = self.foreign_report(&origin, *pane_id) {
                     self.refuse_cross_pane("agent_done", &error, *pane_id, response_file);
                     return;
                 }
@@ -5854,7 +5816,7 @@ impl PlexiApp {
                 question,
                 response_file,
             } => {
-                if let Some(error) = Self::foreign_report(&origin, *pane_id) {
+                if let Some(error) = self.foreign_report(&origin, *pane_id) {
                     self.refuse_cross_pane("agent_ask", &error, *pane_id, response_file);
                     return;
                 }
@@ -5930,7 +5892,6 @@ impl PlexiApp {
                         self.file_pane_needs_you(
                             *pane_id,
                             crate::broker::gate::NeedsYouKind::Question,
-                            agent_label,
                             question.clone(),
                             session_id,
                         )
@@ -7229,6 +7190,106 @@ fn spawn_file_age_secs(queued_at_ms: Option<u64>, now_ms: u64) -> Option<u64> {
     queued_at_ms
         .and_then(|q| now_ms.checked_sub(q))
         .map(|ms| ms / 1000)
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+    use crate::broker::{principal::Principal, ActorType};
+    use crate::host::event_subscriptions::{
+        HostSubscribeReply, HostSubscribeRequest, HostSubscriptionService, SubscriberAuthority,
+    };
+    use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
+    use crate::host::plugin_timeline::{AdmittedScope, PluginTimeline};
+    use crate::protocol::{PayloadMode, TriggerMode};
+    use crate::testing::HostHarness;
+    use std::sync::{mpsc, Arc, Mutex};
+
+    #[test]
+    fn parent_lifecycle_grant_covers_only_its_child() {
+        let mut h = HostHarness::new();
+        let parent = h.add_focused_terminal();
+        let child = h.add_focused_terminal();
+        let unrelated = h.add_focused_terminal();
+        let authority = h.app.pane_authority(parent).unwrap();
+        let principal = authority.principal();
+        h.app.windows[0]
+            .panes
+            .get_mut(&child)
+            .unwrap()
+            .as_terminal_mut()
+            .unwrap()
+            .parent_owner = Some(principal.clone());
+
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
+        h.app.host_subscriptions =
+            HostSubscriptionService::new(&crate::config::config_dir(), Arc::clone(&timeline));
+        let context = h.app.windows[0].context_id;
+        let emit = |pane| {
+            timeline
+                .lock()
+                .unwrap()
+                .record_pane_lifecycle(context, pane, &PaneLifecycleEvent::Spawned)
+                .unwrap();
+        };
+        emit(child);
+        let workspace = authority.scope().workspace_root;
+        let subscribe = |app: &mut PlexiApp, pane: Option<u64>, subscriber: &str| {
+            let (reply, rx) = mpsc::sync_channel(1);
+            app.admit_subscribe_request(HostSubscribeRequest {
+                publisher_plugin_id: PUBLISHER.into(),
+                event_names: vec![STREAM.into()],
+                payload_mode: PayloadMode::Full,
+                trigger_mode: TriggerMode::Conversation,
+                resource_id: pane.map(|id| id.to_string()),
+                from_pane_id: Some(parent),
+                subscriber_override: Some(subscriber.into()),
+                principal: Principal::Pane(principal.clone()),
+                workspace_root_override: Some(workspace.clone()),
+                subscriber_authority: SubscriberAuthority::Pane(AdmittedScope::of(&authority)),
+                context_id_override: Some(context),
+                socket_caller: None,
+                cancelled: None,
+                reply,
+            });
+            rx
+        };
+        let child_reply = subscribe(&mut h.app, Some(child), "watch-child");
+        assert!(matches!(
+            child_reply.try_recv(),
+            Ok(HostSubscribeReply::Ok { .. })
+        ));
+        assert!(h.app.pending_event_consents.is_empty());
+        let unrelated_reply = subscribe(&mut h.app, Some(unrelated), "watch-unrelated");
+        let all_reply = subscribe(&mut h.app, None, "watch-all");
+        emit(unrelated);
+        emit(child);
+        let mut timeline = timeline.lock().unwrap();
+        assert_eq!(
+            timeline
+                .take_deliveries_for(ActorType::Pane, "watch-child")
+                .len(),
+            1
+        );
+        assert!(
+            timeline
+                .take_deliveries_for(ActorType::Pane, "watch-unrelated")
+                .is_empty(),
+            "the child's grant delivered an unrelated pane's event"
+        );
+        assert!(timeline
+            .take_deliveries_for(ActorType::Pane, "watch-all")
+            .is_empty());
+        assert_eq!(h.app.pending_event_consents.len(), 2);
+        assert!(matches!(
+            unrelated_reply.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            all_reply.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
 }
 
 #[cfg(test)]

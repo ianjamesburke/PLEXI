@@ -11,13 +11,14 @@
 
 use super::custody::HostProcess;
 use super::gate::{ContinuationRecord, NeedsYouDetails, NeedsYouKind};
+use super::principal::{PanePrincipal, RecordOwner};
 use super::ExactBinding;
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 const MAC_LEN: usize = 32;
 
 /// `<profile>/host`. The host writes it; a pane is not given this path.
@@ -41,7 +42,7 @@ pub(crate) enum LoadedQueue {
 pub(crate) struct RestoredItem {
     pub id: String,
     pub kind: NeedsYouKind,
-    pub actor: String,
+    pub actor: RecordOwner,
     pub resource: String,
     pub summary: String,
     pub created_at: i64,
@@ -77,7 +78,7 @@ struct DiskQueueOwned {
 struct DiskItem {
     id: String,
     kind: NeedsYouKind,
-    actor: String,
+    actor: RecordOwner,
     resource: String,
     summary: String,
     created_at: i64,
@@ -101,9 +102,16 @@ struct DiskPending {
 }
 
 #[derive(serde::Serialize)]
+struct DiskRun<'a> {
+    #[serde(flatten)]
+    row: &'a ContinuationRecord,
+    owner: &'a RecordOwner,
+}
+
+#[derive(serde::Serialize)]
 struct DiskContinuations<'a> {
     schema: u32,
-    records: &'a [ContinuationRecord],
+    records: Vec<DiskRun<'a>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -165,8 +173,70 @@ fn missing_journal() -> LoadedQueue {
     )
 }
 
+// Called only after verifying the MAC over the original bytes.
+fn decode_sealed<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+    collection: &str,
+) -> Result<T, String> {
+    let mut data: serde_json::Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    let old = match data["schema"].as_u64() {
+        Some(1) => true,
+        Some(2) => false,
+        _ => return Err("unsupported sealed record schema".into()),
+    };
+    for row in data[collection]
+        .as_array_mut()
+        .ok_or("missing sealed record list")?
+    {
+        if old {
+            let label = row["actor"]
+                .as_str()
+                .ok_or("missing legacy actor")?
+                .to_owned();
+            let binding_owner = row.pointer("/pending/binding").and_then(|binding| {
+                let kind = serde_json::from_value(binding["actor_type"].clone()).ok()?;
+                Some(RecordOwner::stored(kind, binding["actor_id"].as_str()?))
+            });
+            let details = if collection == "items" {
+                &mut row["details"]
+            } else {
+                &mut *row
+            };
+            let number = details["pane_id"]
+                .as_u64()
+                .or_else(|| label.strip_prefix("pane:")?.parse().ok());
+            let key = details
+                .as_object_mut()
+                .and_then(|obj| obj.remove("pane_incarnation"));
+            let owner = match (number, key.as_ref().and_then(|v| v.as_str())) {
+                (Some(n), Some(key)) => RecordOwner::Pane(
+                    PanePrincipal::from_stored(&format!("pane:{n}#{key}"))
+                        .ok_or("invalid sealed incarnation")?,
+                ),
+                _ if binding_owner.is_some() => binding_owner.expect("matched binding"),
+                _ if number.is_some() || super::principal::is_legacy_pane_label(&label) => {
+                    RecordOwner::Legacy(label)
+                }
+                _ if label == super::principal::EXTERNAL_ID => {
+                    RecordOwner::requester(&super::principal::Principal::External)
+                }
+                _ => RecordOwner::Host(label),
+            };
+            row["actor"] = serde_json::to_value(owner).map_err(|e| e.to_string())?;
+        } else if collection == "records" {
+            let owner = row
+                .as_object_mut()
+                .and_then(|obj| obj.remove("owner"))
+                .ok_or("missing sealed run owner")?;
+            row["actor"] = owner;
+        }
+    }
+    data["schema"] = SCHEMA.into();
+    serde_json::from_value(data).map_err(|e| e.to_string())
+}
+
 fn parse_journal(body: &[u8]) -> LoadedQueue {
-    let parsed: DiskQueueOwned = match serde_json::from_slice(body) {
+    let parsed: DiskQueueOwned = match decode_sealed(body, "items") {
         Ok(parsed) => parsed,
         Err(error) => {
             return LoadedQueue::Untrusted(format!("queue file is not a host record: {error}"));
@@ -271,7 +341,7 @@ fn validate(items: &[DiskItem]) -> Result<Vec<RestoredItem>, String> {
         if item.origin_session.is_empty() {
             return Err(format!("queue item {} has no origin session", item.id));
         }
-        if item.actor.is_empty() {
+        if item.actor.label().is_empty() {
             return Err(format!("queue item {} has no actor", item.id));
         }
         match item.kind {
@@ -283,7 +353,7 @@ fn validate(items: &[DiskItem]) -> Result<Vec<RestoredItem>, String> {
                     ));
                 };
                 if pending.binding.args_fingerprint.is_empty()
-                    || pending.binding.actor_id.is_empty()
+                    || pending.binding.actor.id().is_empty()
                     || pending.binding.target_id.is_empty()
                     || pending.tool.is_empty()
                 {
@@ -357,7 +427,13 @@ pub(crate) fn save_continuations(
     let key = super::seal::mac_key_bytes(host, profile)?;
     let body = serde_json::to_vec(&DiskContinuations {
         schema: SCHEMA,
-        records,
+        records: records
+            .iter()
+            .map(|row| DiskRun {
+                row,
+                owner: &row.actor,
+            })
+            .collect(),
     })
     .map_err(|error| error.to_string())?;
     let mac = hmac_sha256(&key, &body);
@@ -401,7 +477,7 @@ pub(crate) fn load_continuations(host: &HostProcess, profile: &Path) -> Vec<Cont
         );
         return Vec::new();
     }
-    match serde_json::from_slice::<DiskContinuationsOwned>(body) {
+    match decode_sealed::<DiskContinuationsOwned>(body, "records") {
         Ok(parsed) if parsed.schema == SCHEMA => parsed.records,
         Ok(parsed) => {
             log::warn!(
@@ -621,6 +697,88 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sealed_v1_questions_runs_and_pending_approvals_keep_their_original_owner() {
+        use crate::broker::gate::{NeedsYouResolution, PermissionMonitor};
+        use crate::broker::principal::Principal;
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path();
+        let original = PanePrincipal::for_test(7);
+        let original_key = original.actor_id().split_once('#').unwrap().1;
+        let replacement = Principal::Pane(PanePrincipal::for_test(7));
+        save(TEST_HOST, profile, &[]).unwrap();
+        let host_dir = ensure_host_dir(profile).unwrap();
+        let key = super::super::seal::mac_key_bytes(TEST_HOST, profile).unwrap();
+        let seal_fixture = |name: &str, value: serde_json::Value| {
+            let body = serde_json::to_vec(&value).unwrap();
+            let mac = hex_encode(&hmac_sha256(&key, &body));
+            let mut sealed = body;
+            sealed.extend_from_slice(format!("\n#mac {mac}\n").as_bytes());
+            write_private(&host_dir.join(name), &sealed).unwrap();
+        };
+        let question = |id: &str, details| {
+            json!({
+                "id":id, "actor":"pane:7", "kind":"question", "resource":"workspace",
+                "summary":"review", "created_at":1, "origin_session":"before", "details":details
+            })
+        };
+        let mut approval = serde_json::to_value(DiskItem::from(&sample_item())).unwrap();
+        approval["actor"] = json!("pane:7");
+        approval["pending"]["binding"]["actor_id"] = json!("pane:7");
+        seal_fixture(
+            "needs-you.json",
+            json!({"schema":1,"items":[
+                question("old-keyed", json!({"pane_incarnation":original_key})),
+                question("old-number", json!({"pane_id":7})), approval
+            ]}),
+        );
+        let run = |id: &str, key: Option<&str>| {
+            json!({
+                "run_id":id, "actor":"pane:7","pane_id":7,"pane_incarnation":key,
+                "target_resource":"workspace","state":"waiting_user","origin_session":"before",
+                "needs_you_id":if key.is_some() {"old-keyed"} else {"old-number"},
+                "created_at":1,"updated_at":1
+            })
+        };
+        seal_fixture(
+            "continuations.json",
+            json!({"schema":1,"records":[
+                run("run-keyed",Some(original_key)),run("run-number",None)
+            ]}),
+        );
+        let monitor = PermissionMonitor::open_profile(profile).unwrap();
+        let host = monitor.host_records();
+        let old = monitor.records_for(&Principal::Pane(original));
+        assert!(old.question("old-keyed").is_some());
+        assert!(old.run("run-keyed").is_some());
+        assert!(old.question("old-number").is_none());
+        assert!(old.run("run-number").is_none());
+        assert!(host.question("old-number").is_some());
+        assert!(host.run("run-number").is_some());
+        assert_eq!(
+            host.question("req_1").unwrap().resolution,
+            Some(NeedsYouResolution::Retired)
+        );
+        let next = monitor.records_for(&replacement);
+        assert!(next.questions(false).is_empty());
+        assert!(next.runs(None, None, None).is_empty());
+        let fresh = monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Question,
+                actor: RecordOwner::requester(&replacement),
+                resource: "workspace".into(),
+                summary: "fresh".into(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .unwrap();
+        assert!(next.question(&fresh).is_some());
+        assert!(host.question(&fresh).is_some());
+        assert!(host.question("old-keyed").is_some());
+        assert!(host.question("old-number").is_some());
+    }
+
+    #[test]
     fn hmac_sha256_matches_rfc4231_case_1() {
         let key = [0x0bu8; 20];
         let mac = hmac_sha256(&key, b"Hi There");
@@ -684,7 +842,7 @@ mod tests {
         assert!(matches!(load(TEST_HOST, dir.path()),
             LoadedQueue::Untrusted(reason) if reason == "queue seal does not match"));
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(dir.path()).unwrap();
-        let items = monitor.list_needs_you();
+        let items = monitor.host_records().questions(true);
         assert!(items.iter().all(|item| item.id != "req_1"));
         assert!(items
             .iter()
@@ -751,7 +909,9 @@ mod tests {
         RestoredItem {
             id: "req_1".into(),
             kind: NeedsYouKind::ApprovalClick,
-            actor: "agent:chess".into(),
+            actor: RecordOwner::requester(
+                &super::super::principal::Principal::agent("agent:chess").unwrap(),
+            ),
             resource: "game-1".into(),
             summary: "e2e4".into(),
             created_at: 10,
@@ -762,8 +922,10 @@ mod tests {
                 tool: "chess.play".into(),
                 input_summary: "e2e4".into(),
                 binding: ExactBinding {
-                    actor_type: super::super::ActorType::Agent,
-                    actor_id: "agent:chess".into(),
+                    agent_run: None,
+                    actor: crate::broker::principal::Principal::agent("agent:chess")
+                        .unwrap()
+                        .into(),
                     actor_scope: super::super::ActorScope::User,
                     trust_origin: "host".into(),
                     workspace_root: PathBuf::from("/ws"),
