@@ -6037,19 +6037,33 @@ impl PlexiApp {
                 self.drain_spawn_queue();
             }
             crate::protocol::HostRequest::Shutdown { response_file } => {
-                // Sent by `plexi host stop` over a direct notify.sock
-                // connection. This handler has no `egui::Context`, so it
-                // cannot send ViewportCommand::Close directly — it sets a
-                // flag consumed at the top of the next frame
-                // (`update_preamble`, mirrors `update_quit_pending`). The
-                // reply waits for `exit_host`, which knows the real outcome.
-                log::info!(
-                    "pane_ipc: kind=shutdown reply={} — closing on next frame",
-                    response_file.is_some()
-                );
+                // `update_preamble` checks live editors before accepting
+                // the stop. Accepted stops reply from `exit_host`.
                 if let Some(reply) = response_file {
+                    // Every caller needs an answer to avoid a timeout followed
+                    // by forced termination. Keep the first caller's token.
+                    if self.quit_coordinator.stop_reply.is_some()
+                        || self.quit_coordinator.is_active()
+                    {
+                        log::info!(
+                            "pane_ipc: shutdown refused while another quit is in progress"
+                        );
+                        write_json_response(
+                            reply,
+                            serde_json::json!({
+                                "ok": false,
+                                "error_code": "host_stop_in_progress",
+                                "error": "The host is already handling a quit request",
+                            }),
+                        );
+                        return;
+                    }
                     self.quit_coordinator.stop_reply = Some(reply.clone());
                 }
+                log::info!(
+                    "pane_ipc: kind=shutdown reply={} — queued for shutdown check",
+                    response_file.is_some()
+                );
                 self.shutdown_requested = true;
             }
             _ => {
