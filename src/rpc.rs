@@ -8,7 +8,7 @@
 //! [`ReplyRegistry`], `write_response` falls back to an atomic file write at
 //! `response_file`.
 
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -75,15 +75,20 @@ impl ReplyRegistry {
     }
     /// Associate `stream` with `response_file` so the subsequent
     /// [`write_response`] / [`write_json_response`] call answers over the open
-    /// socket instead of touching the filesystem.
-    pub(crate) fn register(response_file: impl Into<String>, stream: IpcStream) {
+    /// socket instead of touching the filesystem. Reject duplicate registrations
+    /// so a later connection cannot replace the waiting stream.
+    pub(crate) fn register(response_file: impl Into<String>, stream: IpcStream) -> bool {
         #[cfg(unix)]
         let _ = stream.set_nonblocking(false);
         let mut guard = host_reply_streams()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         prune_expired(&mut guard);
-        guard.insert(response_file.into(), (Instant::now(), stream));
+        let Entry::Vacant(slot) = guard.entry(response_file.into()) else {
+            return false;
+        };
+        slot.insert((Instant::now(), stream));
+        true
     }
 
     /// Test only: a registration made `age` ago.
@@ -115,7 +120,7 @@ impl ReplyRegistry {
             Some((_, stream)) if crate::platform::ipc::peer_connected(stream) => false,
             Some(_) => {
                 guard.remove(response_file);
-                log::info!("rpc: dropped reply stream {response_file:?}: client gone");
+                log::info!("rpc: dropped reply stream: client gone");
                 true
             }
         }
@@ -388,7 +393,7 @@ pub(crate) fn write_response(response_file: &str, body: &[u8]) -> bool {
         return match write_to_registered_stream(stream, body) {
             Ok(()) => true,
             Err(e) => {
-                log::warn!("rpc: stream write failed for {response_file:?}: {e}");
+                log::warn!("rpc: stream write failed: {e}");
                 false
             }
         };
@@ -401,7 +406,7 @@ pub(crate) fn write_response(response_file: &str, body: &[u8]) -> bool {
             return match write_to_registered_stream(stream, &framed) {
                 Ok(()) => true,
                 Err(e) => {
-                    log::warn!("rpc: error stream write failed for {response_file:?}: {e}");
+                    log::warn!("rpc: error stream write failed: {e}");
                     false
                 }
             };
@@ -413,8 +418,8 @@ pub(crate) fn write_response(response_file: &str, body: &[u8]) -> bool {
 /// A reply with no live stream has nowhere to go: the host never writes where
 /// a caller points it (stint 1285).
 #[cfg(not(test))]
-fn write_reply_without_stream(response_file: &str, _body: &[u8]) -> bool {
-    log::error!("rpc: no live reply stream for {response_file:?}; reply dropped");
+fn write_reply_without_stream(_response_file: &str, _body: &[u8]) -> bool {
+    log::error!("rpc: no live reply stream; reply dropped");
     false
 }
 
@@ -425,7 +430,7 @@ fn write_reply_without_stream(response_file: &str, body: &[u8]) -> bool {
     match crate::platform::fs::atomic_write(Path::new(response_file), body) {
         Ok(()) => true,
         Err(e) => {
-            log::error!("rpc: could not write response file {response_file:?}: {e}");
+            log::error!("rpc: could not write response file: {e}");
             false
         }
     }
@@ -442,7 +447,7 @@ pub(crate) fn write_json_response(response_file: &str, value: serde_json::Value)
     match serde_json::to_string(&value) {
         Ok(json) => write_response(response_file, json.as_bytes()),
         Err(e) => {
-            log::error!("rpc: could not serialize response for {response_file:?}: {e}");
+            log::error!("rpc: could not serialize response: {e}");
             false
         }
     }
@@ -620,6 +625,24 @@ pub(crate) fn sweep_stale(profile_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_second_connection_cannot_replace_a_reply_waiter() {
+        use std::os::unix::net::UnixStream;
+
+        let token = format!("reply-waiter-{}", uuid::Uuid::new_v4());
+        let (first_host, mut first_client) = UnixStream::pair().unwrap();
+        let (second_host, mut second_client) = UnixStream::pair().unwrap();
+        ReplyRegistry::register(&token, first_host);
+        ReplyRegistry::register(&token, second_host);
+        assert!(write_response(&token, b"answer"));
+
+        let mut answer = String::new();
+        first_client.read_to_string(&mut answer).unwrap();
+        assert_eq!(answer, "answer");
+        assert_eq!(second_client.read(&mut [0]).unwrap(), 0);
+    }
 
     /// Codex 3290 r4 L2: a waiting choice answered after the prune window
     /// still reaches its client. Another registration prunes old entries,

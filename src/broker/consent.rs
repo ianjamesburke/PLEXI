@@ -255,8 +255,11 @@ impl ConsentGuard {
             now,
             synthetic,
         } = decision;
+        let choice_bytes = choice.len();
         if self.request != Some(displayed) {
-            log::info!("consent_guard: refused {choice:?} on {target}: not the displayed request");
+            log::info!(
+                "consent_guard: refused id={target} choice_bytes={choice_bytes}: not the displayed request"
+            );
             return Err(ConsentRefusal::NotDisplayed);
         }
         let input = self.input(now, synthetic);
@@ -267,11 +270,11 @@ impl ConsentGuard {
                 ConsentRefusal::NotArmed
             };
             log::info!(
-                "consent_guard: refused {choice:?} on {target} reason={refusal:?} refuses={refuses}"
+                "consent_guard: refused id={target} choice_bytes={choice_bytes} reason={refusal:?} refuses={refuses}"
             );
             return Err(refusal);
         }
-        log::info!("consent_guard: witnessed {choice:?} on {target}");
+        log::info!("consent_guard: witnessed id={target} choice_bytes={choice_bytes}");
         Ok(DecisionEvidence {
             request_id: target.to_string(),
             choice: choice.to_string(),
