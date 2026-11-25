@@ -6,40 +6,31 @@ on:
 permissions:
   contents: read
 
+env:
+  PLEXI_BUILD_TEST_CHANNEL: pr-9971
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  probe:
+  build:
     runs-on: macos-15
-    environment: release-signing
-    timeout-minutes: 90
+    timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: "3"
-      PLEXI_BUILD_TEST_CHANNEL: pr-9971
       PLEXI_CPYTHON_BUNDLE_DIR: ${{ github.workspace }}/target/distribution-runtime
-    defaults:
-      run:
-        shell: bash
     steps:
-      - name: Record runner provenance
-        run: |
-          PROBE_ROOT="$RUNNER_TEMP/plexi-signing-probe"
-          echo "PROBE_ROOT=$PROBE_ROOT" >> "$GITHUB_ENV"
-          mkdir -p "$PROBE_ROOT/evidence"
-          {
-            printf 'Commit %s\n\n' "$GITHUB_SHA"
-            sw_vers
-            uname -m
-            csrutil status
-          } | tee "$PROBE_ROOT/evidence/summary.txt"
-          [[ "$(uname -m)" == arm64 ]]
-          csrutil status | grep -Fx 'System Integrity Protection status: enabled.'
+      - name: Set probe workspace
+        run: echo "PROBE_ROOT=$RUNNER_TEMP/plexi-signing-probe" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - uses: ./.github/actions/plexi-ci-env
         with:
           cache-key: signing-probe-macos-arm64
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           python-version: "3.11"
 
@@ -48,9 +39,37 @@ jobs:
           uv run --no-project python -c 'from pathlib import Path; from scripts.package import runtime; runtime(Path("target/distribution-runtime"))'
           RUSTFLAGS="-D warnings" cargo build --locked --release -p plexi-distribution --bin plexi-installer
           RUSTFLAGS="-D warnings" cargo build --locked --release --bin plexi
-          uv run --no-project python scripts/package.py \
+          PLEXI_SIGN_IDENTITY=- uv run --no-project python scripts/package.py \
             --binary target/release/plexi --installer target/release/plexi-installer \
             --platform macos-arm64 --channel "$PLEXI_BUILD_TEST_CHANNEL" --output "$PROBE_ROOT/dist"
+          package="$PROBE_ROOT/dist/package-macos-arm64-$PLEXI_BUILD_TEST_CHANNEL"
+          apps=("$package/"*.app)
+          [[ ${#apps[@]} == 1 && -d "${apps[0]}" ]]
+          # package.py applies an ad hoc signature during assembly.
+          codesign --remove-signature "${apps[0]}"
+          ditto -c -k --keepParent "$package" "$PROBE_ROOT/unsigned.zip"
+
+      - name: Upload unsigned probe package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: developer-id-probe-unsigned
+          path: ${{ env.PROBE_ROOT }}/unsigned.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  sign:
+    needs: build
+    runs-on: macos-15
+    environment: release-signing
+    timeout-minutes: 15
+    steps:
+      - name: Set probe workspace
+        run: echo "PROBE_ROOT=$RUNNER_TEMP/plexi-signing-probe" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: developer-id-probe-unsigned
+          path: ${{ env.PROBE_ROOT }}/input
 
       - name: Import and sign with Developer ID on the disposable runner
         timeout-minutes: 8
@@ -61,45 +80,71 @@ jobs:
         run: |
           umask 077
           : "${P12:?Missing Developer ID archive}" "${P12_PASSWORD:?Missing archive password}" "${CERT_SHA1:?Missing certificate fingerprint}"
-          keychain="$PROBE_ROOT/signing.keychain-db"
+          credentials="$RUNNER_TEMP/plexi-probe-signing-credentials"
+          keychain="$credentials/signing.keychain-db"
+          cleanup() {
+            local result=0
+            local -a original=()
+            local path
+            rm -f "$credentials/identity.p12" || result=1
+            if [[ -f "$keychain" ]]; then
+              security delete-keychain "$keychain" || result=1
+            fi
+            if [[ -f "$credentials/search-list" ]]; then
+              while IFS= read -r path; do
+                original+=("$path")
+              done < "$credentials/search-list"
+              if security list-keychains -d user -s ${original[@]+"${original[@]}"}; then
+                rm -f "$credentials/search-list" || result=1
+              else
+                result=1
+              fi
+            fi
+            return "$result"
+          }
+          trap 'cleanup || exit 1' EXIT
+          mkdir -p "$credentials" "$PROBE_ROOT/evidence" "$PROBE_ROOT/signed"
+          ditto -x -k "$PROBE_ROOT/input/unsigned.zip" "$PROBE_ROOT/dist"
+          package="$PROBE_ROOT/dist/package-macos-arm64-$PLEXI_BUILD_TEST_CHANNEL"
+
+          # Persist the original list for the always() cleanup. Parse the quoted
+          # paths without evaluating them as shell input.
+          security list-keychains -d user |
+            awk '/^[[:space:]]*"[^"]+"[[:space:]]*$/ { sub(/^[[:space:]]*"/, ""); sub(/"[[:space:]]*$/, ""); print; next } { exit 1 }' \
+            > "$credentials/search-list.pending"
+          mv "$credentials/search-list.pending" "$credentials/search-list"
+          original=()
+          while IFS= read -r path; do
+            original+=("$path")
+          done < "$credentials/search-list"
+
           password="$(openssl rand -hex 32)"
           echo "::add-mask::$password"
-          trap 'rm -f "$PROBE_ROOT/identity.p12"' EXIT
-          printf '%s' "$P12" | base64 -D > "$PROBE_ROOT/identity.p12"
+          printf '%s' "$P12" | base64 -D > "$credentials/identity.p12"
           security create-keychain -p "$password" "$keychain"
           security unlock-keychain -p "$password" "$keychain"
-          security import "$PROBE_ROOT/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security import "$credentials/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$credentials/identity.p12"
+          unset P12 P12_PASSWORD
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" ${original[@]+"${original[@]}"}
 
-          expected="$(printf '%s' "$CERT_SHA1" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          expected="$(printf '%s' "$CERT_SHA1" | awk '{ gsub(/:/, ""); print toupper($0) }')"
           [[ "$expected" =~ ^[A-F0-9]{40}$ ]]
           security find-identity -v -p codesigning "$keychain" |
             awk -v expected="$expected" '$2 == expected && /Developer ID Application:/ { found = 1 } END { exit !found }'
-          PROBE_KEYCHAIN="$keychain" uv run --no-project python - <<'PY_KEYCHAINS'
-          import json
-          import os
-          from pathlib import Path
-          import shlex
-          import subprocess
+          printf 'Commit %s\nDeveloper ID identity fingerprint matched\n' "$GITHUB_SHA" > "$PROBE_ROOT/evidence/summary.txt"
 
-          command = ["security", "list-keychains", "-d", "user"]
-          original = shlex.split(subprocess.check_output(command, text=True))
-          snapshot = Path(os.environ["PROBE_ROOT"]) / "keychain-search-list.json"
-          snapshot.write_text(json.dumps(original))
-          subprocess.run([*command, "-s", os.environ["PROBE_KEYCHAIN"], *original], check=True)
-          PY_KEYCHAINS
-          echo 'Developer ID identity fingerprint matched' >> "$PROBE_ROOT/evidence/summary.txt"
-
-          package="$PROBE_ROOT/dist/package-macos-arm64-$PLEXI_BUILD_TEST_CHANNEL"
           for variant in none allow-jit allow-unsigned-executable-memory; do
             mkdir -p "$PROBE_ROOT/$variant"
             ditto "$package" "$PROBE_ROOT/$variant/package"
             apps=("$PROBE_ROOT/$variant/package/"*.app)
-            [[ ${#apps[@]} == 1 && -d "${apps[0]}" ]]
+            [[ ${#apps[@]} == 1 && -d "${apps[0]}" && ! -L "${apps[0]}" ]]
             app="${apps[0]}"
             # The current bundle has one native executable. Fail if that layout
             # changes so nested code can be signed explicitly, inside out.
-            [[ "$(find "$app" -type f -exec file -b {} + | awk '/Mach-O/ { n++ } END { print n+0 }')" == 1 ]]
+            native_count="$(find "$app" -type f -exec file -b {} + | awk '/Mach-O/ { n++ } END { print n+0 }')"
+            [[ "$native_count" == 1 ]]
             args=()
             if [[ "$variant" != none ]]; then
               plist="$PROBE_ROOT/$variant/entitlements.plist"
@@ -112,33 +157,93 @@ jobs:
             codesign -dvv "$app" 2> "$PROBE_ROOT/evidence/$variant-signature.txt"
             grep -Eq '^CodeDirectory .*flags=.*\(runtime\)' "$PROBE_ROOT/evidence/$variant-signature.txt"
             grep -Fx 'TeamIdentifier=SRSHDSZCDU' "$PROBE_ROOT/evidence/$variant-signature.txt"
+            codesign -d -r- "$app" 2>> "$PROBE_ROOT/evidence/$variant-signature.txt"
+            codesign -d --entitlements :- "$app" >> "$PROBE_ROOT/evidence/$variant-signature.txt" 2>&1
+            ditto -c -k --keepParent "$PROBE_ROOT/$variant/package" "$PROBE_ROOT/signed/$variant.zip"
           done
 
-      - name: Delete temporary signing keychain
+      - name: Restore search list and delete temporary signing credentials
         if: always()
         run: |
-          keychain="$PROBE_ROOT/signing.keychain-db"
-          if [[ -f "$keychain" ]]; then
-            security delete-keychain "$keychain"
-          fi
-          rm -f "$PROBE_ROOT/identity.p12"
-          if [[ -f "$PROBE_ROOT/keychain-search-list.json" ]]; then
-            uv run --no-project python - <<'PY_KEYCHAINS'
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
+          credentials="$RUNNER_TEMP/plexi-probe-signing-credentials"
+          keychain="$credentials/signing.keychain-db"
+          cleanup() {
+            local result=0
+            local -a original=()
+            local path
+            rm -f "$credentials/identity.p12" || result=1
+            if [[ -f "$keychain" ]]; then
+              security delete-keychain "$keychain" || result=1
+            fi
+            if [[ -f "$credentials/search-list" ]]; then
+              while IFS= read -r path; do
+                original+=("$path")
+              done < "$credentials/search-list"
+              if security list-keychains -d user -s ${original[@]+"${original[@]}"}; then
+                rm -f "$credentials/search-list" || result=1
+              else
+                result=1
+              fi
+            fi
+            return "$result"
+          }
+          cleanup
 
-          snapshot = Path(os.environ["PROBE_ROOT"]) / "keychain-search-list.json"
-          original = json.loads(snapshot.read_text())
-          subprocess.run(["security", "list-keychains", "-d", "user", "-s", *original], check=True)
-          snapshot.unlink()
-          PY_KEYCHAINS
-          fi
+      - name: Upload signed variants
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: developer-id-probe-signed
+          path: ${{ env.PROBE_ROOT }}/signed/*.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload signature evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: developer-id-probe-signatures
+          path: ${{ env.PROBE_ROOT }}/evidence
+          if-no-files-found: warn
+          compression-level: 0
+
+  smoke:
+    needs: sign
+    runs-on: macos-15
+    timeout-minutes: 20
+    outputs:
+      winner: ${{ steps.variants.outputs.winner }}
+    steps:
+      - name: Set probe workspace
+        run: echo "PROBE_ROOT=$RUNNER_TEMP/plexi-signing-probe" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: developer-id-probe-signed
+          path: ${{ env.PROBE_ROOT }}/signed
+
+      - name: Record smoke runner provenance
+        run: |
+          mkdir -p "$PROBE_ROOT/evidence"
+          {
+            printf 'Commit %s\n\n' "$GITHUB_SHA"
+            sw_vers
+            uname -m
+            csrutil status
+          } | tee "$PROBE_ROOT/evidence/summary.txt"
+          [[ "$(uname -m)" == arm64 ]]
+          csrutil status | grep -Fx 'System Integrity Protection status: enabled.'
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.11"
 
       - name: Smoke-test each signed bundle in the background
+        id: variants
         timeout-minutes: 12
         run: |
+          for variant in none allow-jit allow-unsigned-executable-memory; do
+            ditto -x -k "$PROBE_ROOT/signed/$variant.zip" "$PROBE_ROOT/$variant"
+          done
           uv run --no-project python - <<'PY'
           import json
           import os
@@ -221,40 +326,76 @@ jobs:
 
           if winner is None:
               raise SystemExit("No hardened runtime variant passed")
-          with open(os.environ["GITHUB_ENV"], "a") as env_file:
-              print(f"PROBE_WINNER={winner}", file=env_file)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"winner={winner}", file=output)
           PY
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: developer-id-probe-smoke
+          path: ${{ env.PROBE_ROOT }}/evidence
+          if-no-files-found: warn
+          compression-level: 0
+
+  notarize:
+    needs: smoke
+    runs-on: macos-15
+    environment: release-signing
+    timeout-minutes: 30
+    steps:
+      - name: Set probe workspace
+        run: echo "PROBE_ROOT=$RUNNER_TEMP/plexi-signing-probe" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: developer-id-probe-signed
+          path: ${{ env.PROBE_ROOT }}/signed
 
       - name: Notarize and assess the least permissive passing variant
         timeout-minutes: 25
         env:
+          PROBE_WINNER: ${{ needs.smoke.outputs.winner }}
           NOTARY_P8: ${{ secrets.PLEXI_NOTARY_KEY_P8_BASE64 }}
           NOTARY_KEY_ID: ${{ secrets.PLEXI_NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.PLEXI_NOTARY_ISSUER_ID }}
         run: |
           umask 077
           : "${NOTARY_P8:?Missing notary API key}" "${NOTARY_KEY_ID:?Missing key ID}" "${NOTARY_ISSUER_ID:?Missing issuer ID}"
-          key="$PROBE_ROOT/notary.p8"
-          trap 'rm -f "$key"' EXIT
-          printf '%s' "$NOTARY_P8" | base64 -D > "$key"
-          apps=("$PROBE_ROOT/$PROBE_WINNER/package/"*.app)
+          case "$PROBE_WINNER" in
+            none|allow-jit|allow-unsigned-executable-memory) ;;
+            *) exit 1 ;;
+          esac
+          mkdir -p "$PROBE_ROOT/evidence"
+          ditto -x -k "$PROBE_ROOT/signed/$PROBE_WINNER.zip" "$PROBE_ROOT/winner"
+          apps=("$PROBE_ROOT/winner/package/"*.app)
+          [[ ${#apps[@]} == 1 && -d "${apps[0]}" && ! -L "${apps[0]}" ]]
           app="${apps[0]}"
           archive="$PROBE_ROOT/submission.zip"
           ditto -c -k --keepParent "$app" "$archive"
-          echo "Notarization variant $PROBE_WINNER" >> "$PROBE_ROOT/evidence/summary.txt"
+          printf 'Commit %s\nNotarization variant %s\n' "$GITHUB_SHA" "$PROBE_WINNER" > "$PROBE_ROOT/evidence/summary.txt"
+          key="$RUNNER_TEMP/plexi-probe-notary.p8"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$NOTARY_P8" | jq -Rs -j '@base64d' > "$key"
+          unset NOTARY_P8
           xcrun notarytool submit "$archive" --wait --timeout 20m --output-format json \
-            --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" |
-            tee "$PROBE_ROOT/evidence/notarization.json"
+            --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+            > "$PROBE_ROOT/evidence/notarization.json"
+          rm -f "$key"
+          unset NOTARY_KEY_ID NOTARY_ISSUER_ID
           jq -e '.status == "Accepted"' "$PROBE_ROOT/evidence/notarization.json"
           xcrun stapler staple "$app"
-          xcrun stapler validate "$app" | tee "$PROBE_ROOT/evidence/stapler.txt"
-          spctl -a -vv --type execute "$app" 2>&1 | tee "$PROBE_ROOT/evidence/gatekeeper.txt"
-          grep -Fx 'source=Notarized Developer ID' "$PROBE_ROOT/evidence/gatekeeper.txt"
+          xcrun stapler validate "$app" > "$PROBE_ROOT/evidence/stapler.txt" 2>&1
+          spctl -a -vv --type execute "$app" > "$PROBE_ROOT/evidence/gatekeeper.txt" 2>&1
+          jq -eRn '[inputs] | index("source=Notarized Developer ID") != null' < "$PROBE_ROOT/evidence/gatekeeper.txt"
           echo 'Notarization, stapling and Gatekeeper assessment passed' >> "$PROBE_ROOT/evidence/summary.txt"
 
-      - name: Upload probe summary and diagnostics
+      - name: Upload notarization evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: developer-id-signing-probe
-          path: ${{ runner.temp }}/plexi-signing-probe/evidence
+          name: developer-id-probe-notarization
+          path: ${{ env.PROBE_ROOT }}/evidence
+          if-no-files-found: warn
+          compression-level: 0
