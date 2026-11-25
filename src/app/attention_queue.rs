@@ -6803,13 +6803,17 @@ mod tests {
         assert_agent_ask_refuses_plain_shell(&[crate::release::ReleaseFeature::AgentMesh]);
     }
 
-    fn add_unparented_agent(h: &mut HostHarness) -> u64 {
+    #[test]
+    fn agent_ask_refuses_shell_after_own_state_report() {
+        use crate::protocol::AgentState;
+
+        let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
         h.inject_from_pane(
             pane_id,
             crate::protocol::HostRequest::SetAgentState {
                 pane_id,
-                state: crate::protocol::AgentState::Working,
+                state: AgentState::Working,
                 agent: "codex".into(),
                 detail: None,
                 session_id: None,
@@ -6818,7 +6822,35 @@ mod tests {
             },
         );
         h.hidden_frame();
-        assert!(h.app.terminal_incarnation(pane_id).unwrap().is_agent_pane());
+        let terminal = h.app.terminal_incarnation(pane_id).unwrap();
+        assert_eq!(terminal.agent.as_ref().unwrap().state, AgentState::Working);
+        let slots = terminal.slots.clone();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let questions = monitor.host_records().questions(true);
+        let waiter = h.workspace_root().join("parent-wait.json");
+        h.app
+            .park_agent_tool_wait(pane_id, waiter.to_str().unwrap());
+
+        let reply = ask_from_pane(&mut h, pane_id, "Which branch?");
+
+        assert_eq!(reply["ok"], false, "{reply}");
+        let error = reply["error"].as_str().unwrap();
+        assert!(error.contains("requires an agent terminal"), "{error}");
+        let terminal = h.app.terminal_incarnation(pane_id).unwrap();
+        assert_eq!(terminal.agent.as_ref().unwrap().state, AgentState::Working);
+        assert_eq!(terminal.slots, slots);
+        assert_eq!(monitor.host_records().questions(true), questions);
+        assert!(!waiter.exists(), "refused ask woke the parent waiter");
+    }
+
+    fn add_unparented_agent(h: &mut HostHarness) -> u64 {
+        let (pane_id, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "reviewer", "codex", "sleep 30", "", None, false, None, None, None, None, false,
+                None,
+            )
+            .unwrap();
         pane_id
     }
 

@@ -5825,10 +5825,11 @@ impl PlexiApp {
                     self.refuse_cross_pane("agent_ask", &error, *pane_id, response_file);
                     return;
                 }
-                if !self
-                    .terminal_incarnation(*pane_id)
-                    .is_some_and(crate::host::pane::TerminalPane::is_agent_pane)
-                {
+                // The launch record and foreground detector are the host's
+                // sources of agent identity for this gate.
+                if !self.terminal_incarnation(*pane_id).is_some_and(|t| {
+                    !t.exited && (t.agent_launch.is_some() || t.observed_agent.is_some())
+                }) {
                     log::info!("pane_ipc: kind=agent_ask refused pane_id={pane_id} reason=agent_terminal_required");
                     write_json_response(
                         response_file,
