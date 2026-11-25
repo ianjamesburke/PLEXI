@@ -1,0 +1,260 @@
+name: Developer ID signing probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-15
+    environment: release-signing
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "3"
+      PLEXI_BUILD_TEST_CHANNEL: pr-9971
+      PLEXI_CPYTHON_BUNDLE_DIR: ${{ github.workspace }}/target/distribution-runtime
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Record runner provenance
+        run: |
+          PROBE_ROOT="$RUNNER_TEMP/plexi-signing-probe"
+          echo "PROBE_ROOT=$PROBE_ROOT" >> "$GITHUB_ENV"
+          mkdir -p "$PROBE_ROOT/evidence"
+          {
+            printf 'Commit %s\n\n' "$GITHUB_SHA"
+            sw_vers
+            uname -m
+            csrutil status
+          } | tee "$PROBE_ROOT/evidence/summary.txt"
+          [[ "$(uname -m)" == arm64 ]]
+          csrutil status | grep -Fx 'System Integrity Protection status: enabled.'
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/plexi-ci-env
+        with:
+          cache-key: signing-probe-macos-arm64
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Assemble release-mode test bundle
+        run: |
+          uv run --no-project python -c 'from pathlib import Path; from scripts.package import runtime; runtime(Path("target/distribution-runtime"))'
+          RUSTFLAGS="-D warnings" cargo build --locked --release -p plexi-distribution --bin plexi-installer
+          RUSTFLAGS="-D warnings" cargo build --locked --release --bin plexi
+          uv run --no-project python scripts/package.py \
+            --binary target/release/plexi --installer target/release/plexi-installer \
+            --platform macos-arm64 --channel "$PLEXI_BUILD_TEST_CHANNEL" --output "$PROBE_ROOT/dist"
+
+      - name: Import and sign with Developer ID on the disposable runner
+        timeout-minutes: 8
+        env:
+          P12: ${{ secrets.PLEXI_DEVID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.PLEXI_DEVID_P12_PASSWORD }}
+          CERT_SHA1: ${{ secrets.PLEXI_DEVID_CERT_SHA1 }}
+        run: |
+          umask 077
+          : "${P12:?Missing Developer ID archive}" "${P12_PASSWORD:?Missing archive password}" "${CERT_SHA1:?Missing certificate fingerprint}"
+          keychain="$PROBE_ROOT/signing.keychain-db"
+          password="$(openssl rand -hex 32)"
+          echo "::add-mask::$password"
+          trap 'rm -f "$PROBE_ROOT/identity.p12"' EXIT
+          printf '%s' "$P12" | base64 -D > "$PROBE_ROOT/identity.p12"
+          security create-keychain -p "$password" "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$PROBE_ROOT/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+
+          expected="$(printf '%s' "$CERT_SHA1" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          [[ "$expected" =~ ^[A-F0-9]{40}$ ]]
+          security find-identity -v -p codesigning "$keychain" |
+            awk -v expected="$expected" '$2 == expected && /Developer ID Application:/ { found = 1 } END { exit !found }'
+          PROBE_KEYCHAIN="$keychain" uv run --no-project python - <<'PY_KEYCHAINS'
+          import json
+          import os
+          from pathlib import Path
+          import shlex
+          import subprocess
+
+          command = ["security", "list-keychains", "-d", "user"]
+          original = shlex.split(subprocess.check_output(command, text=True))
+          snapshot = Path(os.environ["PROBE_ROOT"]) / "keychain-search-list.json"
+          snapshot.write_text(json.dumps(original))
+          subprocess.run([*command, "-s", os.environ["PROBE_KEYCHAIN"], *original], check=True)
+          PY_KEYCHAINS
+          echo 'Developer ID identity fingerprint matched' >> "$PROBE_ROOT/evidence/summary.txt"
+
+          package="$PROBE_ROOT/dist/package-macos-arm64-$PLEXI_BUILD_TEST_CHANNEL"
+          for variant in none allow-jit allow-unsigned-executable-memory; do
+            mkdir -p "$PROBE_ROOT/$variant"
+            ditto "$package" "$PROBE_ROOT/$variant/package"
+            apps=("$PROBE_ROOT/$variant/package/"*.app)
+            [[ ${#apps[@]} == 1 && -d "${apps[0]}" ]]
+            app="${apps[0]}"
+            # The current bundle has one native executable. Fail if that layout
+            # changes so nested code can be signed explicitly, inside out.
+            [[ "$(find "$app" -type f -exec file -b {} + | awk '/Mach-O/ { n++ } END { print n+0 }')" == 1 ]]
+            args=()
+            if [[ "$variant" != none ]]; then
+              plist="$PROBE_ROOT/$variant/entitlements.plist"
+              printf '<?xml version="1.0"?><plist version="1.0"><dict><key>com.apple.security.cs.%s</key><true/></dict></plist>\n' "$variant" > "$plist"
+              args=(--entitlements "$plist")
+            fi
+            codesign --force --options runtime --timestamp --sign "$expected" \
+              --keychain "$keychain" ${args[@]+"${args[@]}"} "$app"
+            codesign --verify --deep --strict "$app"
+            codesign -dvv "$app" 2> "$PROBE_ROOT/evidence/$variant-signature.txt"
+            grep -Eq '^CodeDirectory .*flags=.*\(runtime\)' "$PROBE_ROOT/evidence/$variant-signature.txt"
+            grep -Fx 'TeamIdentifier=SRSHDSZCDU' "$PROBE_ROOT/evidence/$variant-signature.txt"
+          done
+
+      - name: Delete temporary signing keychain
+        if: always()
+        run: |
+          keychain="$PROBE_ROOT/signing.keychain-db"
+          if [[ -f "$keychain" ]]; then
+            security delete-keychain "$keychain"
+          fi
+          rm -f "$PROBE_ROOT/identity.p12"
+          if [[ -f "$PROBE_ROOT/keychain-search-list.json" ]]; then
+            uv run --no-project python - <<'PY_KEYCHAINS'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          snapshot = Path(os.environ["PROBE_ROOT"]) / "keychain-search-list.json"
+          original = json.loads(snapshot.read_text())
+          subprocess.run(["security", "list-keychains", "-d", "user", "-s", *original], check=True)
+          snapshot.unlink()
+          PY_KEYCHAINS
+          fi
+
+      - name: Smoke-test each signed bundle in the background
+        timeout-minutes: 12
+        run: |
+          uv run --no-project python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import tempfile
+          import time
+
+          root = Path(os.environ["PROBE_ROOT"])
+          channel = os.environ["PLEXI_BUILD_TEST_CHANNEL"]
+          winner = None
+          for variant in ("none", "allow-jit", "allow-unsigned-executable-memory"):
+              directory = root / variant
+              app, = (directory / "package").glob("*.app")
+              executable = app / "Contents/MacOS" / f"plexi-{channel}"
+              # Keep the Unix socket path short on the hosted runner.
+              profile = tempfile.TemporaryDirectory(prefix="p1282-", dir="/tmp")
+              home = Path(profile.name)
+              env = {key: value for key, value in os.environ.items() if not key.startswith("PLEXI_")}
+              env.update(HOME=str(home), PLEXI_CHANNEL=channel)
+              with (root / "evidence" / f"{variant}-smoke.txt").open("w") as log:
+                  def run(*args, timeout=15):
+                      result = subprocess.run([executable, *args], cwd=home, env=env,
+                                              capture_output=True, text=True, timeout=timeout)
+                      print(args, result.returncode, result.stdout, result.stderr, file=log)
+                      result.check_returncode()
+                      return result.stdout
+
+                  def wait_for(check, seconds, error):
+                      deadline = time.monotonic() + seconds
+                      while time.monotonic() < deadline:
+                          if check():
+                              return
+                          time.sleep(0.5)
+                      raise AssertionError(error)
+
+                  passed = False
+                  try:
+                      run("host", "start", "--background", "--ephemeral", "--timeout-secs", "40", timeout=50)
+                      status = json.loads(run("host", "status", "--json"))
+                      manifest = json.loads((directory / "package" / "package.json").read_text())
+                      assert status["ready"] and status["running"]["build_id"] == manifest["build_id"], status
+                      env["PLEXI_SOCKET"] = status["socket"]
+                      terminal = run("pane", "new", "printf 'PLEXI_%s\\n' PROBE_OK; sleep 120",
+                                     "-n", "Signing probe terminal", "--no-focus").strip().splitlines()[-1]
+                      wait_for(lambda: re.search(r"^\s*PLEXI_PROBE_OK\s*$",
+                               run("pane", "capture", terminal, "--plain"), re.M),
+                               15, "Terminal did not produce the marker")
+                      run("view", "open", "calc")
+
+                      def calculator_ready():
+                          panes = json.loads(run("pane", "list"))
+                          for pane in panes:
+                              if pane["type"] == "view":
+                                  state = run("pane", "state", str(pane["id"]))
+                                  if "Calculator" in state or "button" in state.lower():
+                                      return True
+                          return False
+
+                      wait_for(calculator_ready, 60, "Calculator did not produce a semantic frame")
+                      assert json.loads(run("host", "status", "--json"))["ready"]
+                      passed = True
+                  except (AssertionError, IndexError, KeyError, ValueError, subprocess.SubprocessError) as error:
+                      print(f"FAIL: {error}", file=log)
+                  finally:
+                      try:
+                          run("host", "stop")
+                      except subprocess.SubprocessError as error:
+                          print(f"Host stop: {error}", file=log)
+                          passed = False
+
+              profile.cleanup()
+              verdict = f"{variant}: {'PASS' if passed else 'FAIL'}"
+              print(verdict)
+              with (root / "evidence" / "summary.txt").open("a") as summary:
+                  print(verdict, file=summary)
+              if passed and winner is None:
+                  winner = variant
+
+          if winner is None:
+              raise SystemExit("No hardened runtime variant passed")
+          with open(os.environ["GITHUB_ENV"], "a") as env_file:
+              print(f"PROBE_WINNER={winner}", file=env_file)
+          PY
+
+      - name: Notarize and assess the least permissive passing variant
+        timeout-minutes: 25
+        env:
+          NOTARY_P8: ${{ secrets.PLEXI_NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.PLEXI_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.PLEXI_NOTARY_ISSUER_ID }}
+        run: |
+          umask 077
+          : "${NOTARY_P8:?Missing notary API key}" "${NOTARY_KEY_ID:?Missing key ID}" "${NOTARY_ISSUER_ID:?Missing issuer ID}"
+          key="$PROBE_ROOT/notary.p8"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$NOTARY_P8" | base64 -D > "$key"
+          apps=("$PROBE_ROOT/$PROBE_WINNER/package/"*.app)
+          app="${apps[0]}"
+          archive="$PROBE_ROOT/submission.zip"
+          ditto -c -k --keepParent "$app" "$archive"
+          echo "Notarization variant $PROBE_WINNER" >> "$PROBE_ROOT/evidence/summary.txt"
+          xcrun notarytool submit "$archive" --wait --timeout 20m --output-format json \
+            --key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" |
+            tee "$PROBE_ROOT/evidence/notarization.json"
+          jq -e '.status == "Accepted"' "$PROBE_ROOT/evidence/notarization.json"
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app" | tee "$PROBE_ROOT/evidence/stapler.txt"
+          spctl -a -vv --type execute "$app" 2>&1 | tee "$PROBE_ROOT/evidence/gatekeeper.txt"
+          grep -Fx 'source=Notarized Developer ID' "$PROBE_ROOT/evidence/gatekeeper.txt"
+          echo 'Notarization, stapling and Gatekeeper assessment passed' >> "$PROBE_ROOT/evidence/summary.txt"
+
+      - name: Upload probe summary and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: developer-id-signing-probe
+          path: ${{ runner.temp }}/plexi-signing-probe/evidence
