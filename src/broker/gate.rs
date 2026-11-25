@@ -2553,8 +2553,7 @@ impl PermissionMonitor {
             outcome,
         );
         log::info!(
-            "needs_you: desktop answered {id} answer_bytes={} run_outcome={}",
-            answer_trimmed.len(),
+            "needs_you: desktop answered {id} run_outcome={}",
             outcome.as_str()
         );
         self.resolved_receipt(id, false).ok_or_else(|| {
@@ -3850,11 +3849,11 @@ impl PermissionMonitor {
             }
             updated
         };
+        // A receipt can include the person's answer to a Claude question.
         log::info!(
-            "continuation: completed run_id={} state={} receipt={:?}",
+            "continuation: completed run_id={} state={}",
             updated.run_id,
-            updated.state.as_str(),
-            updated.receipt
+            updated.state.as_str()
         );
         Ok(updated)
     }
