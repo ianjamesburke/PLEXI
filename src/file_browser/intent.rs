@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::helpers::{default_direction_for, ColumnId, Entry, SortDirection};
 
-/// Typed intent contract for the File Explorer `/` and `Cmd+K` action palette.
+/// Typed intent contract for the File Explorer slash action palette.
 ///
 /// Both explicit slash commands (`/hidden`, `/new file notes.md`, `/sort size asc`)
 /// and natural-language / JEV phrases (`"show hidden files"`, `"create file foo.rs"`,
@@ -147,7 +147,7 @@ pub enum CandidateResolution {
     },
 }
 
-/// A ranked row in the File Explorer `/` or `Cmd+K` palette.
+/// A ranked row in the File Explorer slash action palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteCandidate {
     pub slash_syntax: &'static str,
@@ -1047,8 +1047,7 @@ fn build_catalog_candidates(ctx: &FileExplorerContext<'_>) -> Vec<PaletteCandida
     list.push(PaletteCandidate {
         slash_syntax: "/new file <name>",
         title: "New File…".to_string(),
-        subtitle: "Create a file in the current directory and open it in the editor (Cmd+N)"
-            .to_string(),
+        subtitle: "Create a file in the current directory and open it in the editor".to_string(),
         preview_chip: "Create file: <name> — type filename and press Enter".to_string(),
         resolution: CandidateResolution::NeedsSlot {
             prompt_prefix: "/new file ",
@@ -1061,7 +1060,7 @@ fn build_catalog_candidates(ctx: &FileExplorerContext<'_>) -> Vec<PaletteCandida
     list.push(PaletteCandidate {
         slash_syntax: "/new folder <name>",
         title: "New Folder…".to_string(),
-        subtitle: "Create a directory in the current folder (Cmd+Shift+N)".to_string(),
+        subtitle: "Create a directory in the current folder".to_string(),
         preview_chip: "Create folder: <name> — type folder name and press Enter".to_string(),
         resolution: CandidateResolution::NeedsSlot {
             prompt_prefix: "/new folder ",
