@@ -1,11 +1,12 @@
 """Qualify ordered batches and land each PR through the existing squash flow."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -15,6 +16,8 @@ SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 from alpha_lock import lock_path, writer_lock
 
+LANDING_TIMEOUT = 30 * 60
+PREFIX_STATUS = "prefix-untested (end state tested)"
 OID = re.compile(r"[0-9a-f]{40}")
 # .claude/agents/plexi-pm.md, "Gates and limits". Apply source-path guard
 # filters to edits too, since path guards can depend on any changed file there.
@@ -23,7 +26,7 @@ FILTER_RULES = (
     (("src/ui/*", "src/overlays/*"), ("ui::layout_guard_tests::", "ui_tests::tests::")),
     (("src/app/quit.rs",), ("app::", "ui_tests::tests::")),
     (("src/broker/*", "src/host/plugin*", "src/plexi_ai/*", "src/pane_ops/create.rs",
-      "src/*socket*", "src/*caller*", "src/host/ipc*", "src/cli/ipc*"),
+      "src/*socket*", "src/*caller*", "src/host/ipc*", "src/cli/ipc*", "src/cli/mod.rs"),
      ("testing::permission_gate_tests::", "testing::socket_policy_tests")),
 )
 VISIBLE_PATHS = ("website/*", "plugins/*", "src/ui/*", "src/overlays/*",
@@ -38,6 +41,10 @@ class Refusal(RuntimeError):
 
 
 class RebaseRefusal(Refusal):
+    pass
+
+
+class LandingAdmissionRefusal(Refusal):
     pass
 
 
@@ -125,14 +132,27 @@ class Runner:
         self.cwd = cwd
         self.log = log
 
-    def run(self, *args, cwd=None, env=None, fd=None):
-        result = subprocess.run(args, cwd=cwd or self.cwd, env=env, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, pass_fds=() if fd is None else (fd,))
+    def run(self, *args, cwd=None, env=None, fd=None, timeout=None):
         with self.log.open("a") as output:
-            print("+", *args, file=output)
-            print(result.stdout, end="", file=output)
-        return result
+            print("+", *args, file=output, flush=True)
+            with subprocess.Popen(args, cwd=cwd or self.cwd, env=env, text=True,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  stdin=subprocess.DEVNULL, pass_fds=() if fd is None else (fd,),
+                                  start_new_session=timeout is not None) as process:
+                try:
+                    stdout, _ = process.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    # Descendants can inherit the alpha writer lock and stdout.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    stdout, _ = process.communicate()
+                    print(stdout, end="", file=output)
+                    print(f"landing timed out after {timeout:g}s", file=output)
+                    raise
+            print(stdout, end="", file=output)
+        return subprocess.CompletedProcess(args, process.returncode, stdout)
 
     def checked(self, *args, **kwargs):
         result = self.run(*args, **kwargs)
@@ -148,6 +168,8 @@ class Queue:
         self.root, self.logs, self.runner = root, logs, runner
         self.worktree = root / "worktrees" / ("merge-queue-" + logs.name)
         self.merged, self.skipped, self.parked = [], {}, []
+        self.prefixes = {}
+        self.halted_at_prefix = False
         self.active = []
         self.failure = None
         self.attempt_number = 0
@@ -204,7 +226,7 @@ class Queue:
                 or current["baseRefName"] != "alpha" or current["reviewDecision"] == "CHANGES_REQUESTED"):
             raise Refusal("PR is no longer open and ready at the pinned head")
 
-    def admit(self, number, base):
+    def admit(self, number, base, *, reviewed_head=None):
         info = self.view(number, "headRefName,headRefOid,baseRefName,state,isDraft,isCrossRepository,body,labels,reviews,reviewDecision")
         branch, head = info["headRefName"], info["headRefOid"]
         if info["state"] != "OPEN" or info["isDraft"] or info["baseRefName"] != "alpha":
@@ -232,6 +254,7 @@ class Queue:
                 labels.add("risk-high")
         if "risk-high" in labels:
             raise Refusal("risk-high requires independent exact-head evidence outside the queue")
+        approval_head = reviewed_head or head
         reviews = {}
         if len(info["reviews"]) >= 100:
             raise Refusal("too many GitHub reviews to establish current approval")
@@ -239,7 +262,7 @@ class Queue:
             if review["state"] != "COMMENTED":
                 reviews[review["author"]["login"]] = review
         if (info["reviewDecision"] == "CHANGES_REQUESTED"
-                or not any(r["state"] == "APPROVED" and (r.get("commit") or {}).get("oid") == head
+                or not any(r["state"] == "APPROVED" and (r.get("commit") or {}).get("oid") == approval_head
                            for r in reviews.values())):
             raise Refusal("no current GitHub approval at the pinned head")
         pr = PR(number, branch, head, block(body, "Candidate filters"),
@@ -331,7 +354,6 @@ class Queue:
 
     def push(self, pr, head):
         lane = self.lane(pr)
-        self.check_head(pr, pr.head)
         if head == pr.head:
             return head
         ref = f"refs/heads/{pr.branch}"
@@ -342,14 +364,38 @@ class Queue:
         for _ in range(30):
             current = self.view(pr.number, "headRefOid,state,isDraft")
             if current["state"] != "OPEN" or current["isDraft"] or current["headRefOid"] not in (pr.head, head):
-                raise Refusal("PR changed while waiting for GitHub head registration")
+                raise LandingAdmissionRefusal("PR changed while waiting for GitHub head registration")
             if current["headRefOid"] == head:
-                self.check_head(pr, head)
                 return head
             time.sleep(2)
         raise Refusal("GitHub did not register the leased push")
 
     def land(self, base, entries, fd=None):
+        start = len(self.merged)
+        try:
+            return self.land_entries(base, entries, fd)
+        finally:
+            landed = self.merged[start:]
+            if 0 < len(landed) < len(entries):
+                self.halted_at_prefix = True
+                self.report(f"ALPHA IS AT AN UNTESTED PREFIX: {self.prefixes[landed[-1]]} after PRs {landed}")
+
+    def requeue_tail(self, entries):
+        rest = [entry.pr for entry in entries]
+        self.report(f"fresh candidate required for {[pr.number for pr in rest]}")
+        return rest
+
+    def readmit(self, pr, base, head):
+        # The queue lead ruled that the identical range-diff preserves approval
+        # across the rebase, so GitHub reviews still refer to the original SHA.
+        try:
+            current = self.admit(pr.number, base, reviewed_head=pr.head)
+            if current != replace(pr, head=head):
+                raise Refusal("PR head, branch, or candidate requirements changed since admission")
+        except (Refusal, OSError, ValueError, KeyError, TypeError) as error:
+            raise LandingAdmissionRefusal(str(error)) from error
+
+    def land_entries(self, base, entries, fd):
         expected = base
         for index, entry in enumerate(entries):
             pr = entry.pr
@@ -360,20 +406,32 @@ class Queue:
             if tree != entry.tree:
                 raise Refusal(f"#{pr.number} landing rebase tree differs from tested tree")
             self.report(f"#{pr.number} landing head={head} base={expected} tree={tree}")
-            head = self.push(pr, head)
-            if self.alpha() != expected:
-                raise Refusal(f"pre-merge base mismatch before #{pr.number}; expected {expected}")
+            try:
+                if head != pr.head:
+                    self.readmit(pr, base, pr.head)
+                head = self.push(pr, head)
+                if self.alpha() != expected:
+                    raise Refusal(f"pre-merge base mismatch before #{pr.number}; expected {expected}")
+                self.readmit(pr, expected, head)
+            except LandingAdmissionRefusal as error:
+                self.skip(pr.number, f"landing admission refused: {error}")
+                return self.requeue_tail(entries[index + 1:])
             env = {**os.environ, "PLEXI_QUEUE_EXPECTED_ALPHA": expected,
                    "PLEXI_QUEUE_EXPECTED_TREE": entry.tree}
-            result = self.runner.run("just", "bs-merge", str(pr.number), "--reviewed-head", head,
-                                     fd=fd, env=env)
+            failure = "bs-merge refused"
+            try:
+                result = self.runner.run("just", "bs-merge", str(pr.number), "--reviewed-head", head,
+                                         fd=fd, env=env, timeout=LANDING_TIMEOUT)
+                failed = result.returncode != 0
+            except subprocess.TimeoutExpired:
+                failure = f"bs-merge timed out after {LANDING_TIMEOUT}s"
+                failed = True
+                self.report(f"#{pr.number} {failure}")
             remote = self.alpha()
             current = self.view(pr.number, "state,mergeCommit")
-            if result.returncode and current["state"] == "OPEN" and remote == expected:
-                self.skip(pr.number, "bs-merge refused; see commands.log")
-                rest = [item.pr for item in entries[index + 1:]]
-                self.report(f"fresh candidate required for {[item.number for item in rest]}")
-                return rest
+            if failed and current["state"] == "OPEN" and remote == expected:
+                self.skip(pr.number, f"{failure}; see commands.log")
+                return self.requeue_tail(entries[index + 1:])
             merge = (current.get("mergeCommit") or {}).get("oid", "")
             if (current["state"] != "MERGED" or not OID.fullmatch(merge)
                     or self.runner.run("git", "merge-base", "--is-ancestor", merge, remote).returncode):
@@ -383,8 +441,12 @@ class Queue:
             if self.git("show", "-s", "--format=%P", merge) != expected or remote != merge:
                 raise Refusal(f"#{pr.number} alpha moved outside the expected squash; alpha={remote}")
             self.merged.append(pr.number)
-            self.report(f"#{pr.number} verified merged at {merge}")
-            if result.returncode:
+            status = "candidate-tested"
+            if index < len(entries) - 1:
+                self.prefixes[pr.number] = merge
+                status = PREFIX_STATUS
+            self.report(f"#{pr.number} verified merged at {merge}; {status}")
+            if failed:
                 raise Refusal(f"#{pr.number} squash verified but bs-merge closeout failed; see commands.log")
             expected = remote
         return []
@@ -443,7 +505,9 @@ class Queue:
     def summary(self, numbers):
         pending = [n for n in dict.fromkeys(numbers)
                    if n not in self.merged and n not in self.skipped and n not in self.parked]
-        self.report(f"merged={self.merged} skipped={self.skipped} parked={self.parked} not-landed={pending}")
+        merged = [f"#{n} {PREFIX_STATUS}" if n in self.prefixes else f"#{n} candidate-tested"
+                  for n in self.merged]
+        self.report(f"merged={merged} skipped={self.skipped} parked={self.parked} not-landed={pending}")
 
 
 def main(args):
@@ -465,7 +529,7 @@ def main(args):
         return 1
     finally:
         train.summary(numbers)
-    return int(bool(train.skipped or train.parked))
+    return int(bool(train.skipped or train.parked or train.halted_at_prefix))
 
 
 if __name__ == "__main__":

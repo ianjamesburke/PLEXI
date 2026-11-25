@@ -24,6 +24,8 @@ class QueueTests(unittest.TestCase):
 
     def test_required_filters(self):
         for path, needed in (("src/host/plugin_server.rs", "testing::socket_policy_tests"),
+                             ("src/cli/mod.rs", "testing::socket_policy_tests"),
+                             ("src/cli/mod.rs", "testing::permission_gate_tests::"),
                              ("src/ui/foo.rs", "ui::"),
                              ("src/app/quit.rs", "ui_tests::tests::")):
             with self.subTest(path=path):
@@ -94,6 +96,7 @@ class QueueTests(unittest.TestCase):
                 second = queue.PR(2, "second", "old", (), (), ())
                 entries = [queue.Entry(first, "prior" if scenario == "rebase tree" else "base", "tip", "tree"),
                            queue.Entry(second, "tip", "second-tip", "second-tree")]
+                train.readmit = Mock()
                 if scenario == "refused":
                     self.assertEqual(train.land("base", entries), [second])
                 else:
@@ -128,12 +131,120 @@ class QueueTests(unittest.TestCase):
             second = queue.PR(3, "second", "old2", (), (), ())
             entries = [queue.Entry(first, "base", "tip1", "tree1"),
                        queue.Entry(second, "tip1", "tip2", "tree2")]
+            train.readmit = Mock()
             self.assertEqual(train.land("base", entries), [])
             self.assertEqual(train.merged, [8, 3])
             self.assertEqual([call.args for call in runner.run.call_args_list if call.args[0] == "just"],
                              [("just", "bs-merge", "8", "--reviewed-head", "tip1"),
                               ("just", "bs-merge", "3", "--reviewed-head", "rebased-tip2")])
             train.rebase.assert_called_once_with("tip2", "tip1", first_merge)
+            train.summary([8, 3])
+            reports = [call.args[0] for call in train.report.call_args_list]
+            self.assertTrue(any("#8" in line and "prefix-untested (end state tested)" in line for line in reports[:-1]))
+            self.assertIn("prefix-untested (end state tested)", reports[-1])
+
+    def test_landing_readmits_before_touching_pr_branch(self):
+        for change in ("risk label", "linked stint", "filters", "head", "check"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                runner = Mock()
+                train = queue.Queue(Path(tmp), Path(tmp), runner)
+                head = "a" * 40
+                info = dict(headRefName="feature/fixture", headRefOid=head, state="OPEN",
+                            isDraft=False, baseRefName="alpha", isCrossRepository=False,
+                            labels=[], body="Candidate filters:\n- app::", reviewDecision="APPROVED",
+                            reviews=[dict(state="APPROVED", author={"login": "reviewer"},
+                                          commit={"oid": head})])
+                train.view = Mock(return_value=info)
+                train.lane = Mock()
+                train.git = Mock(return_value="scripts/merge_queue.py")
+                runner.run.return_value = subprocess.CompletedProcess([], 0, "[]")
+                first = train.admit(1, "base")
+                runner.run.side_effect = lambda *args, **kwargs: (
+                    subprocess.CompletedProcess(args, 1, "") if args[0] == "just"
+                    else runner.run.return_value)
+                if change == "risk label":
+                    info["labels"] = [{"name": "risk-high"}]
+                elif change == "linked stint":
+                    tasks = Path(tmp) / ".stint" / "tasks"
+                    tasks.mkdir(parents=True)
+                    (tasks / "1234-test.md").write_text("tags: [risk-high]\n")
+                    info["body"] += "\n\nStint: 1234"
+                elif change == "filters":
+                    info["body"] = "Candidate filters:\n- cli::"
+                elif change == "head":
+                    info["headRefOid"] = "b" * 40
+                    info["reviews"][0]["commit"]["oid"] = info["headRefOid"]
+                else:
+                    runner.run.return_value = subprocess.CompletedProcess([], 1, '[{"bucket":"fail"}]')
+                second = queue.PR(2, "second", "old", (), (), ())
+                train.alpha = Mock(return_value="base")
+                train.push = Mock()
+                entries = [queue.Entry(first, "base", "tip", "tree"),
+                           queue.Entry(second, "tip", "second-tip", "second-tree")]
+                self.assertEqual(train.land("base", entries), [second])
+                train.push.assert_not_called()
+                self.assertIn(1, train.skipped)
+                self.assertFalse(any(call.args[0] == "just" for call in runner.run.call_args_list))
+
+    def test_rebased_head_keeps_original_approval_and_rechecks_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = Mock()
+            train = queue.Queue(Path(tmp), Path(tmp), runner)
+            original, rebased = "a" * 40, "b" * 40
+            info = dict(headRefName="feature/fixture", headRefOid=original, state="OPEN",
+                        isDraft=False, baseRefName="alpha", isCrossRepository=False,
+                        labels=[], body="Candidate filters:\n- app::", reviewDecision="REVIEW_REQUIRED",
+                        reviews=[dict(state="APPROVED", author={"login": "reviewer"},
+                                      commit={"oid": original})])
+            train.view = Mock(return_value=info)
+            train.alpha = Mock(return_value="base")
+            train.lane = Mock()
+            train.git = Mock(return_value="scripts/merge_queue.py")
+            runner.run.return_value = subprocess.CompletedProcess([], 0, "[]")
+            pr = train.admit(1, "base")
+
+            def push(pr, head):
+                info["headRefOid"] = head
+                train.readmit(pr, "base", head)
+                info["body"] = "Candidate filters:\n- cli::"
+                return head
+
+            train.push = Mock(side_effect=push)
+            self.assertEqual(train.land("base", [queue.Entry(pr, "base", rebased, "tree")]), [])
+            self.assertIn("candidate requirements changed", train.skipped[1])
+            self.assertFalse(any(call.args[0] == "just" for call in runner.run.call_args_list))
+
+    def test_timeout_after_prefix_reports_and_returns_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = Mock()
+            train = queue.Queue(root, root, runner)
+            merge = "a" * 40
+            train.alpha = Mock(side_effect=["base", "base", merge, merge, merge, merge])
+            train.push = Mock(side_effect=["tip1", "rebased-tip2"])
+            train.readmit = Mock()
+            train.rebase = Mock(return_value=("rebased-tip2", "tree2"))
+            train.view = Mock(side_effect=[{"state": "MERGED", "mergeCommit": {"oid": merge}},
+                                           {"state": "OPEN"}])
+            train.git = Mock(side_effect=lambda *args: "base" if args[0] == "show" else "tree1")
+            def run(*args, **kwargs):
+                if args[:3] == ("just", "bs-merge", "3"):
+                    self.assertGreaterEqual(kwargs["timeout"], 60)
+                    raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+                return subprocess.CompletedProcess(args, 0, "")
+            runner.run.side_effect = run
+            first = queue.PR(8, "first", "old1", (), (), ())
+            second = queue.PR(3, "second", "old2", (), (), ())
+            entries = [queue.Entry(first, "base", "tip1", "tree1"),
+                       queue.Entry(second, "tip1", "tip2", "tree2")]
+            train.execute = Mock(side_effect=lambda _: train.land("base", entries))
+            with patch.object(queue, "Queue", return_value=train), patch.object(
+                    queue, "lock_path", return_value=root / ".git" / "writer"):
+                self.assertEqual(queue.main(["8", "3"]), 1)
+            log = (root / "queue.log").read_text()
+            self.assertIn(f"ALPHA IS AT AN UNTESTED PREFIX: {merge} after PRs [8]", log)
+            self.assertIn("timed out", log)
+            self.assertIn("prefix-untested (end state tested)", log)
 
     def test_candidate_unions_filters_and_distinguishes_infra(self):
         with tempfile.TemporaryDirectory() as tmp:
