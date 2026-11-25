@@ -250,10 +250,6 @@ pub struct PlexiApp {
     /// Confirmed by pane id in the dialog, closed on the next logic pass.
     pub(crate) confirmed_pane_close: Option<PaneId>,
     pub(crate) pending_quit: bool,
-    /// The working-agent confirmation on screen came from "Restart to
-    /// update": confirming restarts into the update instead of quitting
-    /// (stint 1538).
-    pub(crate) update_restart_confirming: bool,
     pub(crate) pending_context_close: Option<ContextCloseState>,
     pub(crate) frame_tick: crate::platform::logging::FrameTick,
     pub(crate) ui_phase: crate::platform::logging::UiPhaseTracker,
@@ -1916,7 +1912,6 @@ impl PlexiApp {
                     close_confirm_target: None,
                     confirmed_pane_close: None,
                     pending_quit: false,
-                    update_restart_confirming: false,
                     pending_context_close: None,
                     frame_tick,
                     ui_phase: ui_phase.clone(),
@@ -2218,7 +2213,6 @@ impl PlexiApp {
             close_confirm_target: None,
             confirmed_pane_close: None,
             pending_quit: false,
-            update_restart_confirming: false,
             pending_context_close: None,
             frame_tick,
             ui_phase,
@@ -3192,7 +3186,6 @@ impl PlexiApp {
             close_confirm_target: None,
             confirmed_pane_close: None,
             pending_quit: false,
-            update_restart_confirming: false,
             pending_context_close: None,
             frame_tick,
             ui_phase: crate::platform::logging::new_ui_phase_tracker(),
@@ -4563,7 +4556,7 @@ impl eframe::App for PlexiApp {
         self.begin_quit_cleanup();
         quit::exit_host(
             self.quit_coordinator
-                .reason
+                .accepted_reason()
                 .unwrap_or(quit::ExitReason::WindowClosed),
             durability,
             self.quit_coordinator.stop_reply.take(),

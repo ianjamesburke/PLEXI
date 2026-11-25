@@ -1275,14 +1275,22 @@ impl PlexiApp {
             return;
         };
         if let Some(choice) = dialog.show(ctx, &self.colors, self.synthetic_input_frame) {
-            if let Some(pane) = self.windows[self.active_window]
+            let resolved = self.windows[self.active_window]
                 .panes
                 .get_mut(&id)
                 .and_then(|p| p.as_view_mut())
-            {
-                if let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.runtime {
-                    app.resolve_unsaved_changes(choice);
-                }
+                .is_some_and(|pane| match &mut pane.runtime {
+                    crate::host::pane::ViewRuntime::Builtin(app) => {
+                        app.resolve_unsaved_changes(choice);
+                        app.unsaved_changes_dialog().is_none()
+                    }
+                    _ => false,
+                });
+            if resolved {
+                self.resolve_quit_editor(
+                    id,
+                    choice == crate::ui::dialog::UnsavedChangesChoice::Cancel,
+                );
             }
         }
         // The complete input pass belongs to the modal, including paired Text

@@ -55,9 +55,23 @@ pub(crate) mod test_restart_scheduler {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+enum QuitPhase {
+    #[default]
+    Idle,
+    AwaitingEditor {
+        pane: u64,
+        agents_confirmed: bool,
+    },
+    ConfirmingAgents,
+    Accepted,
+}
+
 #[derive(Default)]
 pub(crate) struct QuitCoordinator {
+    /// The reason survives confirmation and is used when the quit is accepted.
     pub(crate) reason: Option<ExitReason>,
+    phase: QuitPhase,
     saved: bool,
     retry_at: Option<Instant>,
     hide_requested: bool,
@@ -84,8 +98,25 @@ pub(crate) struct QuitCoordinator {
 pub(crate) const MAX_QUIT_SAVE_ATTEMPTS: u32 = 5;
 
 impl QuitCoordinator {
+    fn enter(&mut self, phase: QuitPhase, reason: ExitReason) {
+        self.phase = phase;
+        self.reason = Some(reason);
+    }
+
+    pub(crate) fn accepted_reason(&self) -> Option<ExitReason> {
+        self.reason
+            .filter(|_| matches!(self.phase, QuitPhase::Accepted))
+    }
+
+    fn pending_editor(&self) -> Option<u64> {
+        match self.phase {
+            QuitPhase::AwaitingEditor { pane, .. } => Some(pane),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_active(&self) -> bool {
-        self.reason.is_some()
+        self.accepted_reason().is_some()
     }
 
     pub(crate) fn blocks_input(&self) -> bool {
@@ -190,10 +221,10 @@ impl super::PlexiApp {
     /// Acceptance freezes further UI/IPC mutation. The next logic pass takes
     /// the final snapshot, after the accepting UI pass has finished.
     pub(crate) fn request_quit(&mut self, reason: ExitReason) {
-        if self.quit_coordinator.reason.is_none() {
+        if !self.quit_coordinator.is_active() {
             trace("quit_accepted");
             log::info!("quit: coordinator accepted reason={}", reason.label());
-            self.quit_coordinator.reason = Some(reason);
+            self.quit_coordinator.enter(QuitPhase::Accepted, reason);
             self.quitting = true;
         }
         self.ctx
@@ -210,7 +241,7 @@ impl super::PlexiApp {
             trace("save_waived");
             log::warn!(
                 "quit: continuing without saving the workspace ({})",
-                if self.quit_coordinator.reason == Some(ExitReason::HostStop) {
+                if self.quit_coordinator.accepted_reason() == Some(ExitReason::HostStop) {
                     "host stop has nobody to ask"
                 } else {
                     "the user chose to quit without saving"
@@ -232,7 +263,7 @@ impl super::PlexiApp {
                 // boot-time block never clears. The file stays as found and
                 // the exit reports the workspace unsaved.
                 if self.workspace_load_failure.is_some()
-                    && self.quit_coordinator.reason == Some(ExitReason::HostStop)
+                    && self.quit_coordinator.accepted_reason() == Some(ExitReason::HostStop)
                 {
                     log::error!(
                         "quit: host stop exits without saving; the session never restored its workspace: {error}"
@@ -243,7 +274,7 @@ impl super::PlexiApp {
                 // `plexi host stop` has nobody to answer the dialog either:
                 // once the bounded retries are spent it exits unsaved and
                 // says so in its reply (stint 1540).
-                if self.quit_coordinator.reason == Some(ExitReason::HostStop)
+                if self.quit_coordinator.accepted_reason() == Some(ExitReason::HostStop)
                     && self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS
                 {
                     log::error!(
@@ -343,7 +374,14 @@ impl super::PlexiApp {
         frame: &eframe::Frame,
         schedule_restart: impl FnOnce() -> Result<(), String>,
     ) -> bool {
-        let Some(reason) = self.quit_coordinator.reason else {
+        if let Some(pane) = self.quit_coordinator.pending_editor() {
+            if !self.windows.iter().any(|w| w.panes.contains_key(&pane)) {
+                self.quit_coordinator = QuitCoordinator::default();
+                log::info!("quit: editor pane={pane} closed while awaiting an answer");
+            }
+            return false;
+        }
+        let Some(reason) = self.quit_coordinator.accepted_reason() else {
             return false;
         };
         self.ctx
@@ -363,10 +401,8 @@ impl super::PlexiApp {
         // "Restart to update", stint 1538), since they may have edited again.
         if self.quit_coordinator.retry_at.is_some()
             && matches!(reason, ExitReason::WindowClosed | ExitReason::UpdateRestart)
-            && !self.prepare_user_quit()
+            && !self.prepare_user_quit_for(reason)
         {
-            self.quit_coordinator = QuitCoordinator::default();
-            self.quitting = false;
             return false;
         }
         if !self.persist_quit_state() {
@@ -476,34 +512,58 @@ impl super::PlexiApp {
         self.pending_quit = false;
         self.quit_press_count = 0;
         self.quit_last_press = None;
-        self.quitting = confirmed;
-        // A confirmation raised by "Restart to update" restarts (stint 1538).
-        let reason = if std::mem::take(&mut self.update_restart_confirming) {
-            ExitReason::UpdateRestart
-        } else {
-            ExitReason::WindowClosed
-        };
-        // The update may have stopped being ready while the confirmation was
-        // open; then there is nothing to restart into, so nothing happens.
-        if confirmed && reason == ExitReason::UpdateRestart && self.update_status.ready().is_none()
-        {
-            log::info!("update: restart confirmed but no update is ready any more; not quitting");
-            self.quit_coordinator = QuitCoordinator::default();
-            self.quitting = false;
+        let (QuitPhase::ConfirmingAgents, Some(reason)) =
+            (self.quit_coordinator.phase, self.quit_coordinator.reason)
+        else {
             return;
-        }
-        if confirmed && self.prepare_user_quit() {
-            self.request_quit(reason);
+        };
+        self.quit_coordinator = QuitCoordinator::default();
+        if confirmed {
             log::info!(
                 "quit: working-agent confirmation accepted reason={}",
                 reason.label()
             );
+            self.continue_user_quit(reason, true);
         } else {
-            self.quit_coordinator = QuitCoordinator::default();
             self.quitting = false;
             self.ctx
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            log::info!("quit: working-agent confirmation cancelled or vetoed");
+            log::info!("quit: working-agent confirmation cancelled");
+        }
+    }
+
+    fn continue_user_quit(&mut self, reason: ExitReason, agents_confirmed: bool) {
+        if reason == ExitReason::UpdateRestart && self.update_status.ready().is_none() {
+            log::info!("update: restart cancelled because the update is no longer ready");
+            self.quitting = false;
+            return;
+        }
+        self.quitting = agents_confirmed;
+        if self.prepare_user_quit_for(reason) {
+            self.request_quit(reason);
+        }
+    }
+
+    pub(super) fn resolve_quit_editor(&mut self, pane: u64, cancelled: bool) {
+        let (
+            QuitPhase::AwaitingEditor {
+                pane: pending,
+                agents_confirmed,
+            },
+            Some(reason),
+        ) = (self.quit_coordinator.phase, self.quit_coordinator.reason)
+        else {
+            return;
+        };
+        if pane != pending {
+            return;
+        }
+        self.quit_coordinator = QuitCoordinator::default();
+        if cancelled {
+            log::info!("quit: cancelled at unsaved editor pane={pane}");
+        } else {
+            log::info!("quit: continuing after unsaved editor pane={pane}");
+            self.continue_user_quit(reason, agents_confirmed);
         }
     }
 
@@ -541,25 +601,55 @@ impl super::PlexiApp {
         }
     }
 
-    /// Normal desktop quit shares pane-close protection. Forced IPC stop and
-    /// process termination cannot present an interactive unsaved-work prompt.
     pub(crate) fn prepare_user_quit(&mut self) -> bool {
+        self.prepare_user_quit_for(ExitReason::WindowClosed)
+    }
+
+    /// Check for interactive vetoes before accepting a user quit.
+    pub(super) fn prepare_user_quit_for(&mut self, reason: ExitReason) -> bool {
+        if let Some(pane) = self.quit_coordinator.pending_editor() {
+            if self.focused_pane_id() != Some(pane) {
+                self.pane_navigate(pane);
+            }
+            return false;
+        }
+        if matches!(self.quit_coordinator.phase, QuitPhase::ConfirmingAgents) {
+            return false;
+        }
         let veto = self.windows.iter_mut().find_map(|window| {
             window.panes.iter_mut().find_map(|(id, pane)| {
-                pane.as_view_mut()
-                    .and_then(|app| (!app.runtime.request_close()).then_some(*id))
+                let view = pane.as_view_mut()?;
+                match &mut view.runtime {
+                    crate::host::pane::ViewRuntime::Builtin(app) => {
+                        (!app.request_quit()).then_some(*id)
+                    }
+                    _ => None,
+                }
             })
         });
         if let Some(pane) = veto {
+            self.quit_coordinator = QuitCoordinator::default();
+            self.quit_coordinator.enter(
+                QuitPhase::AwaitingEditor {
+                    pane,
+                    agents_confirmed: self.quitting,
+                },
+                reason,
+            );
             self.quitting = false;
             self.quit_press_count = 0;
             self.quit_last_press = None;
             self.pane_navigate(pane);
-            log::info!("quit: unsaved work vetoed desktop quit pane={pane}");
+            log::info!(
+                "quit: awaiting unsaved editor pane={pane} reason={}",
+                reason.label()
+            );
             return false;
         }
         let working = self.working_agent_count();
         if !self.quitting && working > 0 {
+            self.quit_coordinator
+                .enter(QuitPhase::ConfirmingAgents, reason);
             self.pending_quit = true;
             trace("confirmation_required");
             self.pending_close = true;
@@ -1421,13 +1511,29 @@ mod tests {
     #[test]
     fn quit_confirmation_does_not_close_after_failed_save() {
         let mut h = crate::testing::HostHarness::new();
-        h.add_test_pane();
+        let pane = h.add_test_pane();
         let path = crate::workspace::workspace_path_in(h.profile_dir());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"invalid workspace").unwrap();
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane)
+            .unwrap()
+            .set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: pane,
+                state: crate::protocol::AgentState::Working,
+                agent: "test-agent".into(),
+                detail: None,
+                session_id: None,
+            }));
+        assert!(!h.app.prepare_user_quit());
         let output = h.app.ctx.clone().run_ui(egui::RawInput::default(), |_| {
             h.app.resolve_quit_confirmation(true);
         });
+        assert_eq!(
+            h.app.quit_coordinator.reason,
+            Some(ExitReason::WindowClosed)
+        );
         assert!(
             !output.viewport_output[&egui::ViewportId::ROOT]
                 .commands

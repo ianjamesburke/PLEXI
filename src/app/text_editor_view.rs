@@ -192,14 +192,21 @@ enum ExternalChange {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseIntent {
+    Pane,
+    Quit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Prompt {
     /// Cmd+S on a conflicted buffer: reload / overwrite / cancel.
     Overwrite,
-    /// Close on a dirty, non-autosaved buffer: save / discard / cancel.
+    /// Leave a dirty buffer with Save, Discard or Cancel.
     /// `conflicted` swaps Save for Overwrite so a close never clobbers an
     /// external write unasked.
     Close {
         conflicted: bool,
+        intent: CloseIntent,
     },
     Switch {
         conflicted: bool,
@@ -824,7 +831,7 @@ impl TextEditorView {
                 self.path,
                 raw.len()
             );
-            self.reload_from(raw, hash);
+            self.reload_from(raw, Some(hash));
             return true;
         }
         // Dirty: if the disk now equals what we hold, there is nothing to resolve.
@@ -843,17 +850,17 @@ impl TextEditorView {
         );
         self.disk_hash = Some(hash);
         self.external = Some(ExternalChange::Modified);
-        match self.prompt {
-            Some(Prompt::Close { .. }) => self.prompt = Some(Prompt::Close { conflicted: true }),
-            Some(Prompt::Switch { .. }) => self.prompt = Some(Prompt::Switch { conflicted: true }),
-            _ => {}
+        if let Some(Prompt::Close { conflicted, .. } | Prompt::Switch { conflicted }) =
+            &mut self.prompt
+        {
+            *conflicted = true;
         }
         true
     }
 
     /// Replaces the buffer with `raw` from disk, keeping the caret byte offset
     /// and scroll position as close as the new text allows.
-    fn reload_from(&mut self, raw: String, hash: u64) {
+    fn reload_from(&mut self, raw: String, hash: Option<u64>) {
         let caret = self.caret_byte();
         let scroll = self.view.scroll_y;
         let (note_header, content, note_title) = split_note(self.mode.is_markdown(), raw);
@@ -868,7 +875,7 @@ impl TextEditorView {
         let line_count = self.doc.buffer().line_count();
         self.view.set_scroll_y(scroll, line_count);
         self.last_edit = None;
-        self.disk_hash = Some(hash);
+        self.disk_hash = hash;
         self.external = None;
         if let Some(bar) = &mut self.find_bar {
             bar.recompute(&content);
@@ -1109,6 +1116,33 @@ impl TextEditorView {
         self.prompt = Some(prompt);
     }
 
+    fn request_leave(&mut self, intent: CloseIntent) -> bool {
+        // A pane-close request cannot take over an outstanding quit prompt.
+        if matches!(
+            self.prompt,
+            Some(Prompt::Close {
+                intent: CloseIntent::Quit,
+                ..
+            })
+        ) {
+            return false;
+        }
+        if self.wants_close || self.last_edit.is_none() {
+            return true;
+        }
+        // Notes autosave. A file opened by path or with a disk conflict asks.
+        let conflicted = self.external == Some(ExternalChange::Modified);
+        if self.is_note && !conflicted {
+            self.flush();
+            if self.last_edit.is_none() {
+                return true;
+            }
+        }
+        self.pending_switch = None;
+        self.open_prompt(Prompt::Close { conflicted, intent });
+        false
+    }
+
     fn apply_prompt_choice(&mut self, choice: UnsavedChangesChoice) -> bool {
         let Some(prompt) = self.prompt else {
             return false;
@@ -1116,7 +1150,10 @@ impl TextEditorView {
         let conflicted = matches!(
             prompt,
             Prompt::Overwrite
-                | Prompt::Close { conflicted: true }
+                | Prompt::Close {
+                    conflicted: true,
+                    ..
+                }
                 | Prompt::Switch { conflicted: true }
         );
         use UnsavedChangesChoice::*;
@@ -1141,6 +1178,17 @@ impl TextEditorView {
             Reload => self.reload_from_disk(),
             Overwrite => self.write_buffer(Durability::Fsync),
             Save => self.flush(),
+            Discard
+                if matches!(
+                    prompt,
+                    Prompt::Close {
+                        intent: CloseIntent::Quit,
+                        ..
+                    }
+                ) =>
+            {
+                self.discard_quit_edits();
+            }
             Discard => self.last_edit = None,
         }
         // A failed write/reload keeps both the buffer and its pending leave
@@ -1150,7 +1198,14 @@ impl TextEditorView {
         }
         self.prompt = None;
         match prompt {
-            Prompt::Close { .. } => self.wants_close = true,
+            Prompt::Close {
+                intent: CloseIntent::Pane,
+                ..
+            } => self.wants_close = true,
+            Prompt::Close {
+                intent: CloseIntent::Quit,
+                ..
+            } => {}
             Prompt::Switch { .. } => {
                 if let Some(state) = self.pending_switch.take() {
                     self.restore_state(&state);
@@ -1169,13 +1224,35 @@ impl TextEditorView {
                     "notes_editor: reload chosen over unsaved edits path={:?}",
                     self.path
                 );
-                self.reload_from(raw, hash);
+                self.reload_from(raw, Some(hash));
             }
             Err(e) => {
                 log::warn!("notes_editor: reload failed path={:?}: {e}", self.path);
                 self.last_save_result = Some(format!("error: {e}"));
             }
         }
+    }
+
+    fn discard_quit_edits(&mut self) {
+        // The pane stays open if a later editor cancels the quit. Restore its
+        // contents so the discarded text cannot look like a saved buffer.
+        let (raw, hash, load_error) = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => {
+                let hash = fnv1a64(raw.as_bytes());
+                (raw, Some(hash), None)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None, None),
+            Err(e) => {
+                log::warn!(
+                    "notes_editor: cannot reload after discard path={:?}: {e}",
+                    self.path
+                );
+                (String::new(), None, Some(e.to_string()))
+            }
+        };
+        self.reload_from(raw, hash);
+        self.load_error = load_error;
+        self.last_save_result = None;
     }
 
     fn is_effectively_empty(&self) -> bool {
@@ -2898,32 +2975,11 @@ impl View for TextEditorView {
     }
 
     fn request_close(&mut self) -> bool {
-        // Notes autosave, so closing flushes them silently. A file opened by
-        // path is not autosaved, and a conflicted buffer must not be flushed.
-        let conflicted = self.external == Some(ExternalChange::Modified);
-        if !self.wants_close && self.is_note && !conflicted && self.last_edit.is_some() {
-            self.flush();
-            if self.last_edit.is_some() {
-                log::info!(
-                    "notes_editor: close vetoed after failed save path={:?}",
-                    self.path
-                );
-                self.pending_switch = None;
-                self.open_prompt(Prompt::Close { conflicted: false });
-                return false;
-            }
-        }
-        let needs_prompt = self.last_edit.is_some() && (!self.is_note || conflicted);
-        if self.wants_close || !needs_prompt {
-            return true;
-        }
-        log::info!(
-            "notes_editor: close asked about unsaved buffer path={:?}",
-            self.path
-        );
-        self.pending_switch = None;
-        self.open_prompt(Prompt::Close { conflicted });
-        false
+        self.request_leave(CloseIntent::Pane)
+    }
+
+    fn request_quit(&mut self) -> bool {
+        self.request_leave(CloseIntent::Quit)
     }
 
     fn unsaved_changes_dialog(&self) -> Option<UnsavedChangesDialog> {
@@ -2932,7 +2988,10 @@ impl View for TextEditorView {
             conflicted: matches!(
                 prompt,
                 Prompt::Overwrite
-                    | Prompt::Close { conflicted: true }
+                    | Prompt::Close {
+                        conflicted: true,
+                        ..
+                    }
                     | Prompt::Switch { conflicted: true }
             ),
             reload: prompt == Prompt::Overwrite,
@@ -3393,7 +3452,7 @@ impl TextEditorView {
 impl Drop for TextEditorView {
     fn drop(&mut self) {
         // Save unsaved edits; also clean up empty notes (flush deletes them).
-        if self.last_edit.is_some() || self.is_effectively_empty() {
+        if self.last_edit.is_some() || (self.load_error.is_none() && self.is_effectively_empty()) {
             self.flush();
         }
         // Unprompted close paths (CLI, quit) save a dirty file like they always
@@ -5322,7 +5381,13 @@ mod data_safety_tests {
         assert!(app.request_close(), "clean buffer closes without a prompt");
         type_text(&mut app, " mine");
         assert!(!app.request_close());
-        assert_eq!(app.prompt, Some(Prompt::Close { conflicted: false }));
+        assert!(matches!(
+            app.prompt,
+            Some(Prompt::Close {
+                conflicted: false,
+                ..
+            })
+        ));
         assert!(!app.wants_close());
         assert!(app.apply_prompt_choice(UnsavedChangesChoice::Discard));
         assert!(app.wants_close());
@@ -5350,7 +5415,13 @@ mod data_safety_tests {
         std::fs::write(&path, "agent").unwrap();
         app.check_disk();
         assert!(!app.request_close());
-        assert_eq!(app.prompt, Some(Prompt::Close { conflicted: true }));
+        assert!(matches!(
+            app.prompt,
+            Some(Prompt::Close {
+                conflicted: true,
+                ..
+            })
+        ));
         assert!(
             !app.apply_prompt_choice(UnsavedChangesChoice::Save),
             "save is not offered"

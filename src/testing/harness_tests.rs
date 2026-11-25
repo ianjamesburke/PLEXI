@@ -10054,10 +10054,7 @@ fn update_restart_confirmation_cancelled_leaves_an_ordinary_quit_plain() {
     h.run_frames(1);
     assert!(h.app.pending_quit);
     h.app.resolve_quit_confirmation(false);
-    assert!(
-        !h.app.update_restart_confirming,
-        "cancel clears the restart"
-    );
+    assert!(!h.app.pending_quit, "cancel clears the confirmation");
     assert!(
         h.app.update_status.ready().is_some(),
         "the update stays ready"
@@ -10179,7 +10176,7 @@ fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
 }
 
 #[test]
-fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
+fn editor_gate_keyboard_quit_waits_for_unsaved_conflict_then_resumes() {
     let mut h = HostHarness::new();
     h.app.config.confirm_quit = Some(false);
     let tmp = tempfile::tempdir().unwrap();
@@ -10194,10 +10191,8 @@ fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
     );
     assert_eq!(h.app.quit_press_count, 0);
     assert_eq!(gate_note_semantics(&h, pane)["source_text"], "my poem");
-    // A system/window close must also cancel even after an earlier quit flow
-    // marked itself complete; it must not bypass the unsaved-work veto.
-    h.app.quitting = true;
-    h.app.quit_press_count = 3;
+    // macOS can also send a viewport close for the same Cmd+Q. The open
+    // editor prompt still owns the decision.
     let mut input = egui::RawInput::default();
     input
         .viewports
@@ -10210,31 +10205,16 @@ fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
     assert_eq!(h.app.quit_press_count, 0);
     h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::D, egui::Modifiers::NONE);
-    h.run_frames(2);
-    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert!(h.app.windows[0].panes.contains_key(&pane));
     assert_eq!(
         std::fs::read_to_string(tmp.path().join("gate-note.md")).unwrap(),
         "agent version"
     );
     assert!(h.app.focus_stack.is_empty());
-    h.frame(egui::RawInput {
-        events: vec![egui::Event::Key {
-            key: egui::Key::Q,
-            physical_key: None,
-            pressed: false,
-            repeat: false,
-            modifiers: egui::Modifiers::COMMAND,
-        }],
-        ..Default::default()
-    });
-    // The veto navigates to the affected pane and reloads effective config.
-    h.app.config.confirm_quit = Some(false);
-    h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
-    assert!(
-        h.app.quitting,
-        "explicit resolution permits retry; count={} confirm={}",
-        h.app.quit_press_count,
-        h.app.confirm_quit()
+    assert!(h.app.quit_coordinator.is_active());
+    assert_eq!(
+        h.app.quit_coordinator.reason,
+        Some(crate::app::quit::ExitReason::WindowClosed)
     );
 }
 

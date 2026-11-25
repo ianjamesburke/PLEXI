@@ -5,7 +5,9 @@
 
 use crate::app::quit::ExitReason;
 use crate::platform::system_quit::{take_cancels, SystemQuitReason};
+use crate::spatial::tiling::PaneId;
 use crate::testing::HostHarness;
+use std::path::Path;
 
 fn unsaved_editor() -> (
     tempfile::TempDir,
@@ -14,24 +16,239 @@ fn unsaved_editor() -> (
     crate::spatial::tiling::PaneId,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("document.txt");
-    std::fs::write(&path, b"original bytes\n").unwrap();
     let mut h = HostHarness::new();
+    let path = dir.path().join("document.txt");
+    let pane = open_unsaved_editor(&mut h, &path);
+    (dir, path, h, pane)
+}
+
+fn open_unsaved_editor(h: &mut HostHarness, path: &Path) -> PaneId {
+    std::fs::write(path, b"original bytes\n").unwrap();
+    let existing_panes = h.state().open_panes;
     h.app.open_builtin_view_pane(
         Box::new(crate::app::text_editor_view::TextEditorView::new(
-            path.clone(),
+            path.to_path_buf(),
         )),
         crate::app::permissions::PluginPermissions::builtin(),
-        dir.path().to_path_buf(),
+        path.parent().unwrap().to_path_buf(),
         None,
         Some("split_h"),
         None,
     );
-    let pane = *h.state().open_panes.last().unwrap();
+    let pane = h
+        .state()
+        .open_panes
+        .into_iter()
+        .find(|id| !existing_panes.contains(id))
+        .expect("the editor opens a new pane");
     h.focus_pane(pane);
     h.run_frames(2);
     h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
-    (dir, path, h, pane)
+    pane
+}
+
+fn cmd_q(h: &mut HostHarness) {
+    h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
+    assert!(!h.app.quit_coordinator.is_active());
+    h.run_frames(2);
+    assert_unsaved_prompt(h);
+}
+
+fn assert_unsaved_prompt(h: &HostHarness) {
+    assert_eq!(
+        h.app.focus_stack.top().as_ref().map(|k| k.name()),
+        Some("UnsavedChanges")
+    );
+    assert!(!h.app.quit_coordinator.blocks_input());
+}
+
+fn discard(h: &mut HostHarness) {
+    h.app.arm_destructive_dialogs_for_test();
+    h.press_key(egui::Key::D, egui::Modifiers::NONE);
+}
+
+/// Each accepting answer must reach the real process exit through App::logic.
+#[test]
+fn cmd_q_unsaved_answers_resume_quit() {
+    const CHILD: &str = "PLEXI_TEST_CMD_Q_UNSAVED_CHILD";
+    const ROOT: &str = "PLEXI_TEST_CMD_Q_UNSAVED_ROOT";
+    if let Ok(case) = std::env::var(CHILD) {
+        let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
+        let mut h = HostHarness::from_profile_dir(root.join("profile"));
+        let document = root.join("document.txt");
+        let first = open_unsaved_editor(&mut h, &document);
+        let other = root.join("other.txt");
+        let second = (case == "two").then(|| open_unsaved_editor(&mut h, &other));
+
+        cmd_q(&mut h);
+        let mut saved = None;
+        if case == "discard" {
+            discard(&mut h);
+        } else {
+            saved = h.app.focused_pane_id();
+            h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+        }
+        if let Some(second) = second {
+            h.run_frames(2);
+            assert_unsaved_prompt(&h);
+            let next = if saved == Some(first) { second } else { first };
+            assert_eq!(h.app.focused_pane_id(), Some(next));
+            discard(&mut h);
+        }
+        assert!(h.app.quit_coordinator.is_active(), "Quit did not resume");
+        assert_eq!(
+            h.app.quit_coordinator.reason,
+            Some(ExitReason::WindowClosed)
+        );
+        assert!(h.app.windows[0].panes.contains_key(&first));
+        if let Some(second) = second {
+            assert!(h.app.windows[0].panes.contains_key(&second));
+        }
+        for (pane, path) in [(Some(first), document), (second, other)] {
+            if pane.is_some() {
+                let expected = if pane == saved {
+                    "unsaved edits"
+                } else {
+                    "original bytes\n"
+                };
+                assert_eq!(std::fs::read_to_string(path).unwrap(), expected);
+            }
+        }
+        h.hidden_frame().hidden_frame();
+        panic!("the editor answer never reached exit_host");
+    }
+
+    let mut failures = Vec::new();
+    for case in ["save", "discard", "two"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::system_quit_tests::cmd_q_unsaved_answers_resume_quit",
+                "--nocapture",
+            ])
+            .env(CHILD, case)
+            .env(ROOT, root.path())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(20));
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("{case}: the quit hung");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() || !stderr.contains("phase=exit_call") {
+            failures.push(format!("{case}: {:?}\n{stderr}", output.status));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn cmd_q_unsaved_cancel_aborts_with_one_or_two_editors() {
+    for (two, accept_first) in [(false, false), (true, false), (true, true)] {
+        let (dir, _path, mut h, first) = unsaved_editor();
+        let second = two.then(|| open_unsaved_editor(&mut h, &dir.path().join("other.txt")));
+        cmd_q(&mut h);
+        let discarded = h.app.focused_pane_id().filter(|_| accept_first);
+        if let Some(pane) = discarded {
+            discard(&mut h);
+            assert!(!h.app.quit_coordinator.is_active());
+            h.run_frames(2);
+            assert_unsaved_prompt(&h);
+            assert_ne!(h.app.focused_pane_id(), Some(pane));
+            let restored = h.text_editor_mut(pane).open_buffer();
+            assert_eq!(restored.text, "original bytes\n");
+            assert!(!restored.dirty);
+        }
+        let cancelled = h.app.focused_pane_id().unwrap();
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!h.app.quitting && !h.app.quit_coordinator.is_active());
+        assert_eq!(h.app.quit_coordinator.reason, None);
+        h.run_frames(2);
+        assert!(h.app.focus_stack.is_empty());
+        for pane in [Some(first), second].into_iter().flatten() {
+            assert!(h.app.windows[0].panes.contains_key(&pane));
+            assert_eq!(
+                h.text_editor_mut(pane).open_buffer().dirty,
+                Some(pane) != discarded
+            );
+            h.text_editor_mut(pane).test_discard_unsaved();
+        }
+        assert_ne!(Some(cancelled), discarded);
+    }
+}
+
+#[test]
+fn cmd_q_unsaved_plain_pane_close_never_quits() {
+    let (_dir, path, mut h, pane) = unsaved_editor();
+    let other = h.add_test_pane();
+    h.focus_pane(pane).run_frames(2);
+    h.press_key(egui::Key::W, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert_unsaved_prompt(&h);
+    discard(&mut h);
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert!(h.app.windows[0].panes.contains_key(&other));
+    assert!(!h.app.quit_coordinator.is_active());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "original bytes\n");
+}
+
+#[test]
+fn cmd_q_unsaved_failed_save_keeps_the_decision_pending() {
+    let (_dir, path, mut h, pane) = unsaved_editor();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    cmd_q(&mut h);
+    h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+    assert!(!h.app.quit_coordinator.is_active());
+    h.run_frames(2);
+    assert_unsaved_prompt(&h);
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
+    discard(&mut h);
+    assert!(
+        h.app.quit_coordinator.is_active(),
+        "Discard did not resume quit"
+    );
+    assert_eq!(
+        h.app.quit_coordinator.reason,
+        Some(ExitReason::WindowClosed)
+    );
+    assert!(path.is_dir());
+}
+
+#[test]
+fn restart_to_update_keeps_its_reason_after_the_editor_answer() {
+    let (_dir, path, mut h, _pane) = unsaved_editor();
+    h.app
+        .update_status
+        .apply(crate::host::update_status::UpdateEvent::Ready {
+            version: "9.9.9".into(),
+        });
+    h.app.update_quit_pending = true;
+    h.run_frames(1);
+    assert!(!h.app.quit_coordinator.is_active());
+    h.run_frames(1);
+    assert_unsaved_prompt(&h);
+    h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+    assert!(
+        h.app.quit_coordinator.is_active(),
+        "Save did not resume restart"
+    );
+    assert_eq!(
+        h.app.quit_coordinator.reason,
+        Some(ExitReason::UpdateRestart)
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "unsaved edits");
 }
 
 fn post(h: &mut HostHarness, reason: SystemQuitReason) {
