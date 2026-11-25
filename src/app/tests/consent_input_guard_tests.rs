@@ -455,9 +455,9 @@ fn raw_wasm_review_ignores_a_real_click_inside_the_arm_delay() {
     );
 }
 
-/// Stint 1558: event consent is ActionModal's one button row. Evidence for
-/// the PR, armed and unarmed. The actions read Deny, Allow until this pane
-/// closes, and Allow once from left to right on one top edge.
+/// ActionModal stacks the full-width event consent actions when they overflow
+/// one row. The armed and unarmed screenshots show Allow once, Allow until
+/// this pane closes, and Deny from top to bottom.
 #[test]
 fn screenshot_event_consent_button_row() {
     let mut h = HostHarness::new();
@@ -480,8 +480,8 @@ fn screenshot_event_consent_button_row() {
         .collect();
     let ids: Vec<&str> = rows.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(ids, ["allow_once", "allow_pane", "deny"], "paint order");
-    assert!(rows.iter().all(|(_, hit)| hit.top() == rows[0].1.top()));
-    assert!(rows[0].1.left() > rows[1].1.left() && rows[1].1.left() > rows[2].1.left());
+    assert!(rows.iter().all(|(_, hit)| hit.left() == rows[0].1.left()));
+    assert!(rows[0].1.top() < rows[1].1.top() && rows[1].1.top() < rows[2].1.top());
     drop(connection);
 }
 
