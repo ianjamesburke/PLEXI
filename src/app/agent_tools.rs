@@ -441,7 +441,7 @@ impl PlexiApp {
         let plan = self.admit_agent_call(&request)?;
         let child_parent = plan.child_parent;
         let parent = plan.authority.parent;
-        let (role, task) = (plan.authority.role.clone(), plan.task.clone());
+        let (role, task) = (plan.authority.launch.role.id.clone(), plan.task.clone());
         // `apply_launch` owns any checkout from preparation to the pane, and
         // reclaims or retains it on refusal (stint 1632).
         let pane_id = self

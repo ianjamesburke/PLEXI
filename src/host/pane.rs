@@ -814,15 +814,15 @@ impl Pane {
         }
     }
 
-    /// Resume a Standby agent pane, returning `true` if the pane was in Standby.
-    pub fn resume_from_standby(&mut self) -> bool {
+    /// Resume a Standby agent pane, returning whether it woke.
+    pub fn resume_from_standby(&mut self) -> Result<bool, String> {
         match self {
-            Pane::Terminal(t) => t.resume_from_standby().is_some(),
+            Pane::Terminal(t) => t.resume_from_standby().map(|command| command.is_some()),
             Pane::View(a) => a
                 .overlay_replaced
                 .as_deref_mut()
-                .is_some_and(|r| r.resume_from_standby()),
-            Pane::Portal(_) => false,
+                .map_or(Ok(false), Pane::resume_from_standby),
+            Pane::Portal(_) => Ok(false),
         }
     }
 }
@@ -870,6 +870,8 @@ pub struct TerminalPane {
     pub agent_session_id: Option<String>,
     /// Optional agent role config name (`.plexi/agents/<name>.toml`).
     pub agent_role: Option<String>,
+    /// The named Claude memory identity selected at launch.
+    pub(crate) claude_memory: Option<crate::agent::memory::ClaudeMemoryIdentity>,
     /// The pane's credentials and the authority binding they were issued
     /// from (posture, provenance), fixed at construction (stint 1632).
     /// `None` only for a credential-free fixture.
@@ -1167,6 +1169,7 @@ impl TerminalPane {
             agent_harness,
             agent_session_id: None,
             agent_role,
+            claude_memory: None,
             credentials,
             last_blocked_reason: None,
             tail_preview: None,
@@ -1407,6 +1410,12 @@ impl TerminalPane {
             ));
         }
         let session_line = standby_session_line(s, self.standby_resume_command.as_deref());
+        let session_line = match (&s.last_state, &s.last_detail) {
+            (crate::protocol::AgentState::Failed, Some(error)) => {
+                format!("{session_line}\n{error}")
+            }
+            _ => session_line,
+        };
         Some(format!(
             "[Plexi Standby] {label} · {cwd}\n{session_line}\n[Enter] resume"
         ))
@@ -1414,38 +1423,54 @@ impl TerminalPane {
 
     /// Exit `[Plexi Standby]` and dispatch the Harness Adapter resume command
     /// into the terminal's PTY in its restored `cwd`.
-    pub fn resume_from_standby(&mut self) -> Option<String> {
-        if self
-            .standby_session
-            .as_ref()
-            .is_some_and(crate::app::is_finished_script_session)
-        {
-            return None;
+    pub fn resume_from_standby(&mut self) -> Result<Option<String>, String> {
+        let Some(standby) = self.standby_session.as_ref() else {
+            return Ok(None);
+        };
+        if crate::app::is_finished_script_session(standby) {
+            return Ok(None);
         }
-        let standby = self.standby_session.take()?;
         let harness = crate::cli::AgentHarness::parse(&standby.harness);
-        let cmd = self.standby_resume_command.take().or_else(|| {
+        let cwd = self
+            .standby_cwd
+            .as_deref()
+            .or(self.initial_cwd.as_deref());
+        let profile_dir = crate::config::config_dir();
+        let cmd = self.standby_resume_command.clone().or_else(|| {
             harness.map(|harness| {
-                let flags = standby
-                    .config_name
-                    .as_deref()
-                    .and_then(|role| {
-                        self.standby_cwd
-                            .as_deref()
-                            .or(self.initial_cwd.as_deref())
-                            .map(|cwd| {
-                                crate::cli::agent::resolved_session_harness_flags_in(
-                                    Some(role),
-                                    harness,
-                                    &crate::config::config_dir(),
-                                    Some(cwd),
-                                )
-                            })
-                    })
-                    .unwrap_or_default();
+                let flags = if cwd.is_some() {
+                    crate::cli::agent::resolved_session_harness_flags_in(
+                        standby.config_name.as_deref(),
+                        harness,
+                        &profile_dir,
+                        cwd,
+                    )
+                } else {
+                    Vec::new()
+                };
                 harness.restore_command_with_flags(standby.session_id.as_deref(), &flags)
             })
         });
+        let cmd = match (cmd, standby.claude_memory.as_ref()) {
+            (Some(command), memory) => crate::cli::agent::bind_saved_claude_memory(
+                command,
+                memory,
+                &standby.harness,
+                standby.config_name.as_deref(),
+                standby.ephemeral,
+            )
+            .map(Some),
+            (None, Some(_)) => Err(format!(
+                "invalid Claude memory binding for harness={}",
+                standby.harness
+            )),
+            (None, None) => Ok(None),
+        };
+        let cmd = cmd.inspect_err(|error| self.report_memory_restore_error(error))?;
+        let Some(standby) = self.standby_session.take() else {
+            return Ok(None);
+        };
+        self.standby_resume_command = None;
         if let Some(ref resume_cmd) = cmd {
             if harness.is_some_and(|h| {
                 standby
@@ -1462,6 +1487,7 @@ impl TerminalPane {
                 harness,
                 resume_cmd,
                 standby.session_id.as_deref(),
+                standby.claude_memory.is_some(),
             );
             let line = if standby.ephemeral {
                 format!("{launch_command}; exit $?\n")
@@ -1481,7 +1507,19 @@ impl TerminalPane {
             standby.harness,
             standby.session_id
         );
-        Some(cmd.unwrap_or(standby.harness))
+        Ok(Some(cmd.unwrap_or(standby.harness)))
+    }
+
+    pub(crate) fn report_memory_restore_error(&mut self, error: &str) {
+        log::error!("agent_memory: cannot resume pane {}: {error}", self.id);
+        if let Some(session) = &mut self.standby_session {
+            session.last_state = crate::protocol::AgentState::Failed;
+            session.last_detail = Some(error.to_owned());
+        }
+        if let Some(agent) = &mut self.agent {
+            agent.state = crate::protocol::AgentState::Failed;
+            agent.detail = Some(error.to_owned());
+        }
     }
 
     /// Capture a compact tail preview from the terminal buffer, falling back to
@@ -1832,6 +1870,7 @@ impl TerminalPane {
             last_interaction_at: self.last_interaction_at,
             harness,
             config_name: self.agent_role.clone(),
+            claude_memory: self.claude_memory.clone(),
             permission_posture: self.permission_ceiling().ok().flatten().cloned(),
             session_id,
             last_state,
@@ -1883,6 +1922,7 @@ impl TerminalPane {
             pane_name: self.name.clone(),
             harness: session.harness,
             config_name: session.config_name,
+            claude_memory: session.claude_memory,
             permission_posture: session.permission_posture,
             authority: self
                 .authority()
@@ -2075,6 +2115,7 @@ mod agent_source_tests {
             last_interaction_at: 0,
             harness: harness.to_string(),
             config_name: None,
+            claude_memory: None,
             permission_posture: None,
             session_id: session_id.map(str::to_string),
             last_state: AgentState::Blocked,

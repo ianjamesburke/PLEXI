@@ -251,7 +251,7 @@ pub fn render(
                 )
             });
         if enter_pressed {
-            terminal.resume_from_standby();
+            let _ = terminal.resume_from_standby();
         }
     }
 
