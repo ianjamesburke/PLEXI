@@ -96,11 +96,28 @@ impl<'de> Deserialize<'de> for ContextName {
 
 /// The root a focused pane or view offers, captured when the action is
 /// taken. `scope` is the supplying terminal's incarnation; a view has none.
+#[derive(Debug, Clone)]
 pub(crate) struct PaneCwd {
     pub(crate) target_context_id: u64,
     pub(crate) scope: Option<crate::host::plugin_timeline::AdmittedScope>,
     pub(crate) cwd: PathBuf,
 }
+
+impl PartialEq for PaneCwd {
+    fn eq(&self, other: &Self) -> bool {
+        self.target_context_id == other.target_context_id
+            && self.cwd == other.cwd
+            && match (&self.scope, &other.scope) {
+                (None, None) => true,
+                (Some(a), Some(b)) => {
+                    a.revision == b.revision && std::sync::Arc::ptr_eq(&a.authority, &b.authority)
+                }
+                _ => false,
+            }
+    }
+}
+
+impl Eq for PaneCwd {}
 
 pub(crate) enum WindowMenuAction {
     Rename,

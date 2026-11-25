@@ -69,6 +69,154 @@ fn row_titles(h: &HostHarness) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn command_registry_regression_close_before_context_switch() {
+    let mut h = HostHarness::new();
+    let first_pane = h.add_test_pane();
+    h.focus_pane(first_pane);
+    let root = h.workspace_root().to_path_buf();
+    let second_context = 100;
+    h.app.router.push(crate::host::context::Context {
+        name: "Context two".into(),
+        root: root.clone(),
+        description: None,
+        context_id: second_context,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.windows.push(crate::host::context::Window {
+        name: "Context two".into(),
+        path: root,
+        tree: egui_tiles::Tree::empty("context-two"),
+        panes: Default::default(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: second_context,
+        context_id: second_context,
+        tree_history: Default::default(),
+    });
+    let second_pane = h.add_assistant_pane_in_window(1);
+    h.run_frames(2);
+
+    deliver(
+        &mut h,
+        vec![
+            press(Key::W, Modifiers::COMMAND),
+            release(Key::W, Modifiers::COMMAND),
+            press(Key::Num2, Modifiers::COMMAND),
+            release(Key::Num2, Modifiers::COMMAND),
+        ],
+    );
+
+    assert_eq!(h.app.router.active().context_id, second_context);
+    assert!(
+        h.app.find_pane_in_any_window(first_pane).is_none(),
+        "Cmd+W must close the pane in context one before switching"
+    );
+    assert!(h.app.find_pane_in_any_window(second_pane).is_some());
+}
+
+#[test]
+fn command_registry_regression_deferred_enter_keeps_pane_authority() {
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let context = h.app.router.active().context_id;
+    let original = tempfile::tempdir().unwrap();
+    h.app
+        .set_context_root(original.path().into(), Some(context));
+    open_palette(&mut h);
+
+    h.app
+        .pending_pane_inputs
+        .entry(pane)
+        .or_default()
+        .push(RawInput {
+            events: vec![
+                Event::Paste("set context root from pane directory".into()),
+                press(Key::Enter, Modifiers::NONE),
+            ],
+            ..Default::default()
+        });
+    deliver(&mut h, vec![]);
+    assert!(h.app.synthetic_input_frame);
+    assert!(h.app.command_palette_open(), "Enter waits for the query");
+    h.hidden_frame();
+    assert!(!h.app.synthetic_input_frame);
+    assert_eq!(
+        palette_test_log::take_activations(),
+        ["commands:cmd/set_context_root_from_cwd"]
+    );
+    assert_eq!(
+        h.app.router.active().root,
+        original.path(),
+        "deferred synthetic Enter still needs the pane's root permit"
+    );
+    let monitor =
+        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
+    assert!(monitor.host_records().pending().iter().any(|request| {
+        request.actor_id == format!("pane:{pane}")
+            && request.tool == "context.set_root"
+            && request.context_id == Some(context)
+    }));
+}
+
+#[test]
+fn command_registry_regression_edit_commands_uses_open_workspace() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let workspace_a = h.workspace_root().to_path_buf();
+    let workspace_b = tempfile::tempdir().unwrap();
+    let commands_path = |root: &std::path::Path| {
+        root.join(crate::config::workspace_channel_dir())
+            .join("commands.toml")
+    };
+    let path_a = commands_path(&workspace_a);
+    let path_b = commands_path(workspace_b.path());
+    for path in [&path_a, &path_b] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    }
+    h.run_frames(2);
+    open_palette(&mut h);
+    assert_eq!(
+        h.app.palette_workspace_root.as_deref(),
+        Some(workspace_a.as_path())
+    );
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .unwrap()
+        .as_view_mut()
+        .unwrap()
+        .workspace_root = workspace_b.path().to_path_buf();
+
+    deliver(
+        &mut h,
+        vec![
+            Event::Paste("edit commands".into()),
+            press(Key::Enter, Modifiers::NONE),
+        ],
+    );
+    h.hidden_frame();
+    assert_eq!(
+        palette_test_log::take_activations(),
+        ["commands:cmd/edit_commands"]
+    );
+    assert!(
+        h.app
+            .find_open_text_editor_pane_any_window(&path_a)
+            .is_some(),
+        "Edit commands must open the commands file from workspace A"
+    );
+    assert!(
+        !path_b.exists(),
+        "workspace B must not gain a commands file"
+    );
+}
+
 /// Stint 1391: an Enter waiting on its query's rows completes on a hidden
 /// pass alone (`App::logic`), runs once, and the window never has to draw.
 #[test]

@@ -26606,7 +26606,8 @@ fn answer_opens_the_decision_overlay_and_never_resolves_in_the_palette() {
         .unwrap();
     open_agents_stop(&mut h);
     wait_for_palette_agents_load(&mut h);
-    h.app.apply_palette_command(PickerCommand::Accept(None));
+    h.app
+        .apply_palette_command(PickerCommand::Accept(None, Default::default()));
     h.app.refresh_command_palette();
     assert!(!h.app.command_palette_open());
     assert!(h.app.attention_queue.decision_overlay.is_some());

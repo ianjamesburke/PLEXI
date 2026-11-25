@@ -368,15 +368,26 @@ impl PlexiApp {
     /// Adopt the focused pane's root. A person's own gesture applies it in one
     /// step; input marked synthetic (socket-injected) is the pane's own
     /// request and needs the pane's permit.
-    pub(crate) fn set_root_from_pane(&mut self, source: PaneCwd) {
+    pub(crate) fn set_root_from_pane(
+        &mut self,
+        source: PaneCwd,
+        origin: crate::host::picker::InputOrigin,
+    ) {
+        use crate::host::picker::InputOrigin;
         let id = source.target_context_id;
-        let result = if self.synthetic_input_frame {
-            source
+        let result = match origin {
+            InputOrigin::Human => self.commit_context_root(
+                source.cwd,
+                id,
+                crate::overlays::misc::window_chosen_root(),
+            ),
+            InputOrigin::Synthetic(pane) => source
                 .scope
-                .ok_or_else(|| "synthetic input without a terminal authority".to_string())
-                .and_then(|scope| self.set_root_for(UseSubject::Pane(scope), &source.cwd, id))
-        } else {
-            self.commit_context_root(source.cwd, id, crate::overlays::misc::window_chosen_root())
+                .filter(|scope| pane == Some(scope.authority.pane_id()))
+                .ok_or_else(|| {
+                    "synthetic input without its supplying terminal authority".to_string()
+                })
+                .and_then(|scope| self.set_root_for(UseSubject::Pane(scope), &source.cwd, id)),
         };
         if let Err(error) = result {
             log::info!("set_root_from_pane: context {id} refused: {error}");

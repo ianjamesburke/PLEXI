@@ -795,75 +795,76 @@ pub fn poll_actions(
 ) -> Vec<Action> {
     let mut actions = Vec::new();
 
-    // A host chord owns both edges even if Command is released first and the
-    // matching key-up therefore arrives with no modifiers in a later frame.
-    for key in claimed_key_releases.iter().copied().collect::<Vec<_>>() {
-        if input.consume_key_release(key) {
-            claimed_key_releases.remove(&key);
-        }
-    }
-
-    for entry in table {
-        match entry.context {
-            BindingContext::Global => {
-                // Always checked — no suppression.
-            }
-            BindingContext::Normal => {
-                if keyboard_capture_active || overlay_open {
-                    continue;
-                }
-            }
-            BindingContext::ViewActive => {
-                if !view_active || keyboard_capture_active || overlay_open {
-                    continue;
-                }
-                // Escape is suppressed when the shortcuts overlay is open so the overlay
-                // can own it for dismissal.
-                if matches!(entry.action, Action::CloseView) && shortcuts_overlay_open {
-                    continue;
-                }
-            }
-        }
-
-        // Exact chords match on the key event's own modifiers, not the frame
-        // snapshot: a quick tap (or xdotool) delivers the modifier and the key
-        // in one frame, so the snapshot can read NONE and the chord would fall
-        // through to a subset binding (Cmd+Shift+0 opening Quick Note).
-        let triggered = if entry.exact {
-            input.consume_key_exact_with_repeat(entry.modifiers, entry.key, !entry.no_repeat)
-        } else if entry.no_repeat {
-            input.consume_key_no_repeat(entry.modifiers, entry.key)
-        } else {
-            input.consume_key(entry.modifiers, entry.key)
+    // Resolve the most specific binding for each press in delivery order.
+    // The table's order breaks ties for a single event.
+    input.retain_events(|event| {
+        let egui::Event::Key {
+            key,
+            pressed,
+            repeat,
+            modifiers,
+            ..
+        } = event
+        else {
+            return true;
         };
-        if triggered {
-            claimed_key_releases.insert(entry.key);
-            if entry.key == egui::Key::Equals {
+        if !pressed {
+            // A key-up can arrive with no modifiers after Command goes up.
+            return !claimed_key_releases.remove(key);
+        }
+
+        let entry = table.iter().find(|entry| {
+            if entry.key != *key || (entry.no_repeat && *repeat) {
+                return false;
+            }
+            let active = match entry.context {
+                BindingContext::Global => true,
+                BindingContext::Normal => !keyboard_capture_active && !overlay_open,
+                BindingContext::ViewActive => {
+                    view_active
+                        && !keyboard_capture_active
+                        && !overlay_open
+                        && (!shortcuts_overlay_open || !matches!(entry.action, Action::CloseView))
+                }
+            };
+            active
+                && if entry.exact {
+                    modifiers_match_exact_for_os(
+                        modifiers,
+                        &entry.modifiers,
+                        cfg!(target_os = "macos"),
+                    )
+                } else {
+                    modifiers.matches_logically(entry.modifiers)
+                }
+        });
+        let Some(entry) = entry else {
+            return true;
+        };
+        claimed_key_releases.insert(*key);
+        match key {
+            egui::Key::Equals => {
                 claimed_key_releases.insert(egui::Key::Plus);
-            } else if entry.key == egui::Key::Plus {
+            }
+            egui::Key::Plus => {
                 claimed_key_releases.insert(egui::Key::Equals);
             }
-            if !matches!(
-                entry.action,
-                Action::IncreasePaneFontSize
-                    | Action::DecreasePaneFontSize
-                    | Action::ResetPaneFontSize
-                    | Action::UiScaleUp
-                    | Action::UiScaleDown
-                    | Action::UiScaleReset
-            ) || !actions.contains(&entry.action)
-            {
-                actions.push(entry.action.clone());
-            }
+            _ => {}
         }
-    }
-
-    // Also claim a release delivered in the same raw-input batch as its press.
-    for key in claimed_key_releases.iter().copied().collect::<Vec<_>>() {
-        if input.consume_key_release(key) {
-            claimed_key_releases.remove(&key);
+        if !matches!(
+            entry.action,
+            Action::IncreasePaneFontSize
+                | Action::DecreasePaneFontSize
+                | Action::ResetPaneFontSize
+                | Action::UiScaleUp
+                | Action::UiScaleDown
+                | Action::UiScaleReset
+        ) || !actions.contains(&entry.action)
+        {
+            actions.push(entry.action.clone());
         }
-    }
+        false
+    });
 
     actions
 }

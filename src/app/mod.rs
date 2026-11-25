@@ -276,6 +276,7 @@ pub struct PlexiApp {
     pub(crate) approval_buttons: Vec<ApprovalButton>,
     /// This frame's raw input includes socket-injected pane events.
     pub(crate) synthetic_input_frame: bool,
+    pub(crate) synthetic_input_pane: Option<PaneId>,
     /// `plexi pane slot wait` requests parked until the watched slot's
     /// value matches, or their caller-supplied deadline passes (stint 0585).
     pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
@@ -1943,6 +1944,7 @@ impl PlexiApp {
                     pending_screenshots: Vec::new(),
                     approval_buttons: Vec::new(),
                     synthetic_input_frame: false,
+                    synthetic_input_pane: None,
                     pending_slot_waits: Vec::new(),
                     pane_mailboxes: HashMap::new(),
                     pending_message_recvs: Vec::new(),
@@ -2245,6 +2247,7 @@ impl PlexiApp {
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
+            synthetic_input_pane: None,
             pending_slot_waits: Vec::new(),
             pane_mailboxes: HashMap::new(),
             pending_message_recvs: Vec::new(),
@@ -3219,6 +3222,7 @@ impl PlexiApp {
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
+            synthetic_input_pane: None,
             pending_slot_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -3683,6 +3687,7 @@ impl eframe::App for PlexiApp {
             return;
         }
         self.synthetic_input_frame = false;
+        self.synthetic_input_pane = None;
         self.fulfill_screenshot_events(ctx, raw_input);
         // A hidden window (minimized/occluded) gets logic-only passes with no
         // widget pass to receive events — leave queued pane inputs in place so
@@ -3724,6 +3729,7 @@ impl eframe::App for PlexiApp {
             } else if let Some(batches) = self.pending_pane_inputs.remove(&pane_id) {
                 if !batches.is_empty() {
                     self.synthetic_input_frame = true;
+                    self.synthetic_input_pane = Some(pane_id);
                 }
                 for batch in batches {
                     raw_input.modifiers = batch.modifiers;
@@ -3736,6 +3742,7 @@ impl eframe::App for PlexiApp {
             if let Some(frames) = self.pending_pane_pointer_frames.get_mut(&pane_id) {
                 if let Some(batch) = frames.pop_front() {
                     self.synthetic_input_frame = true;
+                    self.synthetic_input_pane = Some(pane_id);
                     raw_input.events.extend(batch.events);
                 }
                 if frames.is_empty() {
@@ -4251,12 +4258,46 @@ impl eframe::App for PlexiApp {
         let skip_toggle_shortcuts = !overlay_open
             && !self.show_shortcuts
             && self.focused_builtin_editor_captures_shortcuts();
-        let filtered_bindings: Option<Vec<keys::BindingEntry>> = skip_toggle_shortcuts.then(|| {
-            self.binding_table
+        // Fallback chords participate in the same ordered scan as registered
+        // chords, with priority given to an explicit binding for the event.
+        let tool_children = self.visual_owner_pane().is_some_and(|parent| {
+            self.conjoined_contexts.iter().any(|(context, id)| {
+                *id == parent
+                    && self.windows.iter().any(|window| {
+                        window.context_id == *context && !window.panes.is_empty()
+                    })
+            })
+        });
+        let has_selection = self.host
+            .pane_selection(self.windows[self.active_window].window_id)
+            .is_some();
+        let filtered_bindings = (skip_toggle_shortcuts || tool_children || has_selection).then(|| {
+            let mut table: Vec<_> = self.binding_table
                 .iter()
-                .filter(|b| b.action != Action::ToggleShortcuts)
+                .filter(|entry| !skip_toggle_shortcuts || entry.action != Action::ToggleShortcuts)
                 .cloned()
-                .collect()
+                .collect();
+            if tool_children {
+                table.push(keys::BindingEntry {
+                    modifiers: egui::Modifiers::COMMAND,
+                    key: egui::Key::ArrowDown,
+                    exact: true,
+                    no_repeat: true,
+                    context: keys::BindingContext::Normal,
+                    action: Action::ToggleZoom,
+                });
+            }
+            if has_selection {
+                table.push(keys::BindingEntry {
+                    modifiers: egui::Modifiers::NONE,
+                    key: egui::Key::Escape,
+                    exact: true,
+                    no_repeat: true,
+                    context: keys::BindingContext::Normal,
+                    action: Action::CancelPaneSelection,
+                });
+            }
+            table
         });
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
         // Native popup dismissal owns bare Escape before the view/CloseView
@@ -4277,57 +4318,6 @@ impl eframe::App for PlexiApp {
             overlay_open,
             self.show_shortcuts,
         );
-        // Cmd+Down belongs to editors unless the focused pane has tool children.
-        // Use the normal binding poller so both edges and overlay capture retain
-        // the same ownership rules as other host chords.
-        if self.visual_owner_pane().is_some_and(|parent| {
-            self.conjoined_contexts.iter().any(|(context, id)| {
-                *id == parent
-                    && self
-                        .windows
-                        .iter()
-                        .any(|window| window.context_id == *context && !window.panes.is_empty())
-            })
-        }) {
-            poll_actions_result.extend(keys::poll_actions(
-                &mut router_input,
-                &[keys::BindingEntry {
-                    modifiers: egui::Modifiers::COMMAND,
-                    key: egui::Key::ArrowDown,
-                    exact: true,
-                    no_repeat: true,
-                    context: keys::BindingContext::Normal,
-                    action: Action::ToggleZoom,
-                }],
-                &mut self.claimed_host_key_releases,
-                false,
-                keyboard_capture_active,
-                overlay_open,
-                self.show_shortcuts,
-            ));
-        }
-        if self
-            .host
-            .pane_selection(self.windows[self.active_window].window_id)
-            .is_some()
-        {
-            poll_actions_result.extend(keys::poll_actions(
-                &mut router_input,
-                &[keys::BindingEntry {
-                    modifiers: egui::Modifiers::NONE,
-                    key: egui::Key::Escape,
-                    exact: true,
-                    no_repeat: true,
-                    context: keys::BindingContext::Normal,
-                    action: Action::CancelPaneSelection,
-                }],
-                &mut self.claimed_host_key_releases,
-                false,
-                keyboard_capture_active,
-                overlay_open,
-                self.show_shortcuts,
-            ));
-        }
         // Route bare-key contracts on Plexi-owned surfaces (Decision Overlay,
         // Attention Queue list, Tree Atlas) after Global chords
         // (`Cmd+Esc`, `Cmd+Enter`, `Cmd+I`, `Cmd+Alt+B`) have been claimed by
@@ -4600,6 +4590,27 @@ thread_local! {
 impl PlexiApp {
     /// Dispatch host actions from both shortcuts and the command palette.
     pub(crate) fn dispatch_host_action(&mut self, action: Action, ctx: &egui::Context) {
+        self.dispatch_input_action(action, ctx, self.input_origin());
+    }
+
+    pub(crate) fn dispatch_input_action(
+        &mut self,
+        action: Action,
+        ctx: &egui::Context,
+        origin: crate::host::picker::InputOrigin,
+    ) {
+        let invocation = self.keyboard_command_invocation(&action);
+        let input = self.capture_command_activation(origin, action == Action::SetContextRootFromCwd);
+        self.dispatch_registered_action(action, ctx, &invocation, input);
+    }
+
+    pub(crate) fn dispatch_registered_action(
+        &mut self,
+        action: Action,
+        ctx: &egui::Context,
+        invocation: &crate::overlays::command_palette::PaletteInvocation,
+        input: crate::host::picker::ActivationInput,
+    ) {
         #[cfg(test)]
         if HOST_ACTION_PROBE.with(|probe| {
             let mut probe = probe.borrow_mut();
@@ -4612,12 +4623,15 @@ impl PlexiApp {
         }) {
             return;
         }
-        let window = &self.windows[self.active_window];
-        let context_id = window.context_id;
-        let window_id = window.window_id;
-        let pane_id = self.focused_pane_id();
+        let context_id = invocation.focus.context_id;
+        let window_id = invocation.focus.window_id;
+        let pane_id = invocation.focus.pane_id;
         let command_id = action.command_id();
-        if let Some(reason) = self.registered_command_unavailable(&action) {
+        if let Some(reason) = self.command_unavailability(
+            &action,
+            invocation.config_workspace.as_deref(),
+            invocation.selection.as_ref(),
+        ) {
             log::info!("command: rejected id={command_id} context={context_id} window={window_id} pane={pane_id:?} reason={reason}");
             self.attention_queue.transient_hint = Some((reason.into(), std::time::Instant::now()));
             return;
@@ -4659,8 +4673,7 @@ impl PlexiApp {
             }
             Action::SelectPane(dir) => self.extend_pane_selection(dir),
             Action::CancelPaneSelection => {
-                self.host
-                    .clear_pane_selection(self.windows[self.active_window].window_id);
+                self.host.clear_pane_selection(window_id);
             }
             Action::Navigate(dir) => {
                 self.host
@@ -4747,7 +4760,11 @@ impl PlexiApp {
                     return;
                 }
                 // Two or more selected panes close together (stint 1458).
-                if self.start_close_selected_panes("close_pane") {
+                if self.start_close_captured_selection(
+                    window_id,
+                    invocation.selection.as_ref(),
+                    "close_pane",
+                ) {
                     return;
                 }
                 // If the focused view pane has a non-empty nav stack
@@ -4854,9 +4871,8 @@ impl PlexiApp {
                 } else {
                     // Resolve focused pane workspace once at open-time — not per draw-frame —
                     // to avoid filesystem traversal in the egui hot path.
-                    self.palette_workspace_root = None;
-                    self.palette_workspace_root = self.effective_commands_workspace_root();
-                    self.palette_config_workspace_root = self.active_config_workspace_root();
+                    self.palette_workspace_root = invocation.commands_workspace.clone();
+                    self.palette_config_workspace_root = invocation.config_workspace.clone();
                     self.palette_workspace_config_exists = self
                         .palette_config_workspace_root
                         .as_deref()
@@ -4986,9 +5002,8 @@ impl PlexiApp {
                 self.open_quick_note_modal();
             }
             Action::OpenConfig => {
-                self.palette_workspace_root = None;
-                self.palette_workspace_root = self.effective_commands_workspace_root();
-                self.palette_config_workspace_root = self.active_config_workspace_root();
+                self.palette_workspace_root = invocation.commands_workspace.clone();
+                self.palette_config_workspace_root = invocation.config_workspace.clone();
                 self.palette_workspace_config_exists = self
                     .palette_config_workspace_root
                     .as_deref()
@@ -5002,7 +5017,7 @@ impl PlexiApp {
                 );
             }
             Action::ReloadConfig => {
-                self.reload_config();
+                self.reload_config_for_context(context_id, &invocation.context_root);
             }
             Action::OpenSecretsManager => {
                 self.open_secrets_manager();
@@ -5043,9 +5058,8 @@ impl PlexiApp {
                 self.push_pane_to_subcontext(None, None);
             }
             Action::SetContextRootFromCwd => {
-                let window = &self.windows[self.active_window];
-                if let Some(source) = window.focused_root_source(window.context_id) {
-                    self.set_root_from_pane(source);
+                if let Some(source) = input.pane_root {
+                    self.set_root_from_pane(source, input.origin);
                 } else {
                     log::info!("SetContextRootFromCwd: no authorized terminal cwd");
                 }
@@ -5066,7 +5080,7 @@ impl PlexiApp {
                 self.open_notes_picker();
             }
             Action::CloseContext => {
-                let _ = self.close_context_action(self.router.active().context_id);
+                let _ = self.close_context_action(context_id);
             }
             Action::ContextZoomOut => {
                 self.zoom_out_or_close_surface();
@@ -5081,7 +5095,7 @@ impl PlexiApp {
             | Action::UiUpcycle(_)
             | Action::CheckForUpdates
             | Action::RestartToUpdate
-            | Action::CloseSelectedPanes => self.run_registered_command_ui(action),
+            | Action::CloseSelectedPanes => self.run_registered_command_ui(action, invocation),
             Action::RunUserCommand(ref name) => {
                 log::info!("keys: executing user command binding 'run:{name}'");
                 self.queue_user_command(name, None);

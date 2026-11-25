@@ -980,23 +980,23 @@ impl PlexiApp {
     /// use (`RegistryViews::view_for_context`); this only guarantees the
     /// active one is warm before config reload reads workspace-scoped keys.
     pub(crate) fn reload_config_for_active_context(&mut self) {
-        let active_workspace = Some(self.router.active().root.clone());
-        let active_context_id = self.router.active().context_id;
-        let _ = self
-            .registries
-            .view_for_context(active_context_id, &self.router);
-        self.reload_config_for_workspace(active_workspace.as_deref());
+        let workspace = self.router.active().root.clone();
+        self.reload_config_for_context(self.router.active().context_id, &workspace);
+    }
+
+    pub(crate) fn reload_config_for_context(&mut self, context_id: u64, workspace: &Path) {
+        let _ = self.registries.view_for_context(context_id, &self.router);
+        self.reload_config_for_workspace(Some(workspace));
     }
 
     pub(crate) fn reload_config_for_workspace(&mut self, active_workspace: Option<&Path>) {
         self.reload_config_inner(active_workspace, true);
     }
 
-    pub(crate) fn reload_config_after_global_save(&mut self, key: &str) {
-        let root = self.router.active().root.clone();
-        self.reload_config_inner(Some(&root), false);
+    pub(crate) fn reload_config_after_global_save(&mut self, root: &Path, key: &str) {
+        self.reload_config_inner(Some(root), false);
         self.config_notice = None;
-        self.report_config_shadows(&root, Some(key), "Saved globally");
+        self.report_config_shadows(root, Some(key), "Saved globally");
     }
 
     fn reload_config_inner(&mut self, active_workspace: Option<&Path>, report_shadows: bool) {

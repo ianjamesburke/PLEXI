@@ -46,7 +46,10 @@ fn command_palette_native_command_chords_move() {
 #[test]
 fn command_palette_enter_while_composing_is_the_fields() {
     let enter = key(egui::Key::Enter, egui::Modifiers::NONE);
-    assert_eq!(picker_key(&enter, false), Some(PickerCommand::Accept(None)));
+    assert_eq!(
+        picker_key(&enter, false),
+        Some(PickerCommand::Accept(None, Default::default()))
+    );
     assert_eq!(picker_key(&enter, true), None);
     assert!(is_field_input(&enter));
     assert!(is_field_input(&key(egui::Key::A, egui::Modifiers::CTRL)));

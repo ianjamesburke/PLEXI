@@ -8,8 +8,8 @@ use crate::host::picker::{
     files::{FileHit, FileIndex},
     preview::PreviewLoader,
     usage::PaletteUsage,
-    PickerCommand, PickerEffect, PickerId, PickerRow, PreviewStatus, RowAction, RowKey,
-    AGENTS_SOURCE, COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
+    ActivationInput, InputOrigin, PickerCommand, PickerEffect, PickerId, PickerRow, PreviewStatus,
+    RowAction, RowKey, AGENTS_SOURCE, COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
 };
 use crate::ui::{
     hints::{HintBar, HintGroup},
@@ -458,16 +458,19 @@ impl PaletteEntry {
 /// ordering is display policy, never an address: a row must survive a sort or
 /// another window closing while the palette is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PaletteFocusTarget {
-    context_id: u64,
-    window_id: u64,
-    pane_id: Option<u64>,
+pub(crate) struct PaletteFocusTarget {
+    pub(crate) context_id: u64,
+    pub(crate) window_id: u64,
+    pub(crate) pane_id: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PaletteInvocation {
-    focus: PaletteFocusTarget,
-    selection: Option<crate::host::model::PaneSelection>,
+pub(crate) struct PaletteInvocation {
+    pub(crate) focus: PaletteFocusTarget,
+    pub(crate) selection: Option<crate::host::model::PaneSelection>,
+    pub(crate) context_root: std::path::PathBuf,
+    pub(crate) commands_workspace: Option<std::path::PathBuf>,
+    pub(crate) config_workspace: Option<std::path::PathBuf>,
 }
 
 /// The pinned "Update ready" row, when a build is ready and the query matches.
@@ -793,19 +796,27 @@ impl PlexiApp {
             .map(shortcut_label)
     }
 
-    pub(crate) fn registered_command_unavailable(
+    fn registered_command_unavailable(&self, command: &PaletteCommand) -> Option<&'static str> {
+        self.command_unavailability(
+            command,
+            self.palette_config_workspace_root.as_deref(),
+            self.host
+                .pane_selection(self.windows[self.active_window].window_id),
+        )
+    }
+
+    pub(crate) fn command_unavailability(
         &self,
         command: &PaletteCommand,
+        config_workspace: Option<&std::path::Path>,
+        selection: Option<&crate::host::model::PaneSelection>,
     ) -> Option<&'static str> {
         match command.palette_entry()?.requirement {
-            CommandRequirement::Workspace if self.active_config_workspace_root().is_none() => {
+            CommandRequirement::Workspace if config_workspace.is_none() => {
                 Some("Open a workspace first")
             }
             CommandRequirement::Selection
-                if self
-                    .host
-                    .pane_selection(self.windows[self.active_window].window_id)
-                    .is_none_or(|selection| selection.panes.len() < 2) =>
+                if selection.is_none_or(|selection| selection.panes.len() < 2) =>
             {
                 Some("Select at least two panes")
             }
@@ -831,16 +842,94 @@ impl PlexiApp {
             || (!query.is_empty() && self.update_status.ready().is_none())
     }
 
-    fn palette_invocation(&self) -> PaletteInvocation {
+    fn command_focus(&self) -> PaletteFocusTarget {
         let window = &self.windows[self.active_window];
-        PaletteInvocation {
-            focus: PaletteFocusTarget {
-                context_id: window.context_id,
-                window_id: window.window_id,
-                pane_id: self.focused_pane_id(),
-            },
-            selection: self.host.pane_selection(window.window_id).cloned(),
+        PaletteFocusTarget {
+            context_id: window.context_id,
+            window_id: window.window_id,
+            pane_id: self.focused_pane_id(),
         }
+    }
+
+    fn command_invocation(
+        &self,
+        commands_workspace: Option<std::path::PathBuf>,
+        config_workspace: Option<std::path::PathBuf>,
+    ) -> PaletteInvocation {
+        let focus = self.command_focus();
+        PaletteInvocation {
+            focus,
+            selection: self.host.pane_selection(focus.window_id).cloned(),
+            context_root: self.router.active().root.clone(),
+            commands_workspace,
+            config_workspace,
+        }
+    }
+
+    fn palette_invocation(&self) -> PaletteInvocation {
+        self.command_invocation(
+            self.palette_workspace_root.clone(),
+            self.palette_config_workspace_root.clone(),
+        )
+    }
+
+    pub(crate) fn keyboard_command_invocation(&self, action: &PaletteCommand) -> PaletteInvocation {
+        let opening_palette =
+            *action == PaletteCommand::ToggleCommandPalette && !self.command_palette_open();
+        let commands_workspace = if opening_palette
+            || matches!(
+                action,
+                PaletteCommand::OpenConfig
+                    | PaletteCommand::EditCommands
+                    | PaletteCommand::UiUpcycle(_)
+            ) {
+            self.commands_workspace_root_at_focus()
+        } else {
+            None
+        };
+        let config_workspace = if opening_palette
+            || matches!(
+                action,
+                PaletteCommand::OpenConfig | PaletteCommand::OpenWorkspaceConfig
+            ) {
+            self.active_config_workspace_root()
+        } else {
+            None
+        };
+        self.command_invocation(commands_workspace, config_workspace)
+    }
+
+    pub(crate) fn input_origin(&self) -> InputOrigin {
+        if self.synthetic_input_frame {
+            InputOrigin::Synthetic(self.synthetic_input_pane)
+        } else {
+            InputOrigin::Human
+        }
+    }
+
+    pub(crate) fn capture_command_activation(
+        &self,
+        origin: InputOrigin,
+        capture_root: bool,
+    ) -> ActivationInput {
+        let window = &self.windows[self.active_window];
+        ActivationInput {
+            origin,
+            pane_root: if capture_root {
+                window.focused_root_source(window.context_id)
+            } else {
+                None
+            },
+        }
+    }
+
+    fn capture_palette_activation(&self, origin: InputOrigin) -> ActivationInput {
+        self.capture_command_activation(
+            origin,
+            self.host
+                .picker(PickerId::Palette)
+                .is_some_and(|picker| picker.active_stop().source == COMMANDS_SOURCE),
+        )
     }
 
     /// The Commands stop's source: today's rows for `raw_query`, and the
@@ -1305,7 +1394,7 @@ impl PlexiApp {
                     "palette: {id:?} query generation {generation} ({} chars) waits for source '{source}' in logic",
                     text.chars().count()
                 ),
-                PickerEffect::Activate { stamp, row, action } => {
+                PickerEffect::Activate { stamp, row, action, input } => {
                     // Own the target before Closed releases its answer and session.
                     let answer = self
                         .palette_answer
@@ -1328,14 +1417,15 @@ impl PlexiApp {
                     match answer.and_then(|answer| answer.targets.get(&row)).cloned() {
                         Some(PaletteTarget::Command(id)) if id.action().id == action => {
                             self.palette_sources.usage.record(row.as_str());
-                            activation = Some(PaletteTarget::Command(id));
+                            activation = Some((PaletteTarget::Command(id), input));
                         }
                         Some(PaletteTarget::Command(id)) if ASSIGN_SHORTCUT.id == action => {
-                            activation = id.assignable_command().cloned().map(PaletteTarget::AssignShortcut);
+                            activation = id.assignable_command().cloned()
+                                .map(|command| (PaletteTarget::AssignShortcut(command), input));
                         }
                         Some(PaletteTarget::File(path)) if OPEN_FILE.id == action => {
                             self.palette_sources.usage.record(row.as_str());
-                            activation = Some(PaletteTarget::File(path));
+                            activation = Some((PaletteTarget::File(path), input));
                         }
                         Some(PaletteTarget::File(_)) if RESET_RANKING.id == action => {
                             self.palette_sources.usage.reset(row.as_str());
@@ -1358,8 +1448,8 @@ impl PlexiApp {
             }
         }
         self.sync_command_palette_focus();
-        if let Some(target) = activation {
-            self.run_palette_target(target, invocation.as_ref());
+        if let Some((target, input)) = activation {
+            self.run_palette_target(target, invocation.as_ref(), input);
         }
     }
 
@@ -1728,23 +1818,13 @@ impl PlexiApp {
         }
         self.palette_input.activation_at = None;
         self.palette_input.hover_at = None;
-        let waiting = std::mem::take(&mut self.palette_input.waiting);
-        if !waiting.is_empty() {
-            if self.palette_owns_input() {
-                log::debug!(
-                    "palette: {} waiting field edit(s) lead this pass",
-                    waiting.len()
-                );
-                ctx.input_mut(|i| {
-                    let fresh = std::mem::replace(&mut i.events, waiting);
-                    i.events.extend(fresh);
-                });
-            } else {
-                log::info!(
-                    "palette: {} waiting field edit(s) expired with their session",
-                    waiting.len()
-                );
-            }
+        let mut waiting = std::mem::take(&mut self.palette_input.waiting);
+        if !waiting.is_empty() && !self.palette_owns_input() {
+            log::info!(
+                "palette: {} waiting field edit(s) expired with their session",
+                waiting.len()
+            );
+            waiting.clear();
         }
         // A release lost to another window: egui holds no button and this
         // delivery releases none, so every gesture is over.
@@ -1772,7 +1852,11 @@ impl PlexiApp {
             }
         }
         let events = ctx.input_mut(|i| std::mem::take(&mut i.events));
-        let mut kept = Vec::with_capacity(events.len());
+        let mut kept = Vec::with_capacity(waiting.len() + events.len());
+        let origin = self.input_origin();
+        let events = waiting
+            .into_iter()
+            .chain(events.into_iter().map(|event| (event, origin)));
         let mut closed_session = logic_owned;
         let mut dropped = 0usize;
         // Whether the field has focus to edit with. egui's own begin-of-pass
@@ -1782,7 +1866,7 @@ impl PlexiApp {
             m.has_focus(palette_field_id()) || m.had_focus_last_frame(palette_field_id())
         });
         let mut order = DrawOrder::default();
-        for (index, event) in events.into_iter().enumerate() {
+        for (index, (event, origin)) in events.enumerate() {
             let release = matches!(event, egui::Event::Key { pressed: false, .. });
             // A gesture a pane took keeps its moves and release, whoever
             // owns input now.
@@ -1794,7 +1878,14 @@ impl PlexiApp {
             if self.palette_owns_input() {
                 closed_session = true;
                 self.note_palette_pointer(&event);
-                if self.take_owned_palette_event(ctx, index, &event, field_focused, &mut order) {
+                if self.take_owned_palette_event(
+                    ctx,
+                    index,
+                    &event,
+                    origin,
+                    field_focused,
+                    &mut order,
+                ) {
                     continue;
                 }
                 if release || !is_palette_input(&event) || is_field_input(&event) {
@@ -1806,7 +1897,7 @@ impl PlexiApp {
                 if release || !is_palette_input(&event) {
                     kept.push(event);
                 } else if is_field_input(&event) {
-                    self.palette_input.opening_tail.push(event);
+                    self.palette_input.opening_tail.push((event, origin));
                 } else {
                     self.note_palette_pointer(&event);
                 }
@@ -1854,6 +1945,7 @@ impl PlexiApp {
         ctx: &egui::Context,
         index: usize,
         event: &egui::Event,
+        origin: InputOrigin,
     ) -> bool {
         let close = self.key_bindings.close_pane;
         let quick_note = self.key_bindings.open_quick_note;
@@ -1895,7 +1987,7 @@ impl PlexiApp {
         if let Some(actions) = self.palette_host_actions(event) {
             for action in actions {
                 log::debug!("palette: input {index} -> host {action:?}");
-                self.dispatch_host_action(action, ctx);
+                self.dispatch_input_action(action, ctx, origin);
             }
             // A chord that handed focus to another surface (the Attention
             // Queue, an approval) ends the session, and any Enter it froze.
@@ -1909,6 +2001,11 @@ impl PlexiApp {
             return true;
         }
         match command {
+            Some(PickerCommand::Accept(action, _)) => {
+                let input = self.capture_palette_activation(origin);
+                self.apply_palette_command(PickerCommand::Accept(action, input));
+                true
+            }
             Some(command) => {
                 log::debug!("palette: input {index} -> {command:?}");
                 self.apply_palette_command(command);
@@ -1997,6 +2094,7 @@ impl PlexiApp {
         ctx: &egui::Context,
         index: usize,
         event: &egui::Event,
+        origin: InputOrigin,
         field_focused: bool,
         order: &mut DrawOrder,
     ) -> bool {
@@ -2009,7 +2107,9 @@ impl PlexiApp {
             | egui::Event::AccessKitActionRequest(_) => {
                 // The draw decides whether this activated a row or the scrim;
                 // commands after it wait for that.
-                self.palette_input.activation_at.get_or_insert(index);
+                self.palette_input
+                    .activation_at
+                    .get_or_insert((index, origin));
                 order.deferring = true;
                 // egui reads accessibility requests from `events`.
                 return !matches!(event, egui::Event::AccessKitActionRequest(_));
@@ -2039,16 +2139,20 @@ impl PlexiApp {
             }
             if order.deferring || order.field_dirty || order.moved {
                 order.deferring = true;
-                self.palette_input.after_draw.push((index, event.clone()));
+                self.palette_input
+                    .after_draw
+                    .push((index, event.clone(), origin));
             } else {
-                self.route_owned_palette_event(ctx, index, event);
+                self.route_owned_palette_event(ctx, index, event, origin);
             }
             return true;
         }
         if is_field_input(event) {
             if order.deferring || !field_focused {
                 order.deferring = true;
-                self.palette_input.after_draw.push((index, event.clone()));
+                self.palette_input
+                    .after_draw
+                    .push((index, event.clone(), origin));
                 return true;
             }
             self.note_palette_composition(event);
@@ -2108,23 +2212,34 @@ impl PlexiApp {
             self.apply_palette_command(PickerCommand::QueryEdited(draft));
         }
         enum Step {
-            Input(egui::Event),
+            Input(egui::Event, InputOrigin),
             Picker(PickerCommand),
         }
         let mut steps: Vec<(usize, Step)> = after
             .into_iter()
-            .map(|(index, event)| (index, Step::Input(event)))
+            .map(|(index, event, origin)| (index, Step::Input(event, origin)))
             .collect();
-        if let Some(at) = activation_at {
+        if let Some((at, origin)) = activation_at {
             if let Some((hit, opening, action)) = rows.action {
                 steps.push((
                     at,
-                    Step::Picker(PickerCommand::ClickAction(hit, opening, action)),
+                    Step::Picker(PickerCommand::ClickAction(
+                        hit,
+                        opening,
+                        action,
+                        self.capture_palette_activation(origin),
+                    )),
                 ));
             } else if let Some(stop) = rows.stop {
                 steps.push((at, Step::Picker(PickerCommand::SetStop(stop))));
             } else if let Some(hit) = rows.clicked {
-                steps.push((at, Step::Picker(PickerCommand::Click(hit))));
+                steps.push((
+                    at,
+                    Step::Picker(PickerCommand::Click(
+                        hit,
+                        self.capture_palette_activation(origin),
+                    )),
+                ));
             } else if dismissed {
                 steps.push((at, Step::Picker(PickerCommand::Close)));
             }
@@ -2145,14 +2260,16 @@ impl PlexiApp {
                     log::debug!("palette: input {index} -> {command:?} after the draw");
                     self.apply_palette_command(command);
                 }
-                Step::Input(event) if self.palette_command_key(&event) => {
-                    self.route_owned_palette_event(ctx, index, &event);
+                Step::Input(event, origin) if self.palette_command_key(&event) => {
+                    self.route_owned_palette_event(ctx, index, &event, origin);
                 }
-                Step::Input(event) => {
-                    self.palette_input.waiting.push(event);
+                Step::Input(event, origin) => {
+                    self.palette_input.waiting.push((event, origin));
                     for (_, rest) in steps.by_ref() {
                         match rest {
-                            Step::Input(event) => self.palette_input.waiting.push(event),
+                            Step::Input(event, origin) => {
+                                self.palette_input.waiting.push((event, origin))
+                            }
                             Step::Picker(_) => dropped += 1,
                         }
                     }
@@ -2436,6 +2553,7 @@ impl PlexiApp {
         &mut self,
         target: PaletteTarget,
         invocation: Option<&PaletteInvocation>,
+        input: ActivationInput,
     ) {
         match target {
             PaletteTarget::Command(id) => {
@@ -2446,7 +2564,7 @@ impl PlexiApp {
                 }) {
                     return;
                 }
-                self.run_palette_selection(id);
+                self.run_palette_selection_with_input(id, invocation, input);
             }
             PaletteTarget::AssignShortcut(command) => {
                 if let Some(invocation) = invocation {
@@ -2475,7 +2593,10 @@ impl PlexiApp {
         id: &str,
         invocation: &PaletteInvocation,
     ) -> bool {
-        if *invocation == self.palette_invocation() {
+        if invocation.focus == self.command_focus()
+            && invocation.selection.as_ref() == self.host.pane_selection(invocation.focus.window_id)
+            && invocation.context_root == self.router.active().root
+        {
             return true;
         }
         let PaletteFocusTarget {
@@ -2512,8 +2633,18 @@ impl PlexiApp {
         log::info!("command: opened binding config id={id}");
     }
 
-    /// Execute a Commands-stop row.
+    #[cfg(test)]
     fn run_palette_selection(&mut self, id: CommandRowId) {
+        self.run_palette_selection_with_input(id, None, Default::default());
+    }
+
+    /// Execute a Commands-stop row with its captured activation.
+    fn run_palette_selection_with_input(
+        &mut self,
+        id: CommandRowId,
+        invocation: Option<&PaletteInvocation>,
+        input: ActivationInput,
+    ) {
         #[cfg(test)]
         palette_test_log::activated(id.key());
         // Bounded: the result kind only, never the query or row text.
@@ -2528,9 +2659,19 @@ impl PlexiApp {
         };
         log::info!("palette: running {kind} result");
         match id {
-            CommandRowId::Command(command) => self.run_palette_command(command),
-            CommandRowId::UpdateReady(_) => {
-                self.run_palette_command(PaletteCommand::RestartToUpdate)
+            CommandRowId::Command(command) => {
+                self.dispatch_palette_action(command, invocation, input);
+            }
+            CommandRowId::UpdateReady(version) => {
+                if self.update_status.ready() == Some(version.as_str()) {
+                    self.dispatch_palette_action(
+                        PaletteCommand::RestartToUpdate,
+                        invocation,
+                        input,
+                    );
+                } else {
+                    log::info!("palette: v{version} is no longer the ready update");
+                }
             }
             CommandRowId::UserCommand { name, scope } => self.run_user_command(&name, scope),
             CommandRowId::Focus(target) => self.focus_palette_target(target),
@@ -2549,22 +2690,43 @@ impl PlexiApp {
         }
     }
 
+    fn dispatch_palette_action(
+        &mut self,
+        command: PaletteCommand,
+        invocation: Option<&PaletteInvocation>,
+        input: ActivationInput,
+    ) {
+        let ctx = self.ctx.clone();
+        if let Some(invocation) = invocation {
+            self.dispatch_registered_action(command, &ctx, invocation, input);
+        } else {
+            self.dispatch_input_action(command, &ctx, input.origin);
+        }
+    }
+
+    #[cfg(test)]
     fn run_palette_command(&mut self, command: PaletteCommand) {
         let ctx = self.ctx.clone();
         self.dispatch_host_action(command, &ctx);
     }
 
     /// Existing UI entry points shared by palette and keyboard dispatch.
-    pub(crate) fn run_registered_command_ui(&mut self, command: PaletteCommand) {
+    pub(crate) fn run_registered_command_ui(
+        &mut self,
+        command: PaletteCommand,
+        invocation: &PaletteInvocation,
+    ) {
         if matches!(command, PaletteCommand::UiUpcycle(_)) && self.plugin_blocked("cli-renderer") {
             return;
         }
         match command {
             PaletteCommand::UiUpcycle(binary) => match crate::cli::registry::lookup(binary, None) {
                 Ok(descriptor) => {
-                    let root = self
-                        .effective_commands_workspace_root()
-                        .unwrap_or_else(|| self.router.active().root.clone());
+                    let root = invocation
+                        .commands_workspace
+                        .as_ref()
+                        .unwrap_or(&invocation.context_root)
+                        .clone();
                     log::info!("palette: UI upcycle opening curated CLI '{binary}'");
                     self.open_builtin_view_pane(
                         Box::new(
@@ -2605,7 +2767,10 @@ impl PlexiApp {
                 match result {
                     Ok(()) => {
                         log::info!("settings: state preset={preset}");
-                        self.reload_config_after_global_save("theme.state_preset");
+                        self.reload_config_after_global_save(
+                            &invocation.context_root,
+                            "theme.state_preset",
+                        );
                     }
                     Err(error) => log::error!("settings: state preset failed: {error}"),
                 }
@@ -2616,15 +2781,15 @@ impl PlexiApp {
                 self.open_config_in_editor(path);
             }
             PaletteCommand::OpenWorkspaceConfig => {
-                let Some(root) = self.active_config_workspace_root() else {
+                let Some(root) = &invocation.config_workspace else {
                     return;
                 };
                 log::info!("palette: opening workspace config at {}", root.display());
-                let path = crate::config::ensure_workspace_config_file(&root);
+                let path = crate::config::ensure_workspace_config_file(root);
                 self.open_config_in_editor(path);
             }
             PaletteCommand::EditCommands => {
-                let ws_root = self.commands_workspace_root_at_focus();
+                let ws_root = invocation.commands_workspace.clone();
                 let path = crate::cli::ensure_commands_file(ws_root.as_deref());
                 log::info!(
                     "palette: opening commands.toml at {} (workspace_root={:?})",
@@ -2634,7 +2799,10 @@ impl PlexiApp {
                 self.open_config_in_editor_with_cwd(path, ws_root);
             }
             PaletteCommand::SwitchCommandsScope => {
-                self.switch_focused_commands_editor_scope();
+                self.switch_commands_editor_scope(
+                    invocation.focus.window_id,
+                    invocation.focus.pane_id,
+                );
             }
             PaletteCommand::CheckForUpdates => {
                 log::info!("palette: check for updates");
@@ -2647,7 +2815,11 @@ impl PlexiApp {
             // No selection means nothing to close: never fall back to the
             // focused pane, which may be the pane under the pointer.
             PaletteCommand::CloseSelectedPanes => {
-                if !self.start_close_selected_panes("palette_close_selected") {
+                if !self.start_close_captured_selection(
+                    invocation.focus.window_id,
+                    invocation.selection.as_ref(),
+                    "palette_close_selected",
+                ) {
                     log::info!("palette: close selected panes found no selection");
                     self.attention_queue.transient_hint =
                         Some(("No panes are selected.".into(), std::time::Instant::now()));
@@ -2676,12 +2848,6 @@ impl PlexiApp {
         (root.is_dir()
             && crate::config::workspace_config_path(root) != crate::config::config_path())
         .then(|| root.clone())
-    }
-
-    pub(crate) fn effective_commands_workspace_root(&self) -> Option<std::path::PathBuf> {
-        self.palette_workspace_root
-            .clone()
-            .or_else(|| self.commands_workspace_root_at_focus())
     }
 
     fn commands_workspace_root_at_focus(&self) -> Option<std::path::PathBuf> {
@@ -4302,8 +4468,10 @@ mod tests {
             .visible_actions()
             .iter()
             .any(|action| action.id == ASSIGN_SHORTCUT.id));
-        h.app
-            .apply_palette_command(PickerCommand::Accept(Some(ASSIGN_SHORTCUT.id)));
+        h.app.apply_palette_command(PickerCommand::Accept(
+            Some(ASSIGN_SHORTCUT.id),
+            Default::default(),
+        ));
         assert!(!h.app.command_palette_open());
         h.run_frames(2);
         let editor = h.app.focused_pane_id().unwrap();
@@ -4351,6 +4519,7 @@ mod tests {
         h.app.run_palette_target(
             PaletteTarget::Command(CommandRowId::Command(PaletteCommand::RenamePane)),
             invocation.as_ref(),
+            Default::default(),
         );
         let actions =
             crate::app::HOST_ACTION_PROBE.with(|probe| probe.borrow_mut().take().unwrap());
@@ -4380,7 +4549,8 @@ mod tests {
             .find(|row| row.title == "Close selected panes")
             .unwrap();
         assert_eq!(row.unavailable, Some("Select at least two panes"));
-        h.app.apply_palette_command(PickerCommand::Accept(None));
+        h.app
+            .apply_palette_command(PickerCommand::Accept(None, Default::default()));
         assert!(
             h.app.command_palette_open(),
             "disabled activation must leave the palette open"
@@ -4580,11 +4750,10 @@ mod tests {
             .picker(PickerId::Palette)
             .expect("palette picker")
             .rows_stamp();
-        h.app
-            .apply_palette_command(PickerCommand::Click(crate::host::picker::Hit {
-                stamp,
-                key,
-            }));
+        h.app.apply_palette_command(PickerCommand::Click(
+            crate::host::picker::Hit { stamp, key },
+            Default::default(),
+        ));
     }
 
     /// The results painter prints a section header each time the group

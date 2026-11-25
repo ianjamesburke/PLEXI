@@ -107,6 +107,10 @@ impl PlexiInput {
         &self.events
     }
 
+    pub(crate) fn retain_events(&mut self, keep: impl FnMut(&egui::Event) -> bool) {
+        self.events.retain(keep);
+    }
+
     /// Was `key` pressed this frame? Mirrors `egui::InputState::key_pressed`
     /// exactly — any `Event::Key { pressed: true }` for this logical key,
     /// modifiers ignored, key-repeat included — but over this frame's owned
@@ -165,21 +169,11 @@ impl PlexiInput {
     /// exactly so a more specific chord (Cmd+Shift+0) is not swallowed by a
     /// less specific one (Cmd+0).
     pub(crate) fn consume_key_exact(&mut self, modifiers: egui::Modifiers, key: egui::Key) -> bool {
-        self.consume_key_exact_with_repeat(modifiers, key, true)
-    }
-
-    pub(crate) fn consume_key_exact_with_repeat(
-        &mut self,
-        modifiers: egui::Modifiers,
-        key: egui::Key,
-        allow_repeat: bool,
-    ) -> bool {
         if let Some(pos) = self.events.iter().position(|e| {
             matches!(
                 e,
-                egui::Event::Key { key: k, pressed: true, repeat, modifiers: m, .. }
+                egui::Event::Key { key: k, pressed: true, modifiers: m, .. }
                     if *k == key
-                        && (allow_repeat || !repeat)
                         && crate::host::keys::modifiers_match_exact_for_os(
                             m,
                             &modifiers,
@@ -207,27 +201,6 @@ impl PlexiInput {
                 e,
                 egui::Event::Key { key: k, pressed: true, repeat: false, modifiers: m, .. }
                     if *k == key && m.matches_logically(modifiers)
-            )
-        }) {
-            self.events.remove(pos);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Consume a key-release edge regardless of its current modifiers. The OS
-    /// may report Command released before the key that completed a host chord,
-    /// so the matching key-up can arrive with `Modifiers::NONE`.
-    pub(crate) fn consume_key_release(&mut self, key: egui::Key) -> bool {
-        if let Some(pos) = self.events.iter().position(|event| {
-            matches!(
-                event,
-                egui::Event::Key {
-                    key: event_key,
-                    pressed: false,
-                    ..
-                } if *event_key == key
             )
         }) {
             self.events.remove(pos);
