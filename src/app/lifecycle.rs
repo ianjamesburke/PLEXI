@@ -701,9 +701,11 @@ impl PlexiApp {
         caller: Option<u64>,
         source: crate::broker::pane_authority::GrantSource,
     ) -> serde_json::Value {
+        let adapter = crate::cli::agent::harness_adapter(&record.harness);
+        let claude = adapter.filter(|adapter| adapter.harness == crate::cli::AgentHarness::Claude);
         let resume_cmd = match record.session_id.as_deref() {
             Some(sid) if !sid.trim().is_empty() => {
-                if let Some(adapter) = crate::cli::agent::harness_adapter(&record.harness) {
+                if let Some(adapter) = adapter {
                     let flags = crate::cli::agent::resolved_session_harness_flags_in(
                         record.config_name.as_deref(),
                         adapter.harness,
@@ -715,7 +717,9 @@ impl PlexiApp {
                     format!("{} --resume {}", record.harness, sid.trim())
                 }
             }
-            _ => record.harness.clone(),
+            _ => claude
+                .map(|adapter| adapter.binary.to_string())
+                .unwrap_or_else(|| record.harness.clone()),
         };
         let role = record
             .config_name
@@ -743,11 +747,18 @@ impl PlexiApp {
                     Some(name) => self.admit_defined_worker_role(name, &placement.effective_cwd)?,
                     None => None,
                 };
-                if let (Some(name), Some(_), false) =
-                    (record.config_name.as_deref(), &role_grant, record.ephemeral)
-                {
-                    Self::prepare_agent_memory(name, &placement.effective_cwd)?;
-                }
+                let memory = record
+                    .config_name
+                    .as_deref()
+                    .filter(|_| role_grant.is_some() && !record.ephemeral)
+                    .map(|name| Self::prepare_agent_memory(name, &placement.effective_cwd))
+                    .transpose()?;
+                let resume_cmd = match (claude, memory.as_deref()) {
+                    (Some(_), Some(memory)) => {
+                        crate::cli::agent::with_claude_auto_memory(&resume_cmd, memory)?
+                    }
+                    _ => resume_cmd,
+                };
                 self.launch_agent_worker(
                     crate::pane_ops::create::AgentWorkerLaunch {
                         grant: crate::pane_ops::create::AgentWorkerGrant {
@@ -767,9 +778,10 @@ impl PlexiApp {
                     },
                     placement,
                 )
+                .map(|(pane_id, context_id)| (pane_id, context_id, resume_cmd))
             });
         let payload = match result {
-            Ok((new_pane_id, target_ctx_id)) => {
+            Ok((new_pane_id, target_ctx_id, resume_cmd)) => {
                 for win in &mut self.windows {
                     if let Some(pane) = win.panes.get_mut(&new_pane_id) {
                         if let Some(t) = pane.as_terminal_mut() {

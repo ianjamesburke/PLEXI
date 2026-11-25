@@ -1357,9 +1357,8 @@ pub fn resolve_harness_adapter(
     Ok(primary)
 }
 
-/// The memory folder a launch of `definition` is told about: a named
-/// (non-ephemeral) chat's, else none. Resolution only; the host creates the
-/// folder when it admits the launch (`PlexiApp::admit_worker_role`).
+/// The memory folder for a named, non-ephemeral chat. Resolution only;
+/// the host creates the folder when it admits the launch.
 pub fn named_agent_memory(
     definition: &crate::agent::AgentDefinition,
     ephemeral: bool,
@@ -1371,8 +1370,7 @@ pub fn named_agent_memory(
 }
 
 /// Build the `# Plexi worker contract` section included in every spawned agent session.
-/// `memory` is the agent's memory folder (`crate::agent::memory`), given to named
-/// chats only: an ephemeral run has no durable identity to remember for.
+/// Harnesses without native memory binding receive a folder instruction for named chats.
 pub fn format_worker_contract(
     definition: &crate::agent::AgentDefinition,
     memory: Option<&Path>,
@@ -1450,7 +1448,10 @@ pub fn build_agent_start_command(
         ));
     }
     let persona = definition.prompt.trim();
-    let contract = format_worker_contract(definition, memory);
+    let contract = format_worker_contract(
+        definition,
+        memory.filter(|_| adapter.harness != AgentHarness::Claude),
+    );
     let system_instructions = if persona.is_empty() {
         contract.clone()
     } else {
@@ -2469,10 +2470,12 @@ pub fn resolve_agent_spawn_in_stopping_at(
         None => harness_cfg.ephemeral,
     };
     let memory = named_agent_memory(&def, effective_ephemeral)?;
-    let cmd_string = with_auto_state_hooks(
+    let cmd_string = build_agent_launch_command(
+        &def,
         adapter,
-        build_agent_start_command(&def, adapter, task_or_message, memory.as_deref())?,
-    );
+        task_or_message,
+        memory.as_deref(),
+    )?;
     let project_cwd = workspace_root
         .or_else(|| {
             crate::app::registry::resolve_agent_create_workspace_root_stopping_at(start_cwd, stops)
@@ -3473,8 +3476,8 @@ fn claude_question_decision(content: &str) -> Option<serde_json::Value> {
 /// Hook command registered with harnesses: no shell, no `jq`.
 const NATIVE_HOOK_COMMAND: &str = "plexi agent hook-event --agent";
 
-/// Settings JSON Claude Code merges via `--settings`, registering the state hooks.
-fn claude_state_settings_json() -> String {
+/// Settings Claude Code merges via `--settings`, registering the state hooks.
+fn claude_state_settings() -> serde_json::Value {
     let command = format!("{NATIVE_HOOK_COMMAND} claude-code");
     let mut hooks = serde_json::Map::new();
     for event in CLAUDE_CODE_HOOK_EVENTS {
@@ -3492,7 +3495,11 @@ fn claude_state_settings_json() -> String {
             settings["hooks"][*event] = serde_json::json!([claude_question_hook_entry(event)]);
         }
     }
-    serde_json::to_string_pretty(&settings).unwrap_or_default()
+    settings
+}
+
+fn claude_state_settings_json() -> String {
+    serde_json::to_string_pretty(&claude_state_settings()).unwrap_or_default()
 }
 
 fn claude_question_hook_entry(event: &str) -> serde_json::Value {
@@ -3531,6 +3538,71 @@ fn insert_after_binary(command: &str, binary: &str, flags: &[String]) -> String 
     match command.strip_prefix(binary) {
         Some(rest) => format!("{binary} {}{rest}", flags.join(" ")),
         None => command.to_string(),
+    }
+}
+
+/// Compose the settings for a named Claude chat. Claude still resolves
+/// `autoMemoryEnabled` from its own settings and environment.
+pub(crate) fn with_claude_auto_memory(command: &str, memory: &Path) -> Result<String, String> {
+    let memory = std::path::absolute(memory)
+        .map_err(|error| format!("resolve Claude memory folder {}: {error}", memory.display()))?;
+    let memory = memory
+        .to_str()
+        .ok_or_else(|| format!("Claude memory folder {} is not valid UTF-8", memory.display()))?;
+    let mut settings = claude_state_settings();
+    settings["autoMemoryDirectory"] = serde_json::json!(memory);
+    log::info!("agent_memory: binding Claude auto memory folder={memory}");
+    Ok(insert_after_binary(
+        command,
+        AgentHarness::Claude.adapter().binary,
+        &["--settings".into(), shell_quote_arg(&settings.to_string())],
+    ))
+}
+
+/// Attach the saved named agent's memory to a restore or standby launch.
+/// A missing definition leaves the harness's ordinary restore command intact.
+pub(crate) fn with_saved_claude_memory(
+    command: String,
+    session: &crate::workspace::SavedAgentSession,
+    profile_dir: &Path,
+    cwd: Option<&Path>,
+) -> String {
+    let Some(role) = session.config_name.as_deref() else {
+        return command;
+    };
+    if session.ephemeral || AgentHarness::parse(&session.harness) != Some(AgentHarness::Claude) {
+        return command;
+    }
+    let workspace_root = cwd.and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
+    let definition = match resolve_agent_definition_in(role, profile_dir, workspace_root.as_deref()) {
+        Ok((definition, _)) => definition,
+        Err(error) => {
+            log::debug!("agent_memory: cannot resolve saved role={role}: {error}");
+            return command;
+        }
+    };
+    match crate::agent::memory::ensure_memory_dir(&definition)
+        .and_then(|memory| with_claude_auto_memory(&command, &memory))
+    {
+        Ok(command) => command,
+        Err(error) => {
+            log::warn!("agent_memory: Claude binding for saved role={role} failed: {error}");
+            command
+        }
+    }
+}
+
+/// Build a configured agent's launch with the harness's automatic state hooks.
+pub(crate) fn build_agent_launch_command(
+    definition: &crate::agent::AgentDefinition,
+    adapter: &HarnessAdapter,
+    message: Option<&str>,
+    memory: Option<&Path>,
+) -> Result<String, String> {
+    let command = build_agent_start_command(definition, adapter, message, memory)?;
+    match (adapter.harness, memory) {
+        (AgentHarness::Claude, Some(memory)) => with_claude_auto_memory(&command, memory),
+        _ => Ok(with_auto_state_hooks(adapter, command)),
     }
 }
 
@@ -4265,6 +4337,59 @@ mod agent_tests {
         assert!(pi.contains("spawn(plexiBin, [\"agent\", \"hook-event\", \"--agent\", \"pi\"]"));
         assert!(!pi.contains("bash") && !pi.contains("jq"));
         assert!(super::is_plexi_pi_extension(&pi));
+    }
+
+    #[test]
+    fn named_claude_start_composes_one_inline_memory_and_hook_setting() {
+        let fixture = tempfile::tempdir().unwrap();
+        let profile = fixture.path().join("profile");
+        let shared = fixture.path().join("shared memory");
+        let _guard = crate::config::set_test_shared_dir(shared.clone());
+        let agent = profile.join("agents").join("walker");
+        fs::create_dir_all(&agent).unwrap();
+        fs::write(agent.join("AGENT.md"), "You are Walker.").unwrap();
+        fs::write(
+            agent.join("settings.toml"),
+            "[agent]\nid = \"walker\"\ndisplay_name = \"Walker\"\n[harness]\ncli = \"claude\"\n",
+        )
+        .unwrap();
+        let launch = |ephemeral| {
+            super::resolve_agent_spawn_in_stopping_at(
+                "walker",
+                &profile,
+                fixture.path(),
+                Some("Start task"),
+                None,
+                Some(ephemeral),
+                &[fixture.path().to_path_buf()],
+            )
+            .unwrap()["command"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+
+        let command = launch(false);
+        let encoded = command
+            .strip_prefix("claude --settings '")
+            .and_then(|rest| rest.split_once("' "))
+            .map(|(settings, _)| settings)
+            .expect("Claude settings must be a single shell-quoted argument");
+        let settings: serde_json::Value =
+            serde_json::from_str(encoded).expect("named Claude settings must be inline JSON");
+        let memory = shared.join("agent_memory").join("walker");
+        assert_eq!(settings["autoMemoryDirectory"], memory.to_str().unwrap());
+        assert!(settings.get("autoMemoryEnabled").is_none());
+        let hooks: serde_json::Value =
+            serde_json::from_str(&super::claude_state_settings_json()).unwrap();
+        assert_eq!(settings["hooks"], hooks["hooks"]);
+        assert_eq!(command.matches("--settings ").count(), 1, "{command}");
+        assert!(!command.contains("Your memory folder is"), "{command}");
+
+        let ephemeral = launch(true);
+        assert!(ephemeral.contains("--settings "), "{ephemeral}");
+        assert!(!ephemeral.contains("autoMemoryDirectory"), "{ephemeral}");
+        assert!(!ephemeral.contains("Your memory folder is"), "{ephemeral}");
     }
 
     #[test]

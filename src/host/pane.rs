@@ -1424,27 +1424,28 @@ impl TerminalPane {
         }
         let standby = self.standby_session.take()?;
         let harness = crate::cli::AgentHarness::parse(&standby.harness);
+        let cwd = self
+            .standby_cwd
+            .as_deref()
+            .or(self.initial_cwd.as_deref());
+        let profile_dir = crate::config::config_dir();
         let cmd = self.standby_resume_command.take().or_else(|| {
             harness.map(|harness| {
-                let flags = standby
-                    .config_name
-                    .as_deref()
-                    .and_then(|role| {
-                        self.standby_cwd
-                            .as_deref()
-                            .or(self.initial_cwd.as_deref())
-                            .map(|cwd| {
-                                crate::cli::agent::resolved_session_harness_flags_in(
-                                    Some(role),
-                                    harness,
-                                    &crate::config::config_dir(),
-                                    Some(cwd),
-                                )
-                            })
-                    })
-                    .unwrap_or_default();
+                let flags = if cwd.is_some() {
+                    crate::cli::agent::resolved_session_harness_flags_in(
+                        standby.config_name.as_deref(),
+                        harness,
+                        &profile_dir,
+                        cwd,
+                    )
+                } else {
+                    Vec::new()
+                };
                 harness.restore_command_with_flags(standby.session_id.as_deref(), &flags)
             })
+        });
+        let cmd = cmd.map(|command| {
+            crate::cli::agent::with_saved_claude_memory(command, &standby, &profile_dir, cwd)
         });
         if let Some(ref resume_cmd) = cmd {
             if harness.is_some_and(|h| {

@@ -17872,6 +17872,37 @@ mod pane_result_harness_tests {
     }
 }
 
+#[cfg(unix)]
+pub(super) fn use_inert_agent_shell(
+    dir: &std::path::Path,
+) -> crate::host::shell::TestShellOverrideGuard {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let shell = dir.join("inert-agent-shell");
+    std::fs::write(&shell, "#!/bin/sh\nexec /bin/cat > /dev/null\n").unwrap();
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::host::shell::set_test_shell_override(shell.to_string_lossy())
+}
+
+pub(super) fn assert_claude_memory_command(
+    command: &str,
+    memory: &std::path::Path,
+    remaining_args: &str,
+) {
+    let (settings, args) = command
+        .strip_prefix("claude --settings '")
+        .and_then(|command| command.split_once('\''))
+        .unwrap_or_else(|| panic!("expected inline Claude settings in {command}"));
+    let settings: serde_json::Value = serde_json::from_str(settings).unwrap();
+    assert_eq!(settings["autoMemoryDirectory"], memory.to_str().unwrap());
+    assert_eq!(
+        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "plexi agent hook-event --agent claude-code"
+    );
+    assert!(settings.get("autoMemoryEnabled").is_none());
+    assert_eq!(args, remaining_args);
+}
+
 mod agent_state_restoration_tests {
     use super::*;
     use crate::host::context::{Context, ContextName};
@@ -17948,6 +17979,8 @@ mod agent_state_restoration_tests {
     ) {
         let profile_dir = tempfile::tempdir().expect("profile_dir");
         let tmp = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
+        let _shell = use_inert_agent_shell(tmp.path());
         let claude_store = tmp.path().join("claude-projects");
         std::fs::create_dir_all(claude_store.join("-proj")).unwrap();
         std::fs::write(
@@ -18224,10 +18257,13 @@ mod agent_state_restoration_tests {
             "auto-resume records its launch"
         );
         assert_eq!(h.app.running_named_agent_pane("lead"), Some(10));
-        assert_eq!(
-            active_term.last_resumed_command.as_deref(),
-            Some("claude --verbose --resume sess-active-10")
+        let memory = crate::config::shared_dir().join("agent_memory").join("lead");
+        assert_claude_memory_command(
+            active_term.last_resumed_command.as_deref().unwrap(),
+            &memory,
+            " --verbose --resume sess-active-10",
         );
+        assert!(memory.is_dir());
         assert_eq!(
             active_term.agent.as_ref().map(|a| &a.state),
             Some(&AgentState::Interrupted),

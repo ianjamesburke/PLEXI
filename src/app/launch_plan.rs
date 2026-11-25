@@ -955,19 +955,15 @@ impl PlexiApp {
             .as_ref()
             .ok_or("agent role has no CLI harness")?;
         let adapter = crate::cli::agent::resolve_harness_adapter(harness)?;
-        let memory = crate::cli::agent::named_agent_memory(&def, harness.ephemeral)?;
-        if memory.is_some() {
-            crate::agent::memory::ensure_memory_dir(&def)?;
-        }
-        let command = crate::cli::agent::with_auto_state_hooks(
+        let memory = (!harness.ephemeral)
+            .then(|| crate::agent::memory::ensure_memory_dir(&def))
+            .transpose()?;
+        let command = crate::cli::agent::build_agent_launch_command(
+            &def,
             adapter,
-            crate::cli::agent::build_agent_spawn_command(
-                &def,
-                adapter,
-                task_text,
-                memory.as_deref(),
-            )?,
-        );
+            Some(task_text),
+            memory.as_deref(),
+        )?;
         let caller_grant = match parent {
             Some(id) => Some(
                 self.pane_authority(id)

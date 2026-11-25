@@ -6382,6 +6382,12 @@ pub(crate) fn restore_workspace(
                                     session.session_id.as_deref(),
                                     &flags,
                                 );
+                                let resume_cmd = crate::cli::agent::with_saved_claude_memory(
+                                    resume_cmd,
+                                    session,
+                                    collaborators.profile_dir,
+                                    cwd.as_deref(),
+                                );
                                 if session
                                     .session_id
                                     .as_deref()

@@ -6,6 +6,8 @@ use super::harness_tests::{
     pane_total, read_json_response, researcher_history_record, seed_pi_session, temp_response,
     terminal_role, AgentFocusFixture,
 };
+#[cfg(unix)]
+use super::harness_tests::{assert_claude_memory_command, use_inert_agent_shell};
 use super::*;
 use crate::app::agent_open::AgentOpenOutcome;
 
@@ -82,13 +84,13 @@ fn memory_dir(name: &str) -> std::path::PathBuf {
     crate::config::shared_dir().join("agent_memory").join(name)
 }
 
-fn write_agent(fx: &AgentFocusFixture, id: &str) {
+fn write_agent(fx: &AgentFocusFixture, id: &str, harness: &str) {
     let dir = fx.profile_dir.join("agents").join(id);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("AGENT.md"), format!("You are {id}.\n")).unwrap();
     std::fs::write(
         dir.join("settings.toml"),
-        format!("[agent]\nid = \"{id}\"\ndisplay_name = \"{id}\"\n\n[harness]\ncli = \"pi\"\n"),
+        format!("[agent]\nid = \"{id}\"\ndisplay_name = \"{id}\"\n\n[harness]\ncli = \"{harness}\"\n"),
     )
     .unwrap();
 }
@@ -213,24 +215,24 @@ fn archived_chat_reopens_from_history() {
 }
 
 #[test]
-fn new_chat_reads_the_same_memory_folder() {
+fn new_chat_preserves_named_agent_memory_files() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
     let caller = h.add_focused_terminal();
     let memory = memory_dir("researcher");
-    let payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
-        "researcher",
-        &fx.profile_dir,
-        &fx.proj_dir,
-        None,
-        &fx.stops(),
-    )
-    .unwrap();
+    let resolve_start = || {
+        crate::cli::agent::resolve_agent_start_in_stopping_at(
+            "researcher",
+            &fx.profile_dir,
+            &fx.proj_dir,
+            None,
+            &fx.stops(),
+        )
+        .unwrap()
+    };
+    let payload = resolve_start();
     let command = payload["command"].as_str().unwrap();
-    assert!(
-        command.contains(&*memory.to_string_lossy()),
-        "a named chat is told its memory folder: {command}"
-    );
+    assert!(command.contains(&*memory.to_string_lossy()), "{command}");
 
     let first = start_agent(&mut h, &fx, "researcher", caller);
     assert!(
@@ -245,20 +247,9 @@ fn new_chat_reads_the_same_memory_folder() {
     assert_eq!(
         std::fs::read_to_string(memory.join("facts.md")).unwrap(),
         "the build is just pr-candidate\n",
-        "New chat keeps what the agent knows"
+        "New chat preserves the existing memory file"
     );
-    let again = crate::cli::agent::resolve_agent_start_in_stopping_at(
-        "researcher",
-        &fx.profile_dir,
-        &fx.proj_dir,
-        None,
-        &fx.stops(),
-    )
-    .unwrap();
-    assert_eq!(
-        again["command"], payload["command"],
-        "same folder, same instructions"
-    );
+    assert_eq!(resolve_start()["command"], payload["command"]);
     // The definition folder is never rewritten.
     let def_dir = fx.profile_dir.join("agents").join("researcher");
     assert_eq!(
@@ -266,7 +257,6 @@ fn new_chat_reads_the_same_memory_folder() {
         "You are a researcher.\n"
     );
 
-    // An ephemeral run has no durable identity and is told no memory folder.
     let ephemeral = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
         "researcher",
         &fx.profile_dir,
@@ -283,11 +273,85 @@ fn new_chat_reads_the_same_memory_folder() {
         .contains("memory folder"));
 }
 
+#[cfg(unix)]
+#[test]
+fn archived_claude_chat_reopens_with_its_agent_memory() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    write_agent(&fx, "researcher", "claude");
+    let _shell = use_inert_agent_shell(fx.home.path());
+    h.add_focused_terminal();
+    let mut record = researcher_history_record(&fx.proj_dir, "archived-claude", "claude");
+    record.chat_archived = true;
+    let memory = memory_dir("researcher");
+    for ephemeral in [true, false] {
+        record.ephemeral = ephemeral;
+        let reply = h.app.reopen_agent_record(
+            &record,
+            None,
+            None,
+            crate::broker::pane_authority::GrantSource::OutsideProcess,
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["session_id"], "archived-claude");
+        let command = reply["command"].as_str().unwrap();
+        if ephemeral {
+            assert_eq!(command, "claude --resume archived-claude");
+            assert!(!memory.exists());
+        } else {
+            assert_claude_memory_command(command, &memory, " --resume archived-claude");
+            assert!(memory.is_dir());
+        }
+        let pane = terminal(&h, reply["pane_id"].as_u64().unwrap());
+        assert_eq!(pane.last_resumed_command.as_deref(), Some(command));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_standby_wake_binds_named_memory_for_resume_and_fallback() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    write_agent(&fx, "researcher", "claude");
+    let _shell = use_inert_agent_shell(fx.home.path());
+    let sessions = fx.home.path().join("claude-projects");
+    std::fs::create_dir_all(sessions.join("-proj")).unwrap();
+    std::fs::write(sessions.join("-proj").join("saved-claude.jsonl"), "{}\n").unwrap();
+    let _sessions = crate::cli::agent::set_test_claude_projects_dir(sessions);
+    let memory = memory_dir("researcher");
+
+    for (session_id, cached_command, args) in [
+        (
+            "saved-claude",
+            Some("claude --resume saved-claude"),
+            " --resume saved-claude",
+        ),
+        ("missing-claude", None, ""),
+    ] {
+        let pane_id = h.add_focused_terminal();
+        let pane = terminal_mut(&mut h, pane_id);
+        pane.agent_harness = Some("claude".into());
+        pane.agent_role = Some("researcher".into());
+        pane.agent_session_id = Some(session_id.into());
+        pane.standby_session = pane.build_saved_agent_session();
+        pane.standby_cwd = Some(fx.proj_dir.clone());
+        pane.standby_resume_command = cached_command.map(str::to_owned);
+
+        let command = pane.resume_from_standby().unwrap();
+        assert_claude_memory_command(&command, &memory, args);
+        assert_eq!(pane.last_resumed_command.as_deref(), Some(command.as_str()));
+        assert_eq!(
+            pane.agent_session_id.as_deref(),
+            cached_command.map(|_| session_id)
+        );
+    }
+}
+
 #[test]
 fn two_named_agents_never_share_memory_or_chats() {
     let mut h = HostHarness::new();
     let fx = AgentFocusFixture::new();
-    write_agent(&fx, "writer");
+    write_agent(&fx, "writer", "pi");
     let caller = h.add_focused_terminal();
     let researcher = start_agent(&mut h, &fx, "researcher", caller);
     let writer = start_agent(&mut h, &fx, "writer", caller);

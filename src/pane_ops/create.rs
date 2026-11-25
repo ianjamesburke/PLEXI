@@ -2573,14 +2573,14 @@ impl PlexiApp {
     /// Create the memory folder of `role`'s definition visible at
     /// `lookup_cwd` before a named chat of it launches (stint 1397). Memory is
     /// not authority: this reads the definition for its location only.
-    pub(crate) fn prepare_agent_memory(role: &str, lookup_cwd: &Path) -> Result<(), String> {
+    pub(crate) fn prepare_agent_memory(role: &str, lookup_cwd: &Path) -> Result<PathBuf, String> {
         let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_cwd);
         let (definition, _) = crate::cli::agent::resolve_agent_definition_in(
             role,
             &crate::config::config_dir(),
             lookup_root.as_deref(),
         )?;
-        crate::agent::memory::ensure_memory_dir(&definition).map(drop)
+        crate::agent::memory::ensure_memory_dir(&definition)
     }
 
     /// `role`'s definition visible at `lookup_cwd`, admitted for a new named
