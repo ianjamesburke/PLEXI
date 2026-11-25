@@ -138,8 +138,8 @@ impl PlexiApp {
         }
         // When a parent master pane subscribes to its spawned child worker's
         // `plexi.pane::lifecycle` stream across a sub-context boundary, bind the
-        // subscription to the child pane's context and grant a session-scoped
-        // allow so Tier 1 escalation (`Worker -> Master`) does not prompt the human.
+        // subscription to that child's context and grant a session allow for
+        // that child so Tier 1 escalation (`Worker -> Master`) does not prompt.
         if req.publisher_plugin_id == crate::host::pane_lifecycle::PUBLISHER {
             if let (Some(caller_id), Some(target_pane_id)) = (
                 req.from_pane_id,
@@ -181,8 +181,11 @@ impl PlexiApp {
                         req.context_id_override = Some(t_ctx_id);
                     }
                     if let Some(ref ws) = req.workspace_root_override {
-                        self.host_subscriptions
-                            .allow_parent_child_lifecycle(parent, ws);
+                        self.host_subscriptions.allow_parent_child_lifecycle(
+                            parent,
+                            target_pane_id,
+                            ws,
+                        );
                     }
                 }
             }
@@ -7135,6 +7138,106 @@ fn spawn_file_age_secs(queued_at_ms: Option<u64>, now_ms: u64) -> Option<u64> {
     queued_at_ms
         .and_then(|q| now_ms.checked_sub(q))
         .map(|ms| ms / 1000)
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+    use crate::broker::{principal::Principal, ActorType};
+    use crate::host::event_subscriptions::{
+        HostSubscribeReply, HostSubscribeRequest, HostSubscriptionService, SubscriberAuthority,
+    };
+    use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
+    use crate::host::plugin_timeline::{AdmittedScope, PluginTimeline};
+    use crate::protocol::{PayloadMode, TriggerMode};
+    use crate::testing::HostHarness;
+    use std::sync::{mpsc, Arc, Mutex};
+
+    #[test]
+    fn parent_lifecycle_grant_covers_only_its_child() {
+        let mut h = HostHarness::new();
+        let parent = h.add_focused_terminal();
+        let child = h.add_focused_terminal();
+        let unrelated = h.add_focused_terminal();
+        let authority = h.app.pane_authority(parent).unwrap();
+        let principal = authority.principal();
+        h.app.windows[0]
+            .panes
+            .get_mut(&child)
+            .unwrap()
+            .as_terminal_mut()
+            .unwrap()
+            .parent_owner = Some(principal.clone());
+
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
+        h.app.host_subscriptions =
+            HostSubscriptionService::new(&crate::config::config_dir(), Arc::clone(&timeline));
+        let context = h.app.windows[0].context_id;
+        let emit = |pane| {
+            timeline
+                .lock()
+                .unwrap()
+                .record_pane_lifecycle(context, pane, &PaneLifecycleEvent::Spawned)
+                .unwrap();
+        };
+        emit(child);
+        let workspace = authority.scope().workspace_root;
+        let subscribe = |app: &mut PlexiApp, pane: Option<u64>, subscriber: &str| {
+            let (reply, rx) = mpsc::sync_channel(1);
+            app.admit_subscribe_request(HostSubscribeRequest {
+                publisher_plugin_id: PUBLISHER.into(),
+                event_names: vec![STREAM.into()],
+                payload_mode: PayloadMode::Full,
+                trigger_mode: TriggerMode::Conversation,
+                resource_id: pane.map(|id| id.to_string()),
+                from_pane_id: Some(parent),
+                subscriber_override: Some(subscriber.into()),
+                principal: Principal::Pane(principal.clone()),
+                workspace_root_override: Some(workspace.clone()),
+                subscriber_authority: SubscriberAuthority::Pane(AdmittedScope::of(&authority)),
+                context_id_override: Some(context),
+                socket_caller: None,
+                cancelled: None,
+                reply,
+            });
+            rx
+        };
+        let child_reply = subscribe(&mut h.app, Some(child), "watch-child");
+        assert!(matches!(
+            child_reply.try_recv(),
+            Ok(HostSubscribeReply::Ok { .. })
+        ));
+        assert!(h.app.pending_event_consents.is_empty());
+        let unrelated_reply = subscribe(&mut h.app, Some(unrelated), "watch-unrelated");
+        let all_reply = subscribe(&mut h.app, None, "watch-all");
+        emit(unrelated);
+        emit(child);
+        let mut timeline = timeline.lock().unwrap();
+        assert_eq!(
+            timeline
+                .take_deliveries_for(ActorType::Pane, "watch-child")
+                .len(),
+            1
+        );
+        assert!(
+            timeline
+                .take_deliveries_for(ActorType::Pane, "watch-unrelated")
+                .is_empty(),
+            "the child's grant delivered an unrelated pane's event"
+        );
+        assert!(timeline
+            .take_deliveries_for(ActorType::Pane, "watch-all")
+            .is_empty());
+        assert_eq!(h.app.pending_event_consents.len(), 2);
+        assert!(matches!(
+            unrelated_reply.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            all_reply.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
 }
 
 #[cfg(test)]

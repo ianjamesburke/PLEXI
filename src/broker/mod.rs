@@ -620,7 +620,16 @@ impl GrantRecord {
                 && req.target_type == TargetType::Capability
                 && (req.binding_schema < 1 || self.decision == Decision::Deny);
         }
-        if self.resource_scope != req.resource_scope || self.resource_id != req.resource_id {
+        // A stream-wide decision also governs a subscription filtered to one
+        // pane. A pane-scoped decision still requires the exact resource.
+        let whole_event_stream = self.target_type == TargetType::PluginEventStream
+            && self.resource_scope == ResourceScope::Global
+            && self.resource_id.is_none()
+            && req.resource_scope == ResourceScope::Pane
+            && req.resource_id.is_some();
+        if !whole_event_stream
+            && (self.resource_scope != req.resource_scope || self.resource_id != req.resource_id)
+        {
             return false;
         }
         if self.actor_scope != req.actor_scope || self.trust_origin != req.trust_origin {

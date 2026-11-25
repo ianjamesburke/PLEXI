@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use crate::broker::principal::Principal;
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
-    PermissionPosture, PermissionRequest,
+    PermissionPosture, PermissionRequest, ResourceScope,
 };
 use crate::host::event_log;
 use crate::host::plugin_timeline::{EmittedEvent, PluginTimeline, SubscriptionRecord};
@@ -177,6 +177,33 @@ pub(crate) fn admit_stream_members(
     event_names: &[String],
     allowed_once: bool,
 ) -> Result<crate::broker::permit::Coverage, Decision> {
+    admit_stream_members_for_resource(
+        monitor,
+        posture,
+        workspace_root,
+        publisher_plugin_id,
+        subscriber,
+        actor_scope,
+        session_id,
+        event_names,
+        None,
+        allowed_once,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admit_stream_members_for_resource(
+    monitor: &Arc<crate::broker::gate::PermissionMonitor>,
+    posture: Option<&PermissionPosture>,
+    workspace_root: Option<&Path>,
+    publisher_plugin_id: &str,
+    subscriber: &Principal,
+    actor_scope: ActorScope,
+    session_id: Option<&str>,
+    event_names: &[String],
+    resource_id: Option<&str>,
+    allowed_once: bool,
+) -> Result<crate::broker::permit::Coverage, Decision> {
     let targets = subscription_targets(publisher_plugin_id, event_names);
     let trace = |target: &str, decision: Decision, mechanism: &str| {
         crate::broker::principal::AdmissionTrace {
@@ -198,18 +225,27 @@ pub(crate) fn admit_stream_members(
     };
     let questions = targets
         .iter()
-        .map(|target| {
-            PermissionRequest::exact(&crate::broker::ExactBinding::event_stream(
+        .zip(event_names)
+        .map(|(target, event_name)| {
+            use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
+            let mut binding = crate::broker::ExactBinding::event_stream(
                 subscriber,
                 actor_scope,
                 target,
                 workspace,
                 session_id.map(str::to_string),
-            ))
+            );
+            if let Some(pane_id) =
+                resource_id.filter(|_| publisher_plugin_id == PUBLISHER && event_name == STREAM)
+            {
+                binding.resource_scope = ResourceScope::Pane;
+                binding.resource_id = Some(pane_id.to_owned());
+            }
+            PermissionRequest::exact(&binding)
         })
         .collect();
     let once_row = |request: &PermissionRequest| {
-        GrantRecord::event_stream_allow(
+        let mut row = GrantRecord::event_stream_allow(
             subscriber,
             request.actor_scope,
             &request.target_id,
@@ -217,7 +253,10 @@ pub(crate) fn admit_stream_members(
             GrantDuration::Once,
             GrantSource::Session,
             request.session_id.clone(),
-        )
+        );
+        row.resource_scope = request.resource_scope;
+        row.resource_id.clone_from(&request.resource_id);
+        row
     };
     let admitted = if allowed_once {
         monitor.admit_questions_allowed_once(questions, posture, &once_row)
@@ -759,12 +798,11 @@ impl HostSubscriptionService {
         self.posture = PermissionPosture::load_from_config(config_dir);
     }
 
-    /// Record an in-memory session-scoped `Allow` grant so a parent master pane
-    /// (`broker_actor_id`, e.g. `"pane:1"`) can subscribe to its spawned child
-    /// worker pane's `plexi.pane::lifecycle` stream without a human consent modal.
+    /// Allow a parent pane to watch its spawned child's lifecycle events.
     pub fn allow_parent_child_lifecycle(
         &mut self,
         parent: &crate::broker::principal::PanePrincipal,
+        child_pane_id: u64,
         workspace_root: &Path,
     ) {
         let target = format!(
@@ -772,7 +810,7 @@ impl HostSubscriptionService {
             crate::host::pane_lifecycle::PUBLISHER,
             crate::host::pane_lifecycle::STREAM
         );
-        self.monitor.store().record(GrantRecord::event_stream_allow(
+        let mut grant = GrantRecord::event_stream_allow(
             &crate::broker::principal::Principal::Pane(parent.clone()),
             ActorScope::User,
             &target,
@@ -780,7 +818,10 @@ impl HostSubscriptionService {
             GrantDuration::Session,
             GrantSource::Session,
             Some(self.monitor.session_id().to_owned()),
-        ));
+        );
+        grant.resource_scope = ResourceScope::Pane;
+        grant.resource_id = Some(child_pane_id.to_string());
+        self.monitor.store().record(grant);
     }
 
     /// Resolve host-stamped identity, validate the requested streams are
@@ -892,7 +933,7 @@ impl HostSubscriptionService {
                 Vec::new(),
             ))
         } else {
-            admit_stream_members(
+            admit_stream_members_for_resource(
                 &self.monitor,
                 posture.as_ref(),
                 req.workspace_root_override.as_deref(),
@@ -901,6 +942,7 @@ impl HostSubscriptionService {
                 ActorScope::User,
                 Some(self.monitor.session_id()),
                 &req.event_names,
+                req.resource_id.as_deref(),
                 false,
             )
         };
@@ -1109,7 +1151,7 @@ impl HostSubscriptionService {
                     });
                     return;
                 }
-                let admitted = admit_stream_members(
+                let admitted = admit_stream_members_for_resource(
                     &self.monitor,
                     posture.as_ref(),
                     Some(&workspace_root),
@@ -1118,6 +1160,7 @@ impl HostSubscriptionService {
                     ActorScope::User,
                     Some(self.monitor.session_id()),
                     &event_names,
+                    resource_id.as_deref(),
                     choice == ConsentChoice::AllowOnce,
                 )
                 .map_err(|decision| {
@@ -1865,12 +1908,13 @@ mod tests {
         let admitted = pane_scope(7, &[]);
         let pane = admitted.authority.principal();
         let workspace = Path::new("/tmp/ws");
-        svc.allow_parent_child_lifecycle(&pane, workspace);
+        let child = 8;
+        svc.allow_parent_child_lifecycle(&pane, child, workspace);
 
         let principal = Principal::Pane(pane);
         let can_subscribe = || {
-            evaluate_subscription(
-                &svc.monitor().store(),
+            admit_stream_members_for_resource(
+                svc.monitor(),
                 None,
                 Some(workspace),
                 crate::host::pane_lifecycle::PUBLISHER,
@@ -1878,16 +1922,19 @@ mod tests {
                 ActorScope::User,
                 Some(svc.monitor().session_id()),
                 &[crate::host::pane_lifecycle::STREAM.to_owned()],
+                Some(&child.to_string()),
+                false,
             )
+            .is_ok()
         };
-        assert_eq!(can_subscribe(), Decision::Allow);
+        assert!(can_subscribe());
         svc.monitor().materialize_wasm_sets(
             &PluginInstance::new("durability-probe", None),
             workspace,
             &["probe".to_string()].into(),
         );
         crate::broker::assert_plugin_only_on_disk(dir.path());
-        assert_eq!(can_subscribe(), Decision::Allow);
+        assert!(can_subscribe());
     }
 
     /// Stint 1497 with one grant store: a seal-key rotation resets grants.

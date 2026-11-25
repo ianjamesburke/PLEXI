@@ -784,7 +784,12 @@ impl PlexiApp {
                                 if !ApprovalChoice::Always.allowed_for(&pending.owner) {
                                     pending.owner.pane()?;
                                     option.key = "allow_session".to_string();
-                                    option.label = "Allow until this pane closes".to_string();
+                                    option.label = if pending.tool == "pane.send" {
+                                        "Allow any text to any pane until this pane closes"
+                                    } else {
+                                        "Allow until this pane closes"
+                                    }
+                                    .to_string();
                                 }
                             }
                             Some(option)
@@ -2960,21 +2965,28 @@ mod tests {
             asks.push(pending_request_id);
         }
         h.app.sync_attention_queue();
-        let keys = |id: &str| -> Vec<String> {
-            h.app
+        let options = |id: &str| {
+            &h.app
                 .attention_queue
                 .items
                 .iter()
                 .find(|bar| bar.id == id)
                 .unwrap_or_else(|| panic!("no card for {id}"))
                 .options
-                .iter()
-                .map(|o| o.key.clone())
-                .collect()
         };
+        let keys = |id: &str| -> Vec<&str> { options(id).iter().map(|o| o.key.as_str()).collect() };
         assert_eq!(keys(&asks[0]), ["allow_once", "allow_session", "deny"]);
         assert_eq!(keys(&asks[1]), ["allow_once", "allow_session", "deny"]);
         assert_eq!(keys(&asks[2]), ["allow_once", "allow_always", "deny"]);
+        let pane_send_label = &options(&asks[1])[1].label;
+        assert!(
+            pane_send_label.contains("any text to any pane"),
+            "{pane_send_label}"
+        );
+        assert!(
+            pane_send_label.contains("until this pane closes"),
+            "{pane_send_label}"
+        );
     }
 
     #[test]
