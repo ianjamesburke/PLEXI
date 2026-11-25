@@ -718,30 +718,38 @@ fn admission_builds_claude_argv_and_identity_from_the_same_definition() {
         let pane_id = cli_launch(&mut h, &fx, caller, request);
         let argv = captured_argv(fx.home.path(), pane_id);
         assert!(argv.iter().any(|arg| arg.contains(prompt)), "{argv:?}");
-        let path = bound_path(&argv);
-        let shared = crate::config::shared_dir().canonicalize().unwrap();
-        let key = format!(
-            "{:x}",
-            <sha2::Sha256 as sha2::Digest>::digest(
-                cwd.canonicalize().unwrap().as_os_str().as_encoded_bytes()
-            )
-        );
+        let root = cwd.canonicalize().unwrap();
         assert_eq!(
-            path,
-            shared
-                .join("agent_memory")
-                .join(".workspaces")
-                .join(&key)
-                .join("researcher")
+            bound_path(&argv),
+            root.join(".plexi/agent_memory/researcher")
         );
         let saved =
             serde_json::to_value(terminal(&h, pane_id).build_saved_agent_session().unwrap())
                 .unwrap();
         assert_eq!(
             saved["claude_memory"],
-            serde_json::json!({"scope": {"workspace": key}, "agent_id": "researcher"})
+            serde_json::json!({"scope": {"workspace_root": root}, "agent_id": "researcher"})
         );
         assert!(saved.get("claude_memory_dir").is_none());
+
+        let history = terminal(&h, pane_id)
+            .build_history_record(1, "test", cwd.to_path_buf())
+            .unwrap();
+        let history = serde_json::from_value(serde_json::to_value(history).unwrap()).unwrap();
+        std::fs::remove_dir_all(crate::agent::workspace_agents_dir(cwd).join("researcher"))
+            .unwrap();
+        let reply = h.app.reopen_agent_record(
+            &history,
+            None,
+            None,
+            crate::broker::pane_authority::GrantSource::OutsideProcess,
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        let reopened = reply["pane_id"].as_u64().unwrap();
+        assert_eq!(
+            bound_path(&captured_argv(fx.home.path(), reopened)),
+            root.join(".plexi/agent_memory/researcher")
+        );
     }
     assert_eq!(
         std::fs::read_to_string(repo_notes.join("MEMORY.md")).unwrap(),
@@ -962,13 +970,13 @@ fn admission_global_identity_survives_shadow_reopen_eager_restore_and_standby_wa
 }
 
 #[test]
-fn admission_saved_identity_decode_rejects_aliases() {
+fn admission_saved_identity_decode_rejects_aliases_and_relative_workspace_roots() {
     let fx = AgentFocusFixture::new();
     let mut record =
         serde_json::to_value(researcher_history_record(&fx.proj_dir, "session", "claude")).unwrap();
     for binding in [
         serde_json::json!({"scope": "global", "agent_id": "researcher/"}),
-        serde_json::json!({"scope": {"workspace": "../elsewhere"}, "agent_id": "researcher"}),
+        serde_json::json!({"scope": {"workspace_root": "../elsewhere"}, "agent_id": "researcher"}),
     ] {
         record["claude_memory"] = binding;
         assert!(

@@ -4,21 +4,15 @@
 //! Memory is user data, not config: it lives in the channel-neutral
 //! `UserDataKind::AgentMemory` tier (`src/host/AGENTS.md`), so a beta or PR
 //! build reads the same memory. The tier follows the definition, never a
-//! launch. For harnesses that read memory by prompt, a workspace definition
-//! keeps it in `<root>/.plexi/agent_memory/<id>/`. Named Claude launches
-//! bind workspace memory under `.workspaces/<key>/<id>/` in the global memory
-//! tier. Global and built-in definitions use `~/.plexi/agent_memory/<id>/`.
-//! The host only ever creates the folder; what
-//! is inside belongs to the agent and the person, and nothing here writes,
-//! moves or deletes it. The definition folder (`AGENT.md`, `settings.toml`) is
-//! never touched.
+//! launch. A workspace definition keeps it in `<root>/.plexi/agent_memory/<id>/`.
+//! Global and built-in definitions use `~/.plexi/agent_memory/<id>/`.
+//! The host creates the folder and the agent and the person own its contents.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::{AgentDefinition, AgentSource};
 use crate::host::state_scope::{self, StateScope, UserDataKind};
@@ -83,7 +77,7 @@ pub(crate) struct ClaudeMemoryIdentity {
 #[serde(rename_all = "snake_case")]
 enum ClaudeMemoryScope {
     Global,
-    Workspace(#[serde(deserialize_with = "decode_workspace_key")] String),
+    WorkspaceRoot(#[serde(deserialize_with = "decode_workspace_root")] PathBuf),
 }
 
 fn decode_agent_id<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
@@ -92,18 +86,16 @@ fn decode_agent_id<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<Strin
     Ok(id)
 }
 
-fn decode_workspace_key<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
-    let key = String::deserialize(decoder)?;
-    if key.len() != 64
-        || !key
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+fn decode_workspace_root<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<PathBuf, D::Error> {
+    let root = PathBuf::deserialize(decoder)?;
+    if !root.is_absolute() {
         return Err(serde::de::Error::custom(
-            "invalid Claude memory workspace key",
+            "Claude memory workspace root must be absolute",
         ));
     }
-    Ok(key)
+    Ok(root)
 }
 
 impl ClaudeMemoryIdentity {
@@ -121,10 +113,7 @@ impl ClaudeMemoryIdentity {
                         definition.id
                     )
                 })?;
-                ClaudeMemoryScope::Workspace(format!(
-                    "{:x}",
-                    Sha256::digest(root.as_os_str().as_encoded_bytes())
-                ))
+                ClaudeMemoryScope::WorkspaceRoot(root.to_path_buf())
             }
         };
         Ok(Self {
@@ -138,23 +127,29 @@ impl ClaudeMemoryIdentity {
     }
 
     pub(crate) fn ensure_dir(&self) -> Result<PathBuf, String> {
-        let root = Path::new("");
         let kind = UserDataKind::AgentMemory;
-        let base = state_scope::user_data_dir(StateScope::Global, kind, root);
-        let mut expected = state_scope::assert_within_scope(
-            &base.join(&self.agent_id),
-            StateScope::Global,
-            kind,
-            root,
-        )?;
-        if let ClaudeMemoryScope::Workspace(key) = &self.scope {
-            for part in [".workspaces", key.as_str()] {
-                expected.push(part);
-                ensure_canonical_memory_dir(&expected, &expected)?;
+        match &self.scope {
+            ClaudeMemoryScope::Global => {
+                let root = Path::new("");
+                let scope = StateScope::Global;
+                let base = state_scope::user_data_dir(scope, kind, root);
+                let parent = state_scope::assert_within_scope(
+                    &base.join(&self.agent_id),
+                    scope,
+                    kind,
+                    root,
+                )?;
+                let dir = parent.join(&self.agent_id);
+                ensure_canonical_memory_dir(&dir, &dir)
+            }
+            ClaudeMemoryScope::WorkspaceRoot(root) => {
+                let dir = state_scope::user_data_dir(StateScope::Context, kind, root)
+                    .join(&self.agent_id);
+                fs::create_dir_all(&dir)
+                    .map_err(|error| format!("create memory folder {}: {error}", dir.display()))?;
+                Ok(dir)
             }
         }
-        let dir = expected.join(&self.agent_id);
-        ensure_canonical_memory_dir(&dir, &dir)
     }
 }
 
@@ -315,10 +310,10 @@ mod tests {
     }
 
     #[test]
-    fn saved_memory_identity_rejects_aliases_and_invalid_workspace_keys() {
+    fn saved_memory_identity_rejects_aliases_and_relative_workspace_roots() {
         for value in [
             serde_json::json!({"scope": "global", "agent_id": "writer/"}),
-            serde_json::json!({"scope": {"workspace": "../other"}, "agent_id": "writer"}),
+            serde_json::json!({"scope": {"workspace_root": "../other"}, "agent_id": "writer"}),
         ] {
             assert!(serde_json::from_value::<ClaudeMemoryIdentity>(value).is_err());
         }
