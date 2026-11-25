@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn screenshot_file_browser_new_file_prompt() {
+    let (mut h, _dir, _file, _pane) = explorer_with_one_file(900.0, 600.0);
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+    h.run_steps(2);
+    assert!(h
+        .harness()
+        .query_all_by(|node| {
+            node.role() == egui::accesskit::Role::TextInput
+                && node.value().as_deref() == Some("/new file ")
+        })
+        .next()
+        .is_some());
+    h.save_screenshot(&evidence_png!())
+        .expect("new file prompt screenshot");
+}
+
+#[test]
 fn screenshot_file_browser_middle_elision_distinguishes_suffixes() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = "Q3 Board Deck — FINAL (revised) v12 [approved by legal]";

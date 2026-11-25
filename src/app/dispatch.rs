@@ -10,6 +10,58 @@ pub(crate) fn native_wasm_notification_contract_error(icon: Option<&str>) -> Opt
 }
 
 impl PlexiApp {
+    /// Give the pane that owns input first refusal on its declared shortcuts.
+    /// Undeclared keys keep their usual host-before-raw-view dispatch order.
+    pub(super) fn dispatch_focused_view_shortcuts(
+        &mut self,
+        ctx: &egui::Context,
+        input: &mut super::input_router::PlexiInput,
+    ) {
+        use super::input_owner::InputOwner;
+        use crate::host::pane::{Pane, ViewRuntime};
+
+        if input.is_empty() {
+            return;
+        }
+        let InputOwner::Pane(pane_id) = self.input_owner(ctx) else {
+            return;
+        };
+        let Some(ViewRuntime::Builtin(view)) = self
+            .windows
+            .iter_mut()
+            .find_map(|window| window.panes.get_mut(&pane_id))
+            .and_then(Pane::as_view_mut)
+            .map(|pane| &mut pane.runtime)
+        else {
+            return;
+        };
+
+        input.retain_events(|event| {
+            let egui::Event::Key {
+                key,
+                modifiers,
+                pressed: true,
+                repeat,
+                ..
+            } = event
+            else {
+                return true;
+            };
+            if !view.claims_shortcut(*key, *modifiers) {
+                return true;
+            }
+
+            let shortcut =
+                super::input_router::PlexiInput::synthetic(vec![event.clone()], *modifiers);
+            let disposition = view.handle_key(&shortcut);
+            if !repeat {
+                log::info!("app_keys: pane {pane_id} claimed {modifiers:?}+{key:?} ({disposition:?})");
+            }
+            self.claimed_host_key_releases.insert(*key);
+            false
+        });
+    }
+
     /// Feed keyboard input to the focused view pane. Keys only go to the
     /// focused pane (that's the whole point of focus). Command drain
     /// happens separately via [`drain_all_view_commands`] so background

@@ -146,11 +146,19 @@ fn cmd_key_pressed_no_repeat(
                 repeat: false,
                 modifiers,
                 ..
-            } if *k == key
-                && (modifiers.command || input.modifiers().command)
-                && (modifiers.shift || input.modifiers().shift) == shift
+            } if *k == key && matches_command_modifiers(modifiers, shift)
         )
     })
+}
+
+fn matches_command_modifiers(modifiers: &egui::Modifiers, shift: bool) -> bool {
+    crate::host::keys::modifiers_match_exact(
+        modifiers,
+        &egui::Modifiers {
+            shift,
+            ..egui::Modifiers::COMMAND
+        },
+    )
 }
 
 // text_entry_active (search or palette) gates all letter keys so that
@@ -184,7 +192,7 @@ fn classify_key(
 /// Which modifiers a row accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KeyMods {
-    /// Cmd held; Shift held exactly when `shift`.
+    /// Cmd held, with Shift exactly when `shift` and no extra modifiers.
     Cmd { shift: bool },
     /// No modifier held.
     Bare,
@@ -256,13 +264,16 @@ impl ExplorerKey {
         self
     }
 
-    fn matches(&self, input: &crate::app::input_router::PlexiInput, typing: bool) -> bool {
-        let mode_ok = match self.mode {
+    fn applies_in_mode(&self, typing: bool) -> bool {
+        match self.mode {
             KeyMode::Always => true,
             KeyMode::Browsing => !typing,
             KeyMode::Typing => typing,
-        };
-        if !mode_ok {
+        }
+    }
+
+    fn matches(&self, input: &crate::app::input_router::PlexiInput, typing: bool) -> bool {
+        if !self.applies_in_mode(typing) {
             return false;
         }
         let held = input.modifiers();
@@ -4074,6 +4085,17 @@ impl View for FileBrowserView {
         self.draw_quick_look_modal(ui.ctx(), colors);
         self.draw_pending_operation_modal(ui.ctx(), colors, ctx.pane_id, ctx.synthetic_input);
         self.draw_rename_modal(ui.ctx(), colors, ctx.pane_id);
+    }
+
+    fn claims_shortcut(&self, key: egui::Key, modifiers: egui::Modifiers) -> bool {
+        if self.dialog_open() || self.quick_look_open {
+            return false;
+        }
+        EXPLORER_KEYS.iter().any(|row| {
+            row.key == key
+                && row.applies_in_mode(self.in_search || self.in_palette)
+                && matches!(row.mods, KeyMods::Cmd { shift } if matches_command_modifiers(&modifiers, shift))
+        })
     }
 
     fn handle_key(

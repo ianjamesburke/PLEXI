@@ -925,7 +925,7 @@ fn modifier_count(m: &egui::Modifiers) -> u32 {
 // macOS Cmd key event.
 // On non-macOS (Linux/Windows), egui sets both `ctrl` and `command` to true
 // when physical Ctrl is held, while `cmd()` patterns set `command=true, ctrl=false`.
-fn modifiers_match_exact(actual: &egui::Modifiers, pattern: &egui::Modifiers) -> bool {
+pub(crate) fn modifiers_match_exact(actual: &egui::Modifiers, pattern: &egui::Modifiers) -> bool {
     modifiers_match_exact_for_os(actual, pattern, cfg!(target_os = "macos"))
 }
 
@@ -1543,10 +1543,9 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 ///
 /// `input` is a [`crate::app::input_router::PlexiInput`] buffer already taken
 /// out of `ctx` for this frame (stint 0240's ownership-transfer router).
-/// The host calls this after the focused overlay owner in two passes: Global
-/// and Normal bindings before focused-plugin key dispatch, then ViewActive
-/// bindings afterward. Thus host chords are structurally removed before a
-/// guest runtime can see them, while a plugin or focused text field still owns
+/// The host calls this after the modal owner or the focused view's declared
+/// shortcuts. Global and Normal bindings run before raw view dispatch. The
+/// ViewActive pass runs afterward so a view or focused text field can claim
 /// bare Escape before CloseView.
 pub fn poll_actions(
     input: &mut crate::app::input_router::PlexiInput,

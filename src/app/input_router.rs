@@ -12,14 +12,13 @@
 //! claims.
 //!
 //! Every keyboard consumer now routes through this buffer (stint 0387):
-//!   1. `keys::poll_actions` — the global hotkey allowlist. Always the outer,
-//!      first consumer of the frame; claims Cmd+Q/W/P etc.
-//!   2. The top [`crate::app::FocusKind`] overlay's `*_handle_key`, when an
-//!      overlay owns input.
-//!   3. `dispatch_plugin_key_events` — the focused view pane's `App::handle_key`,
+//!   1. The top modal's key handler, or the focused view's declared shortcuts.
+//!   2. `keys::poll_actions` — the remaining Global and Normal host bindings.
+//!   3. `dispatch_plugin_key_events` — the focused view pane's `View::handle_key`,
 //!      which reads this buffer directly (see [`PlexiInput::events`] /
 //!      [`PlexiInput::key_pressed`]) instead of `ctx.input()`.
-//!   4. The focused terminal widget. Because the host takes this buffer *before*
+//!   4. The ViewActive host bindings, including the focused view's close fallback.
+//!   5. The focused terminal widget. Because the host takes this buffer *before*
 //!      the render pass and hands the events straight to `egui_term` via
 //!      `TerminalView::with_input`, egui's own render-time widget machinery can
 //!      no longer swallow a key (e.g. Cmd+A select-all) before the terminal
@@ -105,6 +104,11 @@ impl PlexiInput {
     /// `ctx.input(|i| &i.events)`.
     pub(crate) fn events(&self) -> &[egui::Event] {
         &self.events
+    }
+
+    /// Return the unclaimed events to the next consumer in arrival order.
+    pub(crate) fn retain_events(&mut self, keep: impl FnMut(&egui::Event) -> bool) {
+        self.events.retain(keep);
     }
 
     /// Was `key` pressed this frame? Mirrors `egui::InputState::key_pressed`

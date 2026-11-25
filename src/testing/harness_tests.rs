@@ -11369,6 +11369,168 @@ fn escape_releases_note_editor_to_pane_navigation() {
     );
 }
 
+#[test]
+fn explorer_overlay_owns_new_item_chords() {
+    use egui::{Key, Modifiers};
+
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    for (modifiers, prompt) in [
+        (Modifiers::COMMAND, "/new file "),
+        (Modifiers::COMMAND | Modifiers::SHIFT, "/new folder "),
+    ] {
+        let mut h = HostHarness::new();
+        open_explorer_over_terminal(&mut h);
+        let windows = h.window_count();
+        let panes = h.pane_count();
+        let contexts = h.app.router.len();
+
+        h.press_key(Key::N, modifiers).run_frames(2);
+        assert_eq!(h.window_count(), windows, "{prompt} must not create a page");
+        assert_eq!(
+            h.pane_count(),
+            panes,
+            "{prompt} must leave pane count unchanged"
+        );
+        assert_eq!(
+            h.app.router.len(),
+            contexts,
+            "{prompt} must leave context count unchanged"
+        );
+        assert!(
+            explorer_frame_has_text(&h, prompt),
+            "Explorer must display {prompt:?}"
+        );
+    }
+}
+
+fn open_explorer_over_terminal(h: &mut HostHarness) -> PaneId {
+    let terminal = h.add_focused_terminal();
+    h.press_key(egui::Key::E, egui::Modifiers::COMMAND);
+    let pane = h.app.windows[h.app.active_window].panes[&terminal]
+        .as_view()
+        .expect("Cmd+E must cover the terminal");
+    assert_eq!(pane.runtime.type_id(), "file_browser");
+    assert!(pane
+        .overlay_replaced
+        .as_ref()
+        .is_some_and(|p| p.as_terminal().is_some()));
+    terminal
+}
+
+fn explorer_frame_has_text(h: &HostHarness, expected: &str) -> bool {
+    h.last_full_output.as_ref().unwrap().shapes.iter().any(
+        |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected),
+    )
+}
+
+#[test]
+fn explorer_overlay_owns_commands_and_refresh_chords() {
+    use egui::{Key, Modifiers};
+
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = HostHarness::new();
+    open_explorer_over_terminal(&mut h);
+    // The view has loaded its listing, and App::logic hasn't armed the watcher yet.
+    let fixture = "fresh-listing.txt";
+    std::fs::write(h.workspace_root().join(fixture), b"fixture").unwrap();
+    h.press_key(Key::R, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert!(
+        explorer_frame_has_text(&h, fixture),
+        "Cmd+Shift+R refreshes the listing"
+    );
+    assert!(
+        h.app.focus_stack.top().is_none(),
+        "Cmd+Shift+R must not open context rename"
+    );
+
+    h.press_key(Key::K, Modifiers::COMMAND);
+    assert!(
+        explorer_frame_has_text(&h, "ACTION"),
+        "Cmd+K opens Explorer commands"
+    );
+}
+
+#[test]
+fn explorer_overlay_owns_open_and_reveal_chords() {
+    use crate::app::view_trait::ViewCommand;
+    use crate::protocol::ArtifactOpenMode;
+    use egui::{Key, Modifiers};
+
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    for (key, expected_mode) in [
+        (Key::O, ArtifactOpenMode::OpenWithDefault),
+        (Key::Enter, ArtifactOpenMode::RevealInFinder),
+    ] {
+        let mut h = HostHarness::new();
+        let file = h.workspace_root().join("selected.txt");
+        std::fs::write(&file, b"fixture").unwrap();
+        let explorer = open_explorer_over_terminal(&mut h);
+        h.run_frames(2);
+
+        // Deliver the production UI pass alone so App::logic cannot launch an OS app.
+        let modifiers = Modifiers::COMMAND;
+        let input = egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                modifiers,
+                pressed: true,
+                repeat: false,
+            }],
+            ..Default::default()
+        };
+        let _ = h.ctx.run_ui(input, |ui| {
+            eframe::App::ui(&mut h.app, ui, &mut eframe::Frame::_new_kittest());
+        });
+        let commands = h.app.windows[h.app.active_window]
+            .panes
+            .get_mut(&explorer)
+            .unwrap()
+            .as_view_mut()
+            .unwrap()
+            .runtime
+            .take_pending_commands();
+        assert!(
+            commands.iter().any(|command| matches!(command,
+                ViewCommand::OpenArtifact { path, mode, .. }
+                    if *mode == expected_mode && std::fs::canonicalize(path).ok()
+                        == std::fs::canonicalize(&file).ok()
+            )),
+            "Cmd+{key:?} must queue {expected_mode:?}"
+        );
+        assert!(
+            h.app.focus_stack.top().is_none(),
+            "the host must keep Explorer input focus"
+        );
+        assert!(h.app.windows[h.app.active_window].zoomed_pane.is_none());
+    }
+}
+
+#[test]
+fn terminal_retains_host_new_pane_and_context_chords() {
+    use egui::{Key, Modifiers};
+
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    for (modifiers, new_contexts) in [
+        (Modifiers::COMMAND, 0),
+        (Modifiers::COMMAND | Modifiers::SHIFT, 1),
+    ] {
+        let mut h = HostHarness::new();
+        h.add_focused_terminal();
+        let contexts = h.app.router.len();
+        let windows = h.window_count();
+        h.press_key(Key::N, modifiers).run_frames(2);
+        assert_eq!(h.window_count(), windows + 1);
+        assert_eq!(h.app.router.len(), contexts + new_contexts);
+        assert_eq!(h.pane_count(), 1);
+        assert!(h.app.windows[h.app.active_window]
+            .panes
+            .values()
+            .any(|pane| pane.as_terminal().is_some()));
+    }
+}
+
 /// Pressing Enter on a text file in the File Explorer opens it in the builtin
 /// text-editor as a split to the right of the explorer — never the OS opener
 /// (stint 0506 item 5).

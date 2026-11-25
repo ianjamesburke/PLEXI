@@ -346,8 +346,8 @@ pub struct PlexiApp {
     pub(crate) config: crate::config::PlexiConfig,
     pub(crate) key_bindings: crate::host::keys::KeyBindings,
     pub(crate) binding_table: Vec<crate::host::keys::BindingEntry>,
-    /// Keys whose press edge fired a host binding and whose matching release
-    /// remains host-owned, even if Command is released first.
+    /// Shortcut presses claimed by the host input router. The router also
+    /// consumes the matching release, even if Command is released first.
     pub(crate) claimed_host_key_releases: HashSet<egui::Key>,
     pub(crate) context_rename: Option<ContextRenameState>,
     pub(crate) rename_buffer: String,
@@ -4224,11 +4224,9 @@ impl eframe::App for PlexiApp {
             crate::app::view_trait::KeyDisposition::Passthrough
         };
 
-        // Host bindings own their chords before a plugin can classify raw key
-        // events. This is the structural guard against one physical Cmd+D
-        // both splitting the pane and reaching a PGAP plugin as its bare `d`
-        // shortcut. Overlay owners still run first because their local key
-        // contracts determine which unclaimed events remain in the router.
+        // Modal owners and the focused view's declared chords get first
+        // refusal. Host bindings then consume their chords before raw view
+        // dispatch would see Cmd+D as a bare `d` shortcut.
         let (view_active, keyboard_capture_active) = self.focused_view_capture_state();
         let overlay_open = self.input_captured_by_overlay();
         let skip_toggle_shortcuts = !overlay_open
@@ -4251,6 +4249,9 @@ impl eframe::App for PlexiApp {
             log::info!("ui: Escape dismissed native popup before pane key dispatch");
         }
         self.suppress_approval_decision_repeats(&mut router_input);
+        if overlay_key_disposition == crate::app::view_trait::KeyDisposition::Passthrough {
+            self.dispatch_focused_view_shortcuts(ctx, &mut router_input);
+        }
         let mut poll_actions_result = keys::poll_actions(
             &mut router_input,
             filtered_bindings.as_deref().unwrap_or(&self.binding_table),
@@ -4441,10 +4442,6 @@ impl eframe::App for PlexiApp {
             }
         }
 
-        // Handle keyboard shortcuts. Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) always
-        // fire; all other shortcuts are suppressed when an overlay holds focus via
-        // the early-return guard in `keys::poll_actions`.
-        //
         // ViewActive bindings are intentionally polled after plugin dispatch.
         // Focused TextInputs and plugins own bare Escape first; the dispatch gate
         // removes it when it exits a field so CloseView cannot fire in the same

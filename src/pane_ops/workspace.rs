@@ -774,6 +774,10 @@ impl PlexiApp {
     fn new_context_empty(&mut self, source: crate::broker::pane_authority::GrantSource) {
         let total_start = std::time::Instant::now();
         let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        // The keyboard path seeds workspace files at this root. Harnesses
+        // already provide an isolated profile directory for such writes.
+        #[cfg(test)]
+        let cwd = crate::config::test_profile_dir_override().unwrap_or(cwd);
         log::info!("new_context_empty: cwd={}", cwd.display());
 
         let id_start = std::time::Instant::now();

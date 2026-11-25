@@ -1,0 +1,16 @@
+size = [900.0, 600.0]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = "tests/fixtures/file-browser-tree", as = "files" }
+
+[[steps]]
+key = { target = "host", value = "cmd+n" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert_label = { target = "files", label = "Create file: <name> — type filename and press Enter" }
+
+[[steps]]
+shot = "file-browser-new-file.png"

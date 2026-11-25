@@ -330,10 +330,17 @@ pub trait View: Send {
     ///
     /// Reads from the frame's [`crate::app::input_router::PlexiInput`] ownership
     /// buffer (via `input.key_pressed(..)` / `input.events()` /
-    /// `input.modifiers()`) rather than `ctx.input()`, so a plugin and the global
-    /// hotkey allowlist can never both claim the same key.
+    /// `input.modifiers()`). Shortcut presses claimed by either the view or
+    /// the host are removed before raw input reaches the next consumer.
     fn handle_key(&mut self, _input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         KeyDisposition::Passthrough
+    }
+
+    /// Whether this chord belongs to the view in its current mode. When this
+    /// view owns input, claimed presses go to `handle_key` before host
+    /// bindings, including repeats the view may choose to ignore.
+    fn claims_shortcut(&self, _key: egui::Key, _modifiers: egui::Modifiers) -> bool {
+        false
     }
 
     /// Drain any commands the plugin has queued since the last call.
