@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [0.6.1] — 2026-11-25
+
+### Changes
+- perf(build): batch reviewed PRs into one candidate (merge queue, stint 1801) (#3361)
+- feat(commands): share palette discovery and shortcut dispatch (#3348)
+- feat(agents): bind named Claude chats to per-agent auto memory (#3346)
+- fix(editor): refuse host stop with unsaved changes (#3347)
 ## [0.6.0] — 2026-11-25
 
 ### Changes
