@@ -6228,6 +6228,7 @@ mod tests {
             .unwrap()
             .push(second);
         permission["tool_input"] = pre["tool_input"].clone();
+        let capture = crate::testing::test_log::capture();
         send_claude_question_event(&mut h, &origin, &pre);
         let response = send_claude_question_event(&mut h, &origin, &permission);
         let id = monitor.host_records().questions(true)[0].id.clone();
@@ -6252,18 +6253,61 @@ mod tests {
         assert_eq!(group.current, 1);
         group.drafts[1].other = Some("custom color canary".into());
         assert!(!Path::new(&response).exists());
-        let capture = crate::testing::test_log::capture();
         assert!(h.app.pick_decision_overlay_option(3));
         let ctx = h.app.ctx.clone();
         h.app.service_claude_questions(&monitor, &ctx);
-        let logs = capture.lines().join("\n");
-        for site in [
+        let expected_answers = json!({
+            "Which color do you pick?": "Blue",
+            "Which colors should we include? ": "Red, Blue, custom color canary",
+        });
+        assert_eq!(
+            read_claude_question_reply(&response)["decision"]["hookSpecificOutput"]["decision"]
+                ["updatedInput"]["answers"],
+            expected_answers
+        );
+
+        let mut post = pre;
+        post["hook_event_name"] = json!("PostToolUse");
+        post["tool_response"] = json!({"answers": expected_answers});
+        let settled = send_claude_question_event(&mut h, &origin, &post);
+        assert!(read_claude_question_reply(&settled)["decision"].is_null());
+        let run = monitor.host_records().run(&id).unwrap();
+        assert_eq!(run.state, crate::broker::gate::ContinuationState::Completed);
+
+        let bridge_traces = [
+            "claude_question:",
             "consent_guard: witnessed",
             "needs_you: desktop answered",
             "permission_seal: desktop decision overlay answered",
-        ] {
-            assert!(logs.contains(site), "missing trace from {site}");
-        }
+            "continuation: completed",
+        ];
+        let records = capture.records();
+        let traces: Vec<_> = records
+            .iter()
+            .filter(|(level, line)| {
+                *level == log::Level::Info
+                    && bridge_traces.iter().any(|prefix| line.starts_with(prefix))
+            })
+            .map(|(_, line)| line.as_str())
+            .collect();
+        assert_eq!(
+            traces,
+            [
+                format!("claude_question: id={id} waiting for pane={pane}"),
+                format!("consent_guard: witnessed id={id}"),
+                format!("needs_you: desktop answered {id} run_outcome=unblocked"),
+                format!(
+                    "permission_seal: desktop decision overlay answered id={id} resolution=approved"
+                ),
+                format!("claude_question: id={id} answer sent=true awaiting PostToolUse"),
+                format!(
+                    "continuation: completed run_id={} state=completed",
+                    run.run_id
+                ),
+                format!("claude_question: id={id} settled reason=PostToolUse"),
+            ],
+            "bridge INFO traces must contain only identifiers and outcomes"
+        );
         for content in [
             "Which color do you pick?",
             "Which colors should we include?",
@@ -6271,16 +6315,11 @@ mod tests {
             "Red",
             "custom color canary",
         ] {
-            assert!(!logs.contains(content), "desktop answer leaked into logs");
+            assert!(
+                records.iter().all(|(_, line)| !line.contains(content)),
+                "desktop answer leaked into logs"
+            );
         }
-        assert_eq!(
-            read_claude_question_reply(&response)["decision"]["hookSpecificOutput"]["decision"]
-                ["updatedInput"]["answers"],
-            json!({
-                "Which color do you pick?": "Blue",
-                "Which colors should we include? ": "Red, Blue, custom color canary",
-            })
-        );
     }
 
     #[test]
