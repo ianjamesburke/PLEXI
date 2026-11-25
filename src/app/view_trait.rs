@@ -343,6 +343,15 @@ pub trait View: Send {
         vec![]
     }
 
+    /// Report the containment decision for a pending `OpenArtifact` command.
+    fn artifact_guard_finished(
+        &mut self,
+        _path: &str,
+        _mode: crate::protocol::ArtifactOpenMode,
+        _allowed: bool,
+    ) {
+    }
+
     /// Bind host-owned runtime identity before any external work is serviced.
     fn bind_host_identity(&mut self, _pane_id: u64, _context_id: u64) {}
 

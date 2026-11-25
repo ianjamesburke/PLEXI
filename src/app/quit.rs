@@ -55,13 +55,20 @@ pub(crate) mod test_restart_scheduler {
     }
 }
 
+#[derive(Clone, Copy)]
+enum UserQuitConfirmation {
+    Keyboard,
+    WorkingAgents,
+    Accepted,
+}
+
 #[derive(Clone, Copy, Default)]
 enum QuitPhase {
     #[default]
     Idle,
     AwaitingEditor {
         pane: u64,
-        agents_confirmed: bool,
+        confirmation: UserQuitConfirmation,
     },
     ConfirmingAgents,
     Accepted,
@@ -510,8 +517,7 @@ impl super::PlexiApp {
         self.pending_close = false;
         self.close_confirm_target = None;
         self.pending_quit = false;
-        self.quit_press_count = 0;
-        self.quit_last_press = None;
+        self.reset_keyboard_quit_confirmation();
         let (QuitPhase::ConfirmingAgents, Some(reason)) =
             (self.quit_coordinator.phase, self.quit_coordinator.reason)
         else {
@@ -523,7 +529,7 @@ impl super::PlexiApp {
                 "quit: working-agent confirmation accepted reason={}",
                 reason.label()
             );
-            self.continue_user_quit(reason, true);
+            self.continue_user_quit(reason, UserQuitConfirmation::Accepted);
         } else {
             self.quitting = false;
             self.ctx
@@ -532,14 +538,50 @@ impl super::PlexiApp {
         }
     }
 
-    fn continue_user_quit(&mut self, reason: ExitReason, agents_confirmed: bool) {
+    pub(super) fn request_keyboard_quit(&mut self, ctx: &egui::Context) {
+        trace("quit_action");
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        self.continue_user_quit(ExitReason::WindowClosed, UserQuitConfirmation::Keyboard);
+    }
+
+    pub(super) fn keyboard_quit_timed_out(&self, now: Instant) -> bool {
+        self.quit_last_press
+            .is_some_and(|last| now.duration_since(last) > Duration::from_millis(1500))
+    }
+
+    pub(super) fn reset_keyboard_quit_confirmation(&mut self) {
+        self.quit_press_count = 0;
+        self.quit_last_press = None;
+    }
+
+    fn advance_keyboard_quit_confirmation(&mut self) -> bool {
+        if !self.confirm_quit() {
+            return true;
+        }
+        let now = Instant::now();
+        if self.keyboard_quit_timed_out(now) {
+            self.reset_keyboard_quit_confirmation();
+        }
+        self.quit_press_count += 1;
+        if self.quit_press_count >= 3 {
+            self.reset_keyboard_quit_confirmation();
+            return true;
+        }
+        self.quit_last_press = Some(now);
+        log::info!(
+            "quit: keyboard confirmation press={}",
+            self.quit_press_count
+        );
+        false
+    }
+
+    fn continue_user_quit(&mut self, reason: ExitReason, confirmation: UserQuitConfirmation) {
         if reason == ExitReason::UpdateRestart && self.update_status.ready().is_none() {
             log::info!("update: restart cancelled because the update is no longer ready");
             self.quitting = false;
             return;
         }
-        self.quitting = agents_confirmed;
-        if self.prepare_user_quit_for(reason) {
+        if self.prepare_user_quit_with_confirmation(reason, confirmation) {
             self.request_quit(reason);
         }
     }
@@ -548,7 +590,7 @@ impl super::PlexiApp {
         let (
             QuitPhase::AwaitingEditor {
                 pane: pending,
-                agents_confirmed,
+                confirmation,
             },
             Some(reason),
         ) = (self.quit_coordinator.phase, self.quit_coordinator.reason)
@@ -563,7 +605,7 @@ impl super::PlexiApp {
             log::info!("quit: cancelled at unsaved editor pane={pane}");
         } else {
             log::info!("quit: continuing after unsaved editor pane={pane}");
-            self.continue_user_quit(reason, agents_confirmed);
+            self.continue_user_quit(reason, confirmation);
         }
     }
 
@@ -607,6 +649,20 @@ impl super::PlexiApp {
 
     /// Check for interactive vetoes before accepting a user quit.
     pub(super) fn prepare_user_quit_for(&mut self, reason: ExitReason) -> bool {
+        let confirmation = if self.quitting {
+            // The coordinator may be retrying a save after accepting the quit.
+            UserQuitConfirmation::Accepted
+        } else {
+            UserQuitConfirmation::WorkingAgents
+        };
+        self.prepare_user_quit_with_confirmation(reason, confirmation)
+    }
+
+    fn prepare_user_quit_with_confirmation(
+        &mut self,
+        reason: ExitReason,
+        confirmation: UserQuitConfirmation,
+    ) -> bool {
         if let Some(pane) = self.quit_coordinator.pending_editor() {
             if self.focused_pane_id() != Some(pane) {
                 self.pane_navigate(pane);
@@ -629,16 +685,10 @@ impl super::PlexiApp {
         });
         if let Some(pane) = veto {
             self.quit_coordinator = QuitCoordinator::default();
-            self.quit_coordinator.enter(
-                QuitPhase::AwaitingEditor {
-                    pane,
-                    agents_confirmed: self.quitting,
-                },
-                reason,
-            );
+            self.quit_coordinator
+                .enter(QuitPhase::AwaitingEditor { pane, confirmation }, reason);
             self.quitting = false;
-            self.quit_press_count = 0;
-            self.quit_last_press = None;
+            self.reset_keyboard_quit_confirmation();
             self.pane_navigate(pane);
             log::info!(
                 "quit: awaiting unsaved editor pane={pane} reason={}",
@@ -647,18 +697,21 @@ impl super::PlexiApp {
             return false;
         }
         let working = self.working_agent_count();
-        if !self.quitting && working > 0 {
+        if !self.quitting && !matches!(confirmation, UserQuitConfirmation::Accepted) && working > 0
+        {
             self.quit_coordinator
                 .enter(QuitPhase::ConfirmingAgents, reason);
             self.pending_quit = true;
             trace("confirmation_required");
             self.pending_close = true;
-            self.quit_press_count = 0;
-            self.quit_last_press = None;
+            self.reset_keyboard_quit_confirmation();
             log::info!("quit: confirmation required working_agents={working}");
             return false;
         }
-        true
+        match confirmation {
+            UserQuitConfirmation::Keyboard => self.advance_keyboard_quit_confirmation(),
+            UserQuitConfirmation::WorkingAgents | UserQuitConfirmation::Accepted => true,
+        }
     }
 }
 

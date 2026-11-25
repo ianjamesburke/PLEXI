@@ -10126,6 +10126,148 @@ fn unsaved_dialog_desktop_quit_targets_dirty_pane() {
     h.text_editor_mut(pane).test_discard_unsaved();
 }
 
+fn tap_keyboard_quit(h: &mut HostHarness) {
+    let modifiers = egui::Modifiers::COMMAND;
+    h.frame(egui::RawInput {
+        modifiers,
+        events: [true, false]
+            .map(|pressed| egui::Event::Key {
+                key: egui::Key::Q,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            })
+            .into(),
+        ..Default::default()
+    });
+}
+
+fn answer_keyboard_quit_editor_prompt(h: &mut HostHarness, answer: egui::Key) {
+    tap_keyboard_quit(h);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.top(),
+        Some(crate::app::FocusKind::UnsavedChanges)
+    );
+    assert!(!h.app.quitting);
+    assert_eq!(h.app.quit_press_count, 0);
+    h.app.arm_destructive_dialogs_for_test();
+    let modifiers = if answer == egui::Key::S {
+        egui::Modifiers::COMMAND
+    } else {
+        egui::Modifiers::NONE
+    };
+    h.press_key(answer, modifiers);
+}
+
+fn disable_quit_confirmation(h: &mut HostHarness) {
+    // Navigating to the dirty editor reloads config from the test profile.
+    std::fs::write(h.profile_dir().join("config.toml"), "confirm_quit = false\n").unwrap();
+    h.app.reload_config();
+}
+
+#[test]
+fn keyboard_quit_saves_editor_then_requires_normal_confirmation() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.app.config.confirm_quit = Some(true);
+    tap_keyboard_quit(&mut h);
+    let clean_quit_count = h.app.quit_press_count;
+    assert_eq!(clean_quit_count, 1);
+    h.app.quit_last_press = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+    h.run_frames(1);
+    assert_eq!(h.app.quit_press_count, 0);
+
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    answer_keyboard_quit_editor_prompt(&mut h, egui::Key::S);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "unsaved edits");
+    assert!(
+        !h.app.quitting,
+        "Save must wait for the normal quit confirmation"
+    );
+    assert_eq!(h.app.quit_press_count, clean_quit_count);
+    tap_keyboard_quit(&mut h);
+    assert_eq!(h.app.quit_press_count, 2);
+    assert!(!h.app.quitting);
+    tap_keyboard_quit(&mut h);
+    assert!(h.app.quit_coordinator.is_active());
+}
+
+#[test]
+fn keyboard_quit_discards_editor_then_requires_normal_confirmation() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.app.config.confirm_quit = Some(true);
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    answer_keyboard_quit_editor_prompt(&mut h, egui::Key::D);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+    assert!(!h.text_editor_mut(pane).open_buffer().dirty);
+    assert!(!h.app.quitting);
+    assert_eq!(h.app.quit_press_count, 1);
+    tap_keyboard_quit(&mut h);
+    assert_eq!(h.app.quit_press_count, 2);
+    assert!(!h.app.quitting);
+    tap_keyboard_quit(&mut h);
+    assert!(h.app.quit_coordinator.is_active());
+}
+
+#[test]
+fn keyboard_quit_cancel_at_editor_prompt_keeps_dirty_editor_open() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.app.config.confirm_quit = Some(true);
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    answer_keyboard_quit_editor_prompt(&mut h, egui::Key::Escape);
+    assert!(h.app.focus_stack.is_empty());
+    assert!(!h.app.quitting);
+    assert_eq!(h.app.quit_press_count, 0);
+    assert_eq!(h.app.focused_pane_id(), Some(pane));
+    let buffer = h.text_editor_mut(pane).open_buffer();
+    assert!(buffer.dirty);
+    assert_eq!(buffer.text, "unsaved edits");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+}
+
+#[test]
+fn keyboard_quit_cancel_at_normal_confirmation_keeps_resolved_editor_open() {
+    for (answer, expected) in [
+        (egui::Key::S, "unsaved edits"),
+        (egui::Key::D, "original bytes\n"),
+    ] {
+        let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+        h.app.config.confirm_quit = Some(true);
+        h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+        answer_keyboard_quit_editor_prompt(&mut h, answer);
+        assert_eq!(h.app.quit_press_count, 1);
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!h.app.quitting);
+        assert_eq!(h.app.quit_press_count, 0);
+        assert_eq!(h.app.focused_pane_id(), Some(pane));
+        let buffer = h.text_editor_mut(pane).open_buffer();
+        assert!(!buffer.dirty);
+        assert_eq!(buffer.text, expected);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+
+        tap_keyboard_quit(&mut h);
+        assert_eq!(h.app.quit_press_count, 1, "a new quit starts at one press");
+    }
+}
+
+#[test]
+fn keyboard_quit_with_confirmation_disabled_exits_after_editor_answer() {
+    for (answer, expected) in [
+        (egui::Key::S, "unsaved edits"),
+        (egui::Key::D, "original bytes\n"),
+    ] {
+        let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+        disable_quit_confirmation(&mut h);
+        h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+        answer_keyboard_quit_editor_prompt(&mut h, answer);
+        assert!(!h.app.confirm_quit());
+        assert!(h.app.quit_coordinator.is_active(), "answer={answer:?}");
+        assert_eq!(h.app.quit_press_count, 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    }
+}
+
 #[test]
 fn unsaved_dialog_failed_save_keeps_pending_close_and_buffer() {
     let (_dir, path, mut h, pane) = unsaved_editor_fixture();
@@ -10178,7 +10320,7 @@ fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
 #[test]
 fn editor_gate_keyboard_quit_waits_for_unsaved_conflict_then_resumes() {
     let mut h = HostHarness::new();
-    h.app.config.confirm_quit = Some(false);
+    disable_quit_confirmation(&mut h);
     let tmp = tempfile::tempdir().unwrap();
     let pane = open_gate_note(&mut h, tmp.path(), "seed");
     h.text_editor_mut(pane).test_set_unsaved("my poem");
@@ -10224,7 +10366,7 @@ fn editor_gate_quit_requires_a_fresh_enter_for_each_dirty_editor() {
     // Observe each delivery before a layout retry can service an accepted quit.
     h.ctx
         .options_mut(|options| options.max_passes = std::num::NonZeroUsize::MIN);
-    h.app.config.confirm_quit = Some(false);
+    disable_quit_confirmation(&mut h);
     let other_path = dir.path().join("other.txt");
     std::fs::write(&other_path, "original bytes\n").unwrap();
     let existing_panes = h.state().open_panes;
@@ -13971,6 +14113,54 @@ mod agent_boot {
             event: None,
             blocked_reason: None,
         });
+    }
+
+    fn ask_from_pane(h: &mut HostHarness, pane_id: u64) -> serde_json::Value {
+        let response_file = temp_response(&h.workspace_root(), "agent-ask");
+        h.inject_from_pane(
+            pane_id,
+            HostRequest::AgentAsk {
+                pane_id,
+                question: "Which branch?".into(),
+                response_file: response_file.clone(),
+            },
+        );
+        h.hidden_frame();
+        read_json_response(&response_file)
+    }
+
+    #[test]
+    fn agent_ask_accepts_host_launched_alias_before_any_state_report() {
+        let mut h = HostHarness::new();
+        let root = h.workspace_root();
+        h.add_test_pane();
+        let _response = spawn_agent_pane(&mut h, &root, "sleep 30", None);
+        h.hidden_frame();
+        let pane_id = spawned_terminal(&h);
+
+        let reply = ask_from_pane(&mut h, pane_id);
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn agent_ask_accepts_host_observed_harnesses() {
+        for (program, harness) in [("claude", "claude-code"), ("codex", "codex"), ("pi", "pi")] {
+            let mut h = HostHarness::new();
+            let pane_id = h.add_focused_terminal();
+            let executable = h.workspace_root().join(program);
+            std::fs::copy("/bin/sleep", &executable).unwrap();
+            let command = crate::host::shell::shell_quote(&executable.to_string_lossy());
+            write_to_terminal(&mut h, pane_id, &format!("{command} 30\n"));
+            tick_until(&mut h, pane_id, harness, |t| {
+                t.observed_agent
+                    .as_ref()
+                    .is_some_and(|a| a.agent == harness)
+            });
+
+            let reply = ask_from_pane(&mut h, pane_id);
+            assert_eq!(reply["ok"], true, "{harness}: {reply}");
+        }
     }
 
     /// The core contract: a pane id on stdout means "ready for a brief". The
@@ -17904,7 +18094,22 @@ pub(super) fn assert_claude_memory_command(
         "plexi agent hook-event --agent claude-code"
     );
     assert!(settings.get("autoMemoryEnabled").is_none());
+    assert_claude_question_permission_hook(&settings);
     assert_eq!(args, remaining_args);
+}
+
+pub(super) fn assert_claude_question_permission_hook(settings: &serde_json::Value) {
+    let hook = serde_json::json!({
+        "type": "command",
+        "command": "plexi agent hook-event --agent claude-code-question",
+        "timeout": crate::app::claude_question::HOOK_TIMEOUT_SECS,
+    });
+    assert!(settings["hooks"]["PermissionRequest"]
+        .as_array()
+        .expect("PermissionRequest hooks")
+        .iter()
+        .any(|entry| entry["matcher"] == "^AskUserQuestion$"
+            && entry["hooks"] == serde_json::json!([hook])));
 }
 
 mod agent_state_restoration_tests {
@@ -17921,6 +18126,83 @@ mod agent_state_restoration_tests {
         let mut tiles = egui_tiles::Tiles::default();
         let root = tiles.insert_pane(pane_id);
         (egui_tiles::Tree::new("test_tree", root, tiles), root)
+    }
+
+    #[cfg(unix)]
+    fn record_launch_commands(dir: &std::path::Path) -> crate::host::shell::TestShellOverrideGuard {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let script = dir.join("record-launch.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$#\" -eq 3 ]; then\n  out=\"${0%/*}/launch-${PLEXI_PANE_ID}\"\n  printf '%s' \"$3\" > \"$out.tmp\"\n  /bin/mv \"$out.tmp\" \"$out\"\nfi\nexec /bin/cat >/dev/null\n",
+        )
+        .expect("write recording shell");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("make recording shell executable");
+        crate::host::shell::set_test_shell_override(script.to_string_lossy())
+    }
+
+    #[cfg(unix)]
+    fn recorded_launch_command(dir: &std::path::Path, pane_id: u64) -> String {
+        let path = dir.join(format!("launch-{pane_id}"));
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        loop {
+            match std::fs::read_to_string(&path) {
+                Ok(command) => return command,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    assert!(std::time::Instant::now() < deadline, "shell did not record launch");
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("could not read recorded launch: {error}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_claude_resume_hooks(command: &str, session_id: &str) {
+        let settings = crate::config::shared_dir().join("hooks/plexi-claude-settings.json");
+        let settings_arg = crate::host::shell::shell_quote(&settings.to_string_lossy());
+        assert!(
+            command.contains(&format!("claude --settings {settings_arg} ")),
+            "Claude resume must pass --settings"
+        );
+        assert!(command.contains(&format!(" --resume {session_id}")));
+        let json: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(settings).expect("read Claude settings passed to the shell"),
+        )
+        .expect("parse Claude settings");
+        assert_claude_question_permission_hook(&json);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn claude_reopen_launch_includes_question_hooks() {
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _shell = record_launch_commands(tmp.path());
+        let mut h = HostHarness::new();
+        h.add_focused_terminal();
+        let sid = "sess-claude-reopen";
+        let mut record = researcher_history_record(tmp.path(), sid, "claude");
+        record.config_name = None;
+        crate::workspace::append_agent_history_to(h.profile_dir(), &record)
+            .expect("seed closed Claude run");
+        let reply = temp_response(tmp.path(), "agent-reopen");
+        h.inject_in_process(HostRequest::AgentReopen {
+            query: record.run_id,
+            subcontext: None,
+            response_file: reply.clone(),
+        });
+        h.hidden_frame();
+
+        let reply = read_json_response(&reply);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["command"], format!("claude --resume {sid}"));
+        let pane_id = reply["pane_id"].as_u64().expect("reopened pane id");
+        assert_claude_resume_hooks(&recorded_launch_command(tmp.path(), pane_id), sid);
     }
 
     #[test]
@@ -17988,8 +18270,6 @@ mod agent_state_restoration_tests {
             .unwrap()
             .join("shared/agent_memory/lead");
         let tmp = tempfile::tempdir().expect("tempdir");
-        #[cfg(unix)]
-        let _shell = use_inert_agent_shell(tmp.path());
         let claude_store = tmp.path().join("claude-projects");
         std::fs::create_dir_all(claude_store.join("-proj")).unwrap();
         std::fs::write(
@@ -18248,6 +18528,8 @@ mod agent_state_restoration_tests {
         .with_strips_from_windows();
 
         ws.save_to(profile_dir.path()).expect("save workspace");
+        #[cfg(unix)]
+        let _shell = record_launch_commands(tmp.path());
         let mut h = HostHarness::from_profile_dir(profile_dir.path());
 
         // 1. Ephemeral Completed pane (30) and its empty sub-context (3) + portal (12) are pruned.
@@ -18287,6 +18569,18 @@ mod agent_state_restoration_tests {
         );
         assert!(recorded_memory.is_dir());
         assert!(!tmp.path().join(".plexi/agent_memory/lead").exists());
+        #[cfg(unix)]
+        {
+            let launch = recorded_launch_command(tmp.path(), 10);
+            let (command, _) = launch
+                .split_once("; exec ")
+                .expect("interactive shell suffix");
+            assert_claude_memory_command(
+                command,
+                &recorded_memory,
+                " --verbose --resume sess-active-10",
+            );
+        }
         assert_eq!(
             active_term.agent.as_ref().map(|a| &a.state),
             Some(&AgentState::Interrupted),
@@ -18448,6 +18742,40 @@ mod agent_state_restoration_tests {
             terminal.last_resumed_command.as_deref(),
             Some("codex resume thread-enter")
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn claude_standby_wake_sends_question_hooks_to_pty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _shell = record_launch_commands(tmp.path());
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let sid = "sess-claude-standby";
+        let store = tmp.path().join("claude-projects");
+        std::fs::create_dir_all(store.join("-proj")).expect("create test project");
+        std::fs::write(store.join("-proj").join(format!("{sid}.jsonl")), "{}\n")
+            .expect("seed Claude transcript");
+        let _claude_guard = crate::cli::agent::set_test_claude_projects_dir(store);
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(Pane::as_terminal_mut)
+            .expect("terminal pane");
+        terminal.standby_session = Some(serde_json::from_value(serde_json::json!({
+            "harness": "claude", "session_id": sid, "last_state": AgentState::Idle,
+        })).expect("saved Claude session"));
+        terminal.backend.enable_input_tap();
+        h.inject_ipc(HostRequest::KeyPane {
+            pane_id,
+            key: "enter".to_string(),
+            response_file: None,
+        });
+        h.hidden_frame();
+
+        let command = String::from_utf8(h.terminal_backend(pane_id).take_input_tap())
+            .expect("resume command is UTF-8");
+        assert_claude_resume_hooks(&command, sid);
     }
 
     #[test]

@@ -1,14 +1,19 @@
 """Isolated evidence invalidation, ownership and real-Cargo cache controls."""
+from contextlib import redirect_stdout
+import fcntl
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from fixture_env import utf8_env
 
@@ -22,6 +27,71 @@ def module(name):
 
 EVIDENCE = module('build-evidence')
 CACHE = module('build-cache')
+
+@unittest.skipUnless(sys.platform == 'darwin', 'APFS clone requires macOS')
+class CodexTargetSeed(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir=ROOT)
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.worktree = self.root / 'worktree'
+        self.worktree.mkdir()
+        (self.worktree / 'Cargo.lock').write_text(
+            '[[package]]\nname = "plexi"\nversion = "0.1.0"\n'
+        )
+        self.source = self.root / 'warm' / 'debug'
+        for name in ('plexi-123', 'registry-lib-456'):
+            fingerprint = self.source / '.fingerprint' / name
+            fingerprint.mkdir(parents=True)
+            (fingerprint / 'lib').write_text(name)
+        self.target = self.worktree / 'target'
+
+    def seed(self):
+        return subprocess.run(
+            [sys.executable, str(ROOT / 'scripts' / 'build-cache.py'),
+             'seed-codex', str(self.source), str(self.worktree)],
+            env={**os.environ, 'PLEXI_BUILD_MIN_FREE_BYTES': '1',
+                 'PLEXI_BUILD_CACHE_ROOT': str(self.root / 'cache')},
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+    def test_seeds_empty_target_and_invalidates_only_path_packages(self):
+        self.target.mkdir()
+        self.assertIn('seeded', self.seed())
+        fingerprints = self.target / 'debug' / '.fingerprint'
+        registry_artifact = fingerprints / 'registry-lib-456' / 'lib'
+        self.assertEqual(registry_artifact.read_text(), 'registry-lib-456')
+        self.assertFalse((fingerprints / 'plexi-123').exists())
+        registry_artifact.write_text('worktree')
+        self.assertEqual((self.source / '.fingerprint' / 'registry-lib-456' / 'lib').read_text(),
+                         'registry-lib-456')
+
+    def test_missing_warm_target_is_a_no_op(self):
+        shutil.rmtree(self.source)
+        self.assertIn('no warm target', self.seed())
+        self.assertFalse(self.target.exists())
+
+    def test_disk_floor_reserves_seed_size(self):
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {'PLEXI_BUILD_MIN_FREE_BYTES': '99'}), \
+                mock.patch.object(CACHE, 'free_bytes', return_value=100), redirect_stdout(output):
+            CACHE.seed_codex(self.source, self.worktree)
+        self.assertIn('PLEXI_BUILD_MIN_FREE_BYTES=99', output.getvalue())
+        self.assertFalse(self.target.exists())
+
+    def test_busy_warm_target_is_a_no_op(self):
+        with (self.source / '.cargo-build-lock').open('wb') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assertIn('warm target busy', self.seed())
+        self.assertFalse(self.target.exists())
+
+    def test_existing_target_is_preserved(self):
+        self.target.mkdir()
+        (self.target / 'existing').write_text('keep')
+        self.assertIn('target already populated', self.seed())
+        self.assertEqual(list(self.target.iterdir()), [self.target / 'existing'])
+        self.assertEqual((self.target / 'existing').read_text(), 'keep')
+
 
 class Lifecycle(unittest.TestCase):
     def setUp(self):

@@ -835,6 +835,19 @@ fn admission_legacy_claude_paths_are_ignored_on_reopen_and_restart() {
         "claude",
     ))
     .unwrap();
+    let assert_legacy_resume = |pane| {
+        let argv = captured_argv(fx.home.path(), pane);
+        let [settings_flag, settings_path, resume_flag, session_id] = argv.as_slice() else {
+            panic!("expected one settings file and the legacy session ID: {argv:?}");
+        };
+        assert_eq!(settings_flag, "--settings");
+        assert_eq!(resume_flag, "--resume");
+        assert_eq!(session_id, "legacy-claude");
+        let settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(settings_path).unwrap()).unwrap();
+        assert!(settings.get("autoMemoryDirectory").is_none());
+        super::harness_tests::assert_claude_question_permission_hook(&settings);
+    };
     for mut json in [expired, legacy] {
         json["claude_memory_dir"] = serde_json::json!(old);
         let record = serde_json::from_value(json).unwrap();
@@ -846,17 +859,11 @@ fn admission_legacy_claude_paths_are_ignored_on_reopen_and_restart() {
         );
         assert_eq!(reply["ok"], true, "{reply}");
         let pane = reply["pane_id"].as_u64().unwrap();
-        assert_eq!(
-            captured_argv(fx.home.path(), pane),
-            ["--resume", "legacy-claude"]
-        );
+        assert_legacy_resume(pane);
         assert!(h.app.save_workspace_now());
         drop(h);
         h = HostHarness::from_profile_dir(&fx.profile_dir);
-        assert_eq!(
-            captured_argv(fx.home.path(), pane),
-            ["--resume", "legacy-claude"]
-        );
+        assert_legacy_resume(pane);
         h.app.close_pane_by_id(pane);
     }
     assert!(!old.exists());

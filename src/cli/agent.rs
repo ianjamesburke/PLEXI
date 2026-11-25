@@ -3539,6 +3539,30 @@ pub fn with_auto_state_hooks(adapter: &HarnessAdapter, command: String) -> Strin
     }
 }
 
+/// Add the fresh-launch hook settings to a Claude resume without a memory binding.
+/// A validated memory binding already supplies these hooks in its inline settings.
+pub(crate) fn with_claude_resume_hooks(
+    harness: Option<AgentHarness>,
+    command: &str,
+    session_id: Option<&str>,
+    memory_is_bound: bool,
+) -> String {
+    // Match the adapter's final resume suffix so bare restore fallbacks stay bare.
+    if !memory_is_bound
+        && harness == Some(AgentHarness::Claude)
+        && session_id.is_some_and(|sid| {
+            command.ends_with(&format!(" --resume {}", shell_quote_arg(sid.trim())))
+        })
+    {
+        let launch_command = with_auto_state_hooks(AgentHarness::Claude.adapter(), command.into());
+        if launch_command != command {
+            log::info!("agent_hook: attached Claude resume settings");
+        }
+        return launch_command;
+    }
+    command.into()
+}
+
 fn install_claude_code_hooks(script_str: &str) -> i32 {
     let settings_path = claude_settings_path();
     let code = install_json_agent_hooks(

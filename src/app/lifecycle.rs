@@ -770,6 +770,12 @@ impl PlexiApp {
                     record.config_name.as_deref(),
                     record.ephemeral,
                 )?;
+                let launch_command = crate::cli::agent::with_claude_resume_hooks(
+                    crate::cli::AgentHarness::parse(&record.harness),
+                    &resume_cmd,
+                    record.session_id.as_deref(),
+                    record.claude_memory.is_some(),
+                );
                 self.launch_agent_worker(
                     crate::pane_ops::create::AgentWorkerLaunch {
                         grant: crate::pane_ops::create::AgentWorkerGrant {
@@ -781,7 +787,7 @@ impl PlexiApp {
                         spawned_by: None,
                         role: &role,
                         harness: &record.harness,
-                        command: &resume_cmd,
+                        command: &launch_command,
                         claude_memory: record.claude_memory.clone(),
                         task: record.summary.as_deref().unwrap_or_default(),
                         ephemeral: false,
@@ -5844,10 +5850,11 @@ impl PlexiApp {
                     self.refuse_cross_pane("agent_ask", &error, *pane_id, response_file);
                     return;
                 }
-                if !self
-                    .terminal_incarnation(*pane_id)
-                    .is_some_and(crate::host::pane::TerminalPane::is_agent_pane)
-                {
+                // The launch record and foreground detector are the host's
+                // sources of agent identity for this gate.
+                if !self.terminal_incarnation(*pane_id).is_some_and(|t| {
+                    !t.exited && (t.agent_launch.is_some() || t.observed_agent.is_some())
+                }) {
                     log::info!("pane_ipc: kind=agent_ask refused pane_id={pane_id} reason=agent_terminal_required");
                     write_json_response(
                         response_file,

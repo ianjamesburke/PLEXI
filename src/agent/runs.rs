@@ -1479,8 +1479,8 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
             let id = payload.get("id").and_then(|v| v.as_str()).unwrap_or("");
             // Finishing only removes authority. A run whose owner left with an
             // earlier host can be stopped by any admitted caller, as on alpha,
-            // so a restart never strands its agent (stint 1743). Reissuing its
-            // token still needs the host.
+            // so a restart never strands its agent (stint 1743). Recovery
+            // acknowledges the finish without exposing the prior run record.
             let ownerless = !run_owners()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1490,7 +1490,11 @@ pub(crate) fn handle_request(op: &str, payload: &Value, caller: &AgentsCaller) -
             } else if let Err(refused) = require_run_owner(id, caller) {
                 return refused;
             }
-            finish_run(&workspace, id)
+            match finish_run(&workspace, id) {
+                Ok(_) if ownerless => json!({"ok": true}),
+                Ok(run) => json!({"ok": true, "run": run}),
+                Err(error) => error,
+            }
         }
         "delegate" => {
             let parent_run = payload
@@ -1603,27 +1607,19 @@ fn list_grants(workspace: &Path, caller: &AgentsCaller) -> Value {
     json!({"ok": true, "grants": rows})
 }
 
-fn finish_run(workspace: &Path, id: &str) -> Value {
+fn finish_run(workspace: &Path, id: &str) -> Result<RunRecord, Value> {
     let finished = {
         let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
-        let mut runs = match load_runs(workspace) {
-            Ok(runs) => runs,
-            Err(error) => return json!({"ok": false, "error_code": "io_error", "error": error}),
-        };
-        let Some(run) = runs.iter_mut().find(|run| run.id == id) else {
-            return json!({"ok": false, "error_code": "run_not_found", "error": format!("no run '{id}'")});
-        };
+        let mut run = find_run(workspace, id)?;
         run.active = false;
         run.state = "finished".to_string();
-        let finished = run.clone();
-        if let Err(error) = append_run_record(workspace, &finished) {
-            return json!({"ok": false, "error_code": "io_error", "error": error});
-        }
-        finished
+        append_run_record(workspace, &run)
+            .map_err(|error| json!({"ok": false, "error_code": "io_error", "error": error}))?;
+        run
     };
-    host_gate!().revoke_run_grants(id);
+    monitor()?.revoke_run_grants(id);
     log::info!("agents_api: finished run {id}");
-    json!({"ok": true, "run": finished})
+    Ok(finished)
 }
 
 fn delegate(
@@ -3108,20 +3104,26 @@ mod tests {
 
     /// Codex 3290 r3 ruling A: a run's owner is kept in memory while the
     /// host lives and nothing is written to the grant store on start or
-    /// finish. A stranger is refused a live owned run; the owner's replayed
-    /// finish answers as alpha's did. After a restart (the run's record is
-    /// gone) alpha's rules apply: no owner check. Durable ownership is stint
-    /// 1716.
+    /// finish. A stranger is refused a live owned run; the owner gets the
+    /// finished record, including on replay. After a restart the in-memory
+    /// owner is gone and recovery acknowledges cancellation without exposing
+    /// the persisted record. Durable ownership is stint 1716.
     #[test]
     fn run_ownership_lives_with_the_host_and_ownerless_runs_can_only_be_stopped() {
         let fix = Fixture::new();
         create(&fix, "worker", &["agents.ping=ask"]);
-        let grants = crate::config::config_dir().join("grants.toml");
-        let snapshot = || fs::read(&grants).ok();
+        let grant_file = crate::config::config_dir().join("grants.toml");
+        let snapshot = || fs::read(&grant_file).ok();
         let before = snapshot();
         let owner = pane_caller(42, None);
         let stranger = pane_caller(43, None);
-        let start = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-owned-live"});
+        let client_ref = "test/owner-client-ref";
+        let start = json!({
+            "workspace": fix.ws(),
+            "agent": "worker",
+            "admission": "adm-owned-live",
+            "client_ref": client_ref,
+        });
         let started = handle_request("spawn_run", &start, &owner);
         assert_eq!(started["ok"], true, "{started}");
         let run_id = started["run"]["id"].as_str().unwrap().to_string();
@@ -3136,16 +3138,27 @@ mod tests {
         let retry = handle_request("spawn_run", &start, &owner);
         assert_eq!(retry["run_token"], started["run_token"], "{retry}");
 
-        // The owner's finish, then its replay: both answer as alpha's did.
+        // The owner still receives the full record, including on replay.
+        let mut expected_run = started["run"].clone();
+        expected_run["active"] = json!(false);
+        expected_run["state"] = json!("finished");
+        let expected_finish = json!({"ok": true, "run": expected_run});
         let finished = handle_request("finish_run", &finish, &owner);
-        assert_eq!(finished["ok"], true, "{finished}");
+        assert_eq!(finished, expected_finish);
         let replayed = handle_request("finish_run", &finish, &owner);
-        assert_eq!(replayed["ok"], true, "a replayed finish answers as alpha: {replayed}");
+        assert_eq!(replayed, expected_finish);
         assert_eq!(snapshot(), before, "run start and finish wrote the grant store");
 
         // A pane needs its original live ownership link after a restart.
-        let restarted = json!({"workspace": fix.ws(), "agent": "worker", "admission": "adm-restart"});
+        let restarted = json!({
+            "workspace": fix.ws(),
+            "agent": "worker",
+            "admission": "adm-restart",
+            "client_ref": client_ref,
+        });
         let second = handle_request("spawn_run", &restarted, &owner);
+        assert_eq!(second["run"]["client_ref"], client_ref);
+        assert_eq!(second["run"]["grants"], json!(grants(&["agents.ping=ask"])));
         let second_id = second["run"]["id"].as_str().unwrap().to_string();
         forget_run_for_test(&second_id);
         let retry = handle_request("spawn_run", &restarted, &owner);
@@ -3163,7 +3176,7 @@ mod tests {
             &json!({"workspace": fix.ws(), "id": second_id}),
             &stranger,
         );
-        assert_eq!(finished["ok"], true, "{finished}");
+        assert_eq!(finished, json!({"ok": true}), "ownerless cancellation reply");
         assert!(!find_run(fix.ws(), &second_id).unwrap().active);
         let next = handle_request(
             "spawn_run",
