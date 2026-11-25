@@ -4259,6 +4259,14 @@ impl eframe::App for PlexiApp {
                 .collect()
         });
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+        // Cancel the quit toast before the editor or pane can claim Escape.
+        if self.quit_press_count > 0
+            && self.confirm_quit()
+            && router_input.consume_key_exact(egui::Modifiers::NONE, egui::Key::Escape)
+        {
+            self.reset_keyboard_quit_confirmation();
+            quit::trace("keyboard_confirmation_cancelled");
+        }
         // Native popup dismissal owns bare Escape before the view/CloseView
         // handlers. Otherwise a dropdown can close its entire parent pane.
         if egui::Popup::is_any_open(ctx)
@@ -4800,30 +4808,7 @@ impl PlexiApp {
                 self.mark_workspace_dirty();
             }
             Action::ToggleZoom => self.toggle_pane_zoom(),
-            Action::Quit => {
-                quit::trace("quit_action");
-                if !self.prepare_user_quit() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                } else if !self.confirm_quit() {
-                    self.request_quit(quit::ExitReason::WindowClosed);
-                } else {
-                    let now = std::time::Instant::now();
-                    let elapsed = self
-                        .quit_last_press
-                        .map(|t| now.duration_since(t))
-                        .unwrap_or(std::time::Duration::MAX);
-                    if elapsed > std::time::Duration::from_millis(1500) {
-                        self.quit_press_count = 0;
-                    }
-                    self.quit_press_count += 1;
-                    self.quit_last_press = Some(now);
-                    if self.quit_press_count >= 3 {
-                        self.quit_press_count = 0;
-                        self.quit_last_press = None;
-                        self.request_quit(quit::ExitReason::WindowClosed);
-                    }
-                }
-            }
+            Action::Quit => self.request_keyboard_quit(ctx),
             Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             Action::ToggleShortcuts => {
                 self.show_shortcuts = !self.show_shortcuts;

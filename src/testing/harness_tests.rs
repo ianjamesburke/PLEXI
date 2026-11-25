@@ -10126,6 +10126,148 @@ fn unsaved_dialog_desktop_quit_targets_dirty_pane() {
     h.text_editor_mut(pane).test_discard_unsaved();
 }
 
+fn tap_keyboard_quit(h: &mut HostHarness) {
+    let modifiers = egui::Modifiers::COMMAND;
+    h.frame(egui::RawInput {
+        modifiers,
+        events: [true, false]
+            .map(|pressed| egui::Event::Key {
+                key: egui::Key::Q,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            })
+            .into(),
+        ..Default::default()
+    });
+}
+
+fn answer_keyboard_quit_editor_prompt(h: &mut HostHarness, answer: egui::Key) {
+    tap_keyboard_quit(h);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.top(),
+        Some(crate::app::FocusKind::UnsavedChanges)
+    );
+    assert!(!h.app.quitting);
+    assert_eq!(h.app.quit_press_count, 0);
+    h.app.arm_destructive_dialogs_for_test();
+    let modifiers = if answer == egui::Key::S {
+        egui::Modifiers::COMMAND
+    } else {
+        egui::Modifiers::NONE
+    };
+    h.press_key(answer, modifiers);
+}
+
+fn disable_quit_confirmation(h: &mut HostHarness) {
+    // Navigating to the dirty editor reloads config from the test profile.
+    std::fs::write(h.profile_dir().join("config.toml"), "confirm_quit = false\n").unwrap();
+    h.app.reload_config();
+}
+
+#[test]
+fn keyboard_quit_saves_editor_then_requires_normal_confirmation() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.app.config.confirm_quit = Some(true);
+    tap_keyboard_quit(&mut h);
+    let clean_quit_count = h.app.quit_press_count;
+    assert_eq!(clean_quit_count, 1);
+    h.app.quit_last_press = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+    h.run_frames(1);
+    assert_eq!(h.app.quit_press_count, 0);
+
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    answer_keyboard_quit_editor_prompt(&mut h, egui::Key::S);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "unsaved edits");
+    assert!(
+        !h.app.quitting,
+        "Save must wait for the normal quit confirmation"
+    );
+    assert_eq!(h.app.quit_press_count, clean_quit_count);
+    tap_keyboard_quit(&mut h);
+    assert_eq!(h.app.quit_press_count, 2);
+    assert!(!h.app.quitting);
+    tap_keyboard_quit(&mut h);
+    assert!(h.app.quit_coordinator.is_active());
+}
+
+#[test]
+fn keyboard_quit_discards_editor_then_requires_normal_confirmation() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.app.config.confirm_quit = Some(true);
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    answer_keyboard_quit_editor_prompt(&mut h, egui::Key::D);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+    assert!(!h.text_editor_mut(pane).open_buffer().dirty);
+    assert!(!h.app.quitting);
+    assert_eq!(h.app.quit_press_count, 1);
+    tap_keyboard_quit(&mut h);
+    assert_eq!(h.app.quit_press_count, 2);
+    assert!(!h.app.quitting);
+    tap_keyboard_quit(&mut h);
+    assert!(h.app.quit_coordinator.is_active());
+}
+
+#[test]
+fn keyboard_quit_cancel_at_editor_prompt_keeps_dirty_editor_open() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.app.config.confirm_quit = Some(true);
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    answer_keyboard_quit_editor_prompt(&mut h, egui::Key::Escape);
+    assert!(h.app.focus_stack.is_empty());
+    assert!(!h.app.quitting);
+    assert_eq!(h.app.quit_press_count, 0);
+    assert_eq!(h.app.focused_pane_id(), Some(pane));
+    let buffer = h.text_editor_mut(pane).open_buffer();
+    assert!(buffer.dirty);
+    assert_eq!(buffer.text, "unsaved edits");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+}
+
+#[test]
+fn keyboard_quit_cancel_at_normal_confirmation_keeps_resolved_editor_open() {
+    for (answer, expected) in [
+        (egui::Key::S, "unsaved edits"),
+        (egui::Key::D, "original bytes\n"),
+    ] {
+        let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+        h.app.config.confirm_quit = Some(true);
+        h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+        answer_keyboard_quit_editor_prompt(&mut h, answer);
+        assert_eq!(h.app.quit_press_count, 1);
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!h.app.quitting);
+        assert_eq!(h.app.quit_press_count, 0);
+        assert_eq!(h.app.focused_pane_id(), Some(pane));
+        let buffer = h.text_editor_mut(pane).open_buffer();
+        assert!(!buffer.dirty);
+        assert_eq!(buffer.text, expected);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+
+        tap_keyboard_quit(&mut h);
+        assert_eq!(h.app.quit_press_count, 1, "a new quit starts at one press");
+    }
+}
+
+#[test]
+fn keyboard_quit_with_confirmation_disabled_exits_after_editor_answer() {
+    for (answer, expected) in [
+        (egui::Key::S, "unsaved edits"),
+        (egui::Key::D, "original bytes\n"),
+    ] {
+        let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+        disable_quit_confirmation(&mut h);
+        h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+        answer_keyboard_quit_editor_prompt(&mut h, answer);
+        assert!(!h.app.confirm_quit());
+        assert!(h.app.quit_coordinator.is_active(), "answer={answer:?}");
+        assert_eq!(h.app.quit_press_count, 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    }
+}
+
 #[test]
 fn unsaved_dialog_failed_save_keeps_pending_close_and_buffer() {
     let (_dir, path, mut h, pane) = unsaved_editor_fixture();
@@ -10178,7 +10320,7 @@ fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
 #[test]
 fn editor_gate_keyboard_quit_waits_for_unsaved_conflict_then_resumes() {
     let mut h = HostHarness::new();
-    h.app.config.confirm_quit = Some(false);
+    disable_quit_confirmation(&mut h);
     let tmp = tempfile::tempdir().unwrap();
     let pane = open_gate_note(&mut h, tmp.path(), "seed");
     h.text_editor_mut(pane).test_set_unsaved("my poem");
@@ -10224,7 +10366,7 @@ fn editor_gate_quit_requires_a_fresh_enter_for_each_dirty_editor() {
     // Observe each delivery before a layout retry can service an accepted quit.
     h.ctx
         .options_mut(|options| options.max_passes = std::num::NonZeroUsize::MIN);
-    h.app.config.confirm_quit = Some(false);
+    disable_quit_confirmation(&mut h);
     let other_path = dir.path().join("other.txt");
     std::fs::write(&other_path, "original bytes\n").unwrap();
     let existing_panes = h.state().open_panes;

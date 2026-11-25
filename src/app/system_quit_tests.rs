@@ -47,8 +47,12 @@ fn open_unsaved_editor(h: &mut HostHarness, path: &Path) -> PaneId {
     pane
 }
 
+fn tap_cmd_q(h: &mut HostHarness) {
+    h.frame(crate::app::key_str_to_egui_raw_input("cmd+q").expect("Cmd+Q maps to key events"));
+}
+
 fn cmd_q(h: &mut HostHarness) {
-    h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
+    tap_cmd_q(h);
     assert!(!h.app.quit_coordinator.is_active());
     h.run_frames(2);
     assert_unsaved_prompt(h);
@@ -67,7 +71,17 @@ fn discard(h: &mut HostHarness) {
     h.press_key(egui::Key::D, egui::Modifiers::NONE);
 }
 
-/// Each accepting answer must reach the real process exit through App::logic.
+fn confirm_cmd_q(h: &mut HostHarness) {
+    assert!(!h.app.quit_coordinator.is_active());
+    assert_eq!(h.app.quit_press_count, 1);
+    tap_cmd_q(h);
+    assert!(!h.app.quit_coordinator.is_active());
+    assert_eq!(h.app.quit_press_count, 2);
+    tap_cmd_q(h);
+    assert!(h.app.quit_coordinator.is_active());
+}
+
+/// The editor answer and the confirmed Cmd+Q must reach the process exit through App::logic.
 #[test]
 fn cmd_q_unsaved_answers_resume_quit() {
     const CHILD: &str = "PLEXI_TEST_CMD_Q_UNSAVED_CHILD";
@@ -95,7 +109,7 @@ fn cmd_q_unsaved_answers_resume_quit() {
             assert_eq!(h.app.focused_pane_id(), Some(next));
             discard(&mut h);
         }
-        assert!(h.app.quit_coordinator.is_active(), "Quit did not resume");
+        confirm_cmd_q(&mut h);
         assert_eq!(
             h.app.quit_coordinator.reason,
             Some(ExitReason::WindowClosed)
@@ -215,10 +229,7 @@ fn cmd_q_unsaved_failed_save_keeps_the_decision_pending() {
     assert_unsaved_prompt(&h);
     assert!(h.text_editor_mut(pane).open_buffer().dirty);
     discard(&mut h);
-    assert!(
-        h.app.quit_coordinator.is_active(),
-        "Discard did not resume quit"
-    );
+    confirm_cmd_q(&mut h);
     assert_eq!(
         h.app.quit_coordinator.reason,
         Some(ExitReason::WindowClosed)
