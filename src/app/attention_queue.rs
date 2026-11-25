@@ -774,16 +774,22 @@ impl PlexiApp {
                     } else {
                         default_ask_options()
                     };
-                    // A pane lifetime ends with the pane or a host restart, so
-                    // no standing grant is offered to it (stint 1743).
-                    if is_secret || pending.owner.pane().is_some() {
-                        options
-                            .into_iter()
-                            .filter(|o| o.key != "allow_always")
-                            .collect()
-                    } else {
-                        options
-                    }
+                    options
+                        .into_iter()
+                        .filter_map(|mut option| {
+                            if option.key == "allow_always" {
+                                if is_secret {
+                                    return None;
+                                }
+                                if !ApprovalChoice::Always.allowed_for(&pending.owner) {
+                                    pending.owner.pane()?;
+                                    option.key = "allow_session".to_string();
+                                    option.label = "Allow until this pane closes".to_string();
+                                }
+                            }
+                            Some(option)
+                        })
+                        .collect()
                 },
                 created_at_ms: created_ms,
                 locked: false,
@@ -1835,6 +1841,7 @@ impl PlexiApp {
                 };
                 let choice = match option.key.as_str() {
                     "allow_always" => ApprovalChoice::Always,
+                    "allow_session" => ApprovalChoice::Session,
                     "deny" => ApprovalChoice::Deny,
                     _ => ApprovalChoice::Once,
                 };
@@ -2910,7 +2917,7 @@ mod tests {
     /// Stint 1743: a pane lifetime is offered once or deny, never a
     /// standing allow, whatever it asks for; a named agent keeps Always.
     #[test]
-    fn a_pane_owner_is_offered_no_standing_allow() {
+    fn a_pane_owner_is_offered_a_pane_lifetime_allow() {
         let mut h = HostHarness::new();
         let pane = h.add_focused_terminal();
         let root = crate::platform::path::canonical_or_self(&h.workspace_root());
@@ -2965,8 +2972,8 @@ mod tests {
                 .map(|o| o.key.clone())
                 .collect()
         };
-        assert_eq!(keys(&asks[0]), ["allow_once", "deny"]);
-        assert_eq!(keys(&asks[1]), ["allow_once", "deny"]);
+        assert_eq!(keys(&asks[0]), ["allow_once", "allow_session", "deny"]);
+        assert_eq!(keys(&asks[1]), ["allow_once", "allow_session", "deny"]);
         assert_eq!(keys(&asks[2]), ["allow_once", "allow_always", "deny"]);
     }
 

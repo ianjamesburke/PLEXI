@@ -198,6 +198,23 @@ impl GrantRecord {
             || matches!(self.run_requester_pane, Some(RunRequester::LegacyNumber(_)))
     }
 
+    fn has_pane_owner(&self) -> bool {
+        self.actor.kind() == ActorType::Pane || self.owner().pane().is_some()
+    }
+
+    fn belongs_to_pane(&self, pane: &principal::PanePrincipal) -> bool {
+        (self.actor.kind() == ActorType::Pane && self.actor.id() == pane.actor_id())
+            || self.owner().pane() == Some(pane)
+    }
+
+    fn is_durable(&self) -> bool {
+        !self.has_pane_owner()
+            && (self.is_legacy_pane_history()
+                || (self.owner().grant_lifetime() == principal::GrantLifetime::Durable
+                    && self.source != GrantSource::Session
+                    && !matches!(self.duration, GrantDuration::Once | GrantDuration::Session)))
+    }
+
     pub(crate) fn owner(&self) -> principal::RecordOwner {
         match &self.run_requester_pane {
             Some(RunRequester::Pane(owner)) => principal::RecordOwner::Pane(owner.clone()),
@@ -1035,11 +1052,49 @@ impl TargetRule {
 
 // ── GrantStore ────────────────────────────────────────────────────────────────
 
-/// On-disk shape of `grants.toml`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// The verified input shape of `grants.toml`, also used for the live rows.
+#[derive(Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
 struct GrantStoreData {
     #[serde(default)]
     records: Vec<GrantRecord>,
+}
+
+/// The only live-store projection accepted by the grants sealer.
+mod durable_snapshot {
+    use super::{custody, seal, GrantRecord, Path, Serialize, STORE_LABEL};
+
+    #[derive(Serialize)]
+    #[serde(transparent)]
+    struct DurableGrant<'a>(&'a GrantRecord);
+
+    impl<'a> DurableGrant<'a> {
+        fn checked(record: &'a GrantRecord) -> Option<Self> {
+            record.is_durable().then_some(Self(record))
+        }
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct DurableGrantSnapshot<'a> {
+        records: Vec<DurableGrant<'a>>,
+    }
+
+    impl<'a> DurableGrantSnapshot<'a> {
+        pub(super) fn checked(records: &'a [GrantRecord]) -> Self {
+            Self {
+                records: records.iter().filter_map(DurableGrant::checked).collect(),
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn is_empty(&self) -> bool {
+            self.records.is_empty()
+        }
+
+        pub(super) fn seal(&self, host: &custody::HostProcess, path: &Path) -> Result<(), String> {
+            seal::write_toml(host, path, STORE_LABEL, self)
+        }
+    }
 }
 
 /// Loads, evaluates, and persists generalized grants in
@@ -1051,6 +1106,7 @@ struct GrantStoreData {
 pub struct GrantStore {
     file: TomlStore<GrantStoreData>,
     untrusted: Vec<seal::IntegrityFault>,
+    retired_panes: std::collections::HashSet<String>,
     /// Set only by the sealed loader. A store without it is in-memory and
     /// never touches disk (stint 1291).
     custody: Option<custody::HostProcess>,
@@ -1061,6 +1117,7 @@ impl Default for GrantStore {
         Self {
             file: TomlStore::detached(STORE_LABEL),
             untrusted: Vec::new(),
+            retired_panes: Default::default(),
             custody: None,
         }
     }
@@ -1110,6 +1167,7 @@ impl GrantStore {
                         GrantStoreData::default(),
                     ),
                     untrusted: Vec::new(),
+                    retired_panes: Default::default(),
                     custody: Some(*host),
                 };
             }
@@ -1127,6 +1185,7 @@ impl GrantStore {
         }
         let rejected = loaded.fault.is_some() || (existed && !loaded.trusted);
         let mut data = loaded.data;
+        data.records.retain(|row| !row.has_pane_owner());
         fill_capability_grant_ids(&mut data.records);
         drop_once_grants(&mut data.records);
         let legacy = data.records.iter().filter(|row| row.is_legacy_pane_history()).count();
@@ -1141,6 +1200,7 @@ impl GrantStore {
         let mut store = Self {
             file: TomlStore::at(path, STORE_LABEL, data),
             untrusted,
+            retired_panes: Default::default(),
             custody: Some(*host),
         };
         if rejected {
@@ -1242,6 +1302,27 @@ impl GrantStore {
         added
     }
 
+    /// Keep closed identities retired when the verified disk state is reloaded.
+    pub(super) fn replace_loaded(&mut self, mut loaded: Self) {
+        loaded.retired_panes = std::mem::take(&mut self.retired_panes);
+        *self = loaded;
+    }
+
+    pub(super) fn retire_pane(&mut self, pane: &principal::PanePrincipal) {
+        self.retired_panes.insert(pane.actor_id().to_owned());
+        self.records_mut().retain(|record| !record.belongs_to_pane(pane));
+    }
+
+    pub(super) fn ensure_owner_active(&self, owner: &principal::RecordOwner) -> Result<(), String> {
+        if owner
+            .pane()
+            .is_some_and(|pane| self.retired_panes.contains(pane.actor_id()))
+        {
+            return Err("the requesting pane has closed".to_string());
+        }
+        Ok(())
+    }
+
     /// Append-or-replace a grant. An existing record with the same identity
     /// (actor, target, workspace, source) is replaced so user decisions
     /// update in place instead of accumulating contradictions.
@@ -1254,7 +1335,9 @@ impl GrantStore {
             );
             return;
         }
-        self.insert_record(record);
+        if let Err(error) = self.insert_record(record) {
+            log::info!("grant_store: grant refused: {error}");
+        }
     }
 
     /// Record a row the person decided, on the evidence the surface showing
@@ -1262,21 +1345,78 @@ impl GrantStore {
     pub(crate) fn record_decided(
         &mut self,
         record: GrantRecord,
-        _decision: consent::CoveredDecision<'_>,
+        decision: consent::CoveredDecision<'_>,
     ) {
-        self.insert_record(record);
+        if let Err(error) = self.try_record_decided(record, decision) {
+            log::info!("grant_store: grant refused: {error}");
+        }
     }
 
-    fn insert_record(&mut self, record: GrantRecord) {
+    pub(crate) fn try_record_decided(
+        &mut self,
+        record: GrantRecord,
+        _decision: consent::CoveredDecision<'_>,
+    ) -> Result<(), String> {
+        self.insert_record(record)
+    }
+
+    /// An ephemeral decision needs no disk write. Every write still projects
+    /// the entire live store through the checked snapshot.
+    pub(crate) fn save_decisions(
+        &mut self,
+        records: Vec<GrantRecord>,
+        _decision: consent::CoveredDecision<'_>,
+    ) -> Result<(), String> {
+        for record in &records {
+            self.check_record(record)?;
+        }
+        let before = records
+            .iter()
+            .any(GrantRecord::is_durable)
+            .then(|| self.records().to_vec());
+        for record in records {
+            self.insert_checked_record(record);
+        }
+        if let Some(before) = before {
+            if let Err(error) = self.try_save() {
+                *self.records_mut() = before;
+                return Err(gate::grant_not_saved(&error));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn rollback_decided(&mut self, id: &str) {
+        if let Some(index) = self.records().iter().position(|row| row.grant_id == id) {
+            if self.records_mut().remove(index).is_durable() {
+                self.save();
+            }
+        }
+    }
+
+    fn check_record(&self, record: &GrantRecord) -> Result<(), String> {
+        self.ensure_owner_active(&record.owner())?;
+        if record.actor.kind() == ActorType::Pane && self.retired_panes.contains(record.actor.id()) {
+            return Err("the acting pane has closed".to_string());
+        }
         if !record.duration_admissible() {
-            log::error!(
-                "grant_store: refused {:?} grant for {} on {}: duration is not admissible for this outside-process grant",
+            return Err(format!(
+                "{:?} grant for {} on {}: duration is not admissible for this outside-process grant",
                 record.duration,
                 record.actor.id(),
                 record.target_id
-            );
-            return;
+            ));
         }
+        Ok(())
+    }
+
+    fn insert_record(&mut self, record: GrantRecord) -> Result<(), String> {
+        self.check_record(&record)?;
+        self.insert_checked_record(record);
+        Ok(())
+    }
+
+    fn insert_checked_record(&mut self, record: GrantRecord) {
         // Each live secret Once has its own owner even before the claim.
         // It coexists with sibling grants and with standing decisions.
         let secret_once = record.is_secret_once();
@@ -1358,7 +1498,7 @@ impl GrantStore {
         removed
     }
 
-    /// All persisted records (read-only).
+    /// All live rows, including ephemeral decisions and inactive history.
     pub fn records(&self) -> &[GrantRecord] {
         &self.file.data.records
     }
@@ -1373,14 +1513,13 @@ impl GrantStore {
     ///
     /// Host only: the custody token is the one this store was loaded with.
     pub fn try_save(&self) -> Result<(), String> {
-        let label = self.file.label();
         let Some(host) = self.custody.as_ref() else {
             if self.file.path.as_os_str().is_empty() {
                 return Ok(());
             }
             return Err(custody::NotHostProcess.to_string());
         };
-        seal::write_toml(host, &self.file.path, label, &self.file.data)?;
+        durable_snapshot::DurableGrantSnapshot::checked(self.records()).seal(host, &self.file.path)?;
         crate::broker::integrity::note_saved_file(&self.file.path);
         Ok(())
     }
@@ -1477,6 +1616,14 @@ impl GrantStore {
         now: i64,
         counts: impl Fn(&GrantRecord) -> bool,
     ) -> Decision {
+        if (req.actor_type == ActorType::Pane && self.retired_panes.contains(&req.actor_id))
+            || req
+                .agent_run
+                .as_ref()
+                .is_some_and(|run| self.ensure_owner_active(&run.requester).is_err())
+        {
+            return Decision::Deny;
+        }
         let matching: Vec<&GrantRecord> = self
             .file
             .data
@@ -1633,6 +1780,28 @@ fn retire_legacy_permissions(config_dir: &Path) {
 }
 
 #[cfg(test)]
+pub(crate) fn save_plugin_disk_control(monitor: &gate::PermissionMonitor, profile: &Path) {
+    monitor.store().upsert_capability(
+        "durability-probe", profile, "probe", Decision::Allow, GrantSource::Workspace,
+    );
+    monitor.store().try_save().unwrap();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_plugin_only_on_disk(profile: &Path) {
+    let host = custody::host_process().unwrap();
+    let sealed = seal::load_toml::<GrantStoreData>(&host, &profile.join("grants.toml"));
+    assert!(sealed.trusted, "expected a MAC-verified grants file");
+    let records = sealed.data.records;
+    assert!(records.iter().any(|row| {
+        row.actor.id() == "durability-probe"
+            && row.actor.kind() == ActorType::Plugin
+            && row.duration == GrantDuration::Always
+    }), "durable plugin control belongs on disk");
+    assert_eq!(records.len(), 1, "only the positive control belongs on disk");
+}
+
+#[cfg(test)]
 pub(crate) mod admission_matrix;
 
 #[cfg(test)]
@@ -1687,6 +1856,21 @@ mod tests {
     }
 
     #[test]
+    fn pane_disk_store_boundary_excludes_a_pane_always_row() {
+        let profile = tempfile::tempdir().unwrap();
+        let monitor = gate::PermissionMonitor::open_profile(profile.path()).unwrap();
+        let mut binding = agent_binding();
+        binding.actor = principal::Principal::Pane(principal::PanePrincipal::for_test(7)).into();
+        let row = GrantRecord::from_binding(
+            &binding, Decision::Allow, GrantDuration::Always, GrantSource::User, "pane-always",
+        );
+        assert!(durable_snapshot::DurableGrantSnapshot::checked(std::slice::from_ref(&row)).is_empty());
+        monitor.store().record(row);
+        save_plugin_disk_control(&monitor, profile.path());
+        assert_plugin_only_on_disk(profile.path());
+    }
+
+    #[test]
     fn legacy_number_only_pane_grant_is_inert() {
         let legacy = legacy_pane_grant();
         let mut binding = agent_binding();
@@ -1715,7 +1899,10 @@ mod tests {
             row.target_id = target.into();
             original.record(row);
         }
-        original.try_save().unwrap();
+        seal::write_toml(
+            &custody::host_process().unwrap(), &profile.path().join("grants.toml"),
+            STORE_LABEL, &original.file.data,
+        ).unwrap();
         drop(original);
         let restored = gate::PermissionMonitor::open_profile(profile.path()).unwrap();
         let history: Vec<_> = restored.host_records().entries().into_iter()
@@ -1748,7 +1935,10 @@ mod tests {
             original.record(GrantRecord::from_binding(&binding, Decision::Allow,
                 GrantDuration::Always, GrantSource::User, actor.actor_id()));
         }
-        original.try_save().unwrap();
+        seal::write_toml(
+            &custody::host_process().unwrap(), &profile.path().join("grants.toml"),
+            STORE_LABEL, &original.file.data,
+        ).unwrap();
         drop(original);
         let restored = gate::PermissionMonitor::open_profile(profile.path()).unwrap();
         let history: Vec<_> = restored.host_records().entries().into_iter()

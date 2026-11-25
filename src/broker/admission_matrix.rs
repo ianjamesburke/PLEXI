@@ -1049,7 +1049,7 @@ fn subscription_store_copy_misses_a_monitor_revocation() {
     let target = format!("{PUBLISHER}::{EVENT}");
     let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
     let record = stream_grant(
-        Runtime::Agent,
+        Runtime::Python,
         ws.path(),
         &target,
         GrantDuration::Always,
@@ -1061,19 +1061,19 @@ fn subscription_store_copy_misses_a_monitor_revocation() {
 
     let service_copy = GrantStore::load_or_default(profile.path()).unwrap();
     assert_eq!(
-        evaluate_stream(&service_copy, None, Runtime::Agent, ws.path()),
+        evaluate_stream(&service_copy, None, Runtime::Python, ws.path()),
         Decision::Allow
     );
     assert!(monitor.revoke_grant_id(&grant_id).expect("revoke saved"));
     // CUTOVER: expected to change to ask.
     assert_eq!(
-        evaluate_stream(&service_copy, None, Runtime::Agent, ws.path()),
+        evaluate_stream(&service_copy, None, Runtime::Python, ws.path()),
         Decision::Allow,
         "today the copy still admits after the monitor revoked the grant"
     );
     let reloaded = GrantStore::load_or_default(profile.path()).unwrap();
     assert_eq!(
-        evaluate_stream(&reloaded, None, Runtime::Agent, ws.path()),
+        evaluate_stream(&reloaded, None, Runtime::Python, ws.path()),
         Decision::Ask
     );
 }

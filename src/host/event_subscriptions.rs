@@ -446,15 +446,6 @@ pub struct HostSubscribeRequest {
     pub reply: SyncSender<HostSubscribeReply>,
 }
 
-/// Who an always event-stream grant is for and what it covers; the
-/// person's decision travels beside it.
-struct AlwaysStreamGrant<'a> {
-    principal: &'a Principal,
-    plugin_id: &'a str,
-    targets: &'a [String],
-    workspace_root: &'a Path,
-}
-
 /// The resolved principal behind a subscribe request.
 #[derive(Clone, Debug)]
 pub enum SubscriberAuthority {
@@ -567,6 +558,19 @@ enum ConsentAction {
     },
 }
 
+impl ConsentAction {
+    fn reject(self, message: String) {
+        match self {
+            Self::Subscribe { reply, .. } => {
+                let _ = reply.send(HostSubscribeReply::Err { message });
+            }
+            Self::Publish { reply, .. } => {
+                let _ = reply.send(HostPublishReply::Err { message });
+            }
+        }
+    }
+}
+
 impl PendingEventConsent {
     pub(crate) fn is_cancelled(&self) -> bool {
         matches!(&self.action, ConsentAction::Subscribe { cancelled: Some(flag), .. }
@@ -642,10 +646,31 @@ pub enum HostPublishReply {
 pub enum ConsentChoice {
     /// Record the subscription for this connection only; ask again next time.
     AllowOnce,
+    /// Record a standing grant for this pane incarnation.
+    AllowPane,
     /// Record a persistent `Allow` grant, then subscribe.
     AllowAlways,
     /// Refuse; the transport gets a permission-denied error.
     Deny,
+}
+
+impl ConsentChoice {
+    pub(crate) fn standing_for(principal: &Principal) -> Self {
+        use crate::broker::principal::{GrantLifetime, RecordOwner};
+        match RecordOwner::requester(principal).grant_lifetime() {
+            GrantLifetime::Pane => Self::AllowPane,
+            GrantLifetime::Session | GrantLifetime::Durable => Self::AllowAlways,
+        }
+    }
+
+    pub(crate) fn decision_key(self) -> &'static str {
+        match self {
+            Self::AllowOnce => "allow_once",
+            Self::AllowPane => "allow_pane",
+            Self::AllowAlways => "allow_always",
+            Self::Deny => "deny",
+        }
+    }
 }
 
 /// The UI thread's answer to a [`HostSubscribeRequest`].
@@ -754,7 +779,7 @@ impl HostSubscriptionService {
             workspace_root,
             GrantDuration::Session,
             GrantSource::Session,
-            None,
+            Some(self.monitor.session_id().to_owned()),
         ));
     }
 
@@ -874,7 +899,7 @@ impl HostSubscriptionService {
                 &req.publisher_plugin_id,
                 &subscriber,
                 ActorScope::User,
-                None,
+                Some(self.monitor.session_id()),
                 &req.event_names,
                 false,
             )
@@ -975,13 +1000,12 @@ impl HostSubscriptionService {
     pub fn resolve_consent(&mut self, consent: PendingEventConsent, choice: ConsentChoice) {
         let evidence = crate::broker::consent::DecisionEvidence::for_test(
             &consent.request_id.to_string(),
-            "allow_always",
+            choice.decision_key(),
         );
         self.resolve_consent_decided(consent, choice, Some(evidence));
     }
 
-    /// Settle one consent. `AllowAlways` writes standing grants, so it needs
-    /// the dialog's evidence (stint 1285); without it the consent is denied.
+    /// Settle one consent. Standing grants require the dialog's evidence.
     pub(crate) fn resolve_consent_decided(
         &mut self,
         consent: PendingEventConsent,
@@ -1003,76 +1027,66 @@ impl HostSubscriptionService {
             workspace_root,
             action,
         } = consent;
-        // An outside process's grant lasts at most the session: its Always
-        // is this one use, never a standing row (stint 1285). A pane lifetime
-        // ends with the pane or a restart, so the same holds (stint 1743).
-        let choice = if matches!(subscriber_type, ActorType::External | ActorType::Pane)
-            && choice == ConsentChoice::AllowAlways
+        let owner = crate::broker::principal::RecordOwner::requester(&principal);
+        let lifetime = owner.grant_lifetime();
+        use crate::broker::principal::GrantLifetime;
+        if (lifetime == GrantLifetime::Pane && choice == ConsentChoice::AllowAlways)
+            || (lifetime != GrantLifetime::Pane && choice == ConsentChoice::AllowPane)
         {
-            log::info!("event_subscriptions: {subscriber_type:?} Always applied as once");
+            action.reject("the selected duration does not apply to this requester".to_string());
+            return;
+        }
+        // An outside process's legacy Always choice applies to this use.
+        let choice = if lifetime == GrantLifetime::Session && choice == ConsentChoice::AllowAlways {
             ConsentChoice::AllowOnce
         } else {
             choice
         };
-        // Consent applies to the scope the request was admitted under. A
-        // revoked pane or a moved scope releases nothing under it.
+        // Consent applies to the scope the request was admitted under.
         if let Some(stale) = admitted.as_ref().and_then(|a| a.current().err()) {
             log::info!("event_subscriptions: consent for '{subscriber_id}' refused: {stale}");
-            let message = format!("consent no longer applies: {stale}");
-            match action {
-                ConsentAction::Subscribe { reply, .. } => {
-                    let _ = reply.send(HostSubscribeReply::Err { message });
-                }
-                ConsentAction::Publish { reply, .. } => {
-                    let _ = reply.send(HostPublishReply::Err { message });
-                }
-            }
+            action.reject(format!("consent no longer applies: {stale}"));
             return;
         }
 
-        if choice == ConsentChoice::AllowAlways {
-            // Persist against the same operation-qualified targets the matching
-            // evaluation uses: subscribe grants the bare `<plugin>::<stream>`
-            // targets, publish grants the `publish:`-prefixed ones. A read grant
-            // must never authorize a write, so the persisted target must match
-            // the operation being consented to, not just the plugin + streams.
+        if matches!(
+            choice,
+            ConsentChoice::AllowAlways | ConsentChoice::AllowPane
+        ) {
             let targets = match action {
                 ConsentAction::Subscribe { .. } => subscription_targets(&plugin_id, &event_names),
                 ConsentAction::Publish { .. } => publish_targets(&plugin_id, &event_names),
             };
-            let decision = evidence
-                .as_ref()
-                .map(|e| e.admit(&request_id.to_string(), "allow_always"));
-            let persisted = match decision {
-                Some(Err(error)) => Err(error),
-                Some(Ok(evidence)) => self.persist_always_grants(
-                    AlwaysStreamGrant {
-                        principal: &principal,
-                        plugin_id: &plugin_id,
-                        targets: &targets,
-                        workspace_root: &workspace_root,
-                    },
-                    evidence,
-                ),
-                None => Err("an always grant needs the person's decision".to_string()),
-            };
-            if let Err(message) = persisted {
-                match action {
-                    ConsentAction::Subscribe { reply, .. } => {
-                        let _ = reply.send(HostSubscribeReply::Err { message });
-                    }
-                    ConsentAction::Publish { reply, .. } => {
-                        let _ = reply.send(HostPublishReply::Err { message });
-                    }
-                }
+            let saved = (|| {
+                let evidence = evidence
+                    .as_ref()
+                    .ok_or("a standing grant needs the person's decision")?
+                    .admit(&request_id.to_string(), choice.decision_key())?;
+                let duration = lifetime.standing_duration();
+                let records = targets
+                    .iter()
+                    .map(|target| {
+                        GrantRecord::event_stream_allow(
+                            &principal,
+                            ActorScope::User,
+                            target,
+                            &workspace_root,
+                            duration,
+                            GrantSource::User,
+                            (duration == GrantDuration::Session)
+                                .then(|| self.monitor.session_id().to_owned()),
+                        )
+                    })
+                    .collect();
+                self.monitor.store().save_decisions(records, evidence)
+            })();
+            if let Err(message) = saved {
+                log::info!("event_subscriptions: grant for {owner} refused: {message}");
+                action.reject(message);
                 return;
             }
         }
-        let scope = if choice == ConsentChoice::AllowAlways {
-            "always"
-        } else {
-            "once"
-        };
+        let scope = choice.decision_key();
 
         match action {
             ConsentAction::Subscribe {
@@ -1102,7 +1116,7 @@ impl HostSubscriptionService {
                     &plugin_id,
                     &principal,
                     ActorScope::User,
-                    None,
+                    Some(self.monitor.session_id()),
                     &event_names,
                     choice == ConsentChoice::AllowOnce,
                 )
@@ -1215,56 +1229,6 @@ impl HostSubscriptionService {
         }
     }
 
-    /// Persist an `Always` `Allow` grant for every operation-qualified target
-    /// the consent touched (built by the caller via [`subscription_targets`] or
-    /// [`publish_targets`]) in the profile's one grant store. Shared by the
-    /// subscribe and publish consent paths.
-    fn persist_always_grants(
-        &mut self,
-        grant: AlwaysStreamGrant<'_>,
-        evidence: crate::broker::consent::CoveredDecision<'_>,
-    ) -> Result<(), String> {
-        let AlwaysStreamGrant {
-            principal,
-            plugin_id,
-            targets,
-            workspace_root,
-        } = grant;
-        let ids: Vec<String> = {
-            let mut store = self.monitor.store();
-            targets
-                .iter()
-                .map(|target| {
-                    let record = GrantRecord::event_stream_allow(
-                        principal,
-                        ActorScope::User,
-                        target,
-                        workspace_root,
-                        GrantDuration::Always,
-                        GrantSource::User,
-                        None,
-                    );
-                    let id = record.grant_id.clone();
-                    store.record_decided(record, evidence);
-                    id
-                })
-                .collect()
-        };
-        if let Err(error) = self.monitor.save_grants() {
-            self.monitor
-                .store()
-                .records_mut()
-                .retain(|record| !ids.contains(&record.grant_id));
-            let message = crate::broker::gate::grant_not_saved(&error);
-            log::error!("event_subscriptions: {message}");
-            return Err(message);
-        }
-        log::info!(
-            "event_subscriptions: user granted ALWAYS to {principal} -> '{plugin_id}' grants={ids:?}"
-        );
-        Ok(())
-    }
-
     /// Resolve host-stamped identity, (for emit) reject an undeclared stream,
     /// broker-gate on `TargetType::PluginEventStream`, and — on `Allow` — apply the
     /// publish to the timeline now. The publish twin of
@@ -1328,7 +1292,7 @@ impl HostSubscriptionService {
             &req.plugin_id,
             &publisher,
             ActorScope::User,
-            None,
+            Some(self.monitor.session_id()),
             &event_names,
         );
         let pane_id = req.from_pane_id.unwrap_or(0);
@@ -1834,93 +1798,96 @@ mod tests {
         assert!(matches!(rx2.recv().unwrap(), HostSubscribeReply::Ok { .. }));
     }
 
-    /// Stint 1743: a pane lifetime ends with the pane or a restart, so its
-    /// Allow always covers this subscription only and is never written.
     #[test]
-    fn a_pane_allow_always_is_held_for_the_session_only() {
+    fn pane_disk_event_subscribe_repeats_and_is_revocable_in_permissions() {
         let dir = tempfile::tempdir().unwrap();
         let timeline = timeline_with_stream();
         let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
         let admitted = pane_scope(7, &[]);
-        let (mut req, rx) =
-            subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
-        req.principal = Principal::Pane(admitted.authority.principal());
-        req.subscriber_authority = SubscriberAuthority::Pane(admitted);
-        let consent = svc
-            .classify_subscribe_request(req)
-            .expect("Ask must park a consent");
+        let principal = Principal::Pane(admitted.authority.principal());
+        let request = || {
+            let (mut req, rx) =
+                subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+            req.principal = principal.clone();
+            req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
+            (req, rx)
+        };
+        let (req, rx) = request();
+        let consent = svc.classify_subscribe_request(req).unwrap();
         svc.resolve_consent(consent, ConsentChoice::AllowAlways);
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Err { .. }));
+        assert!(svc.monitor().records_for(&principal).entries().is_empty());
+
+        let (req, rx) = request();
+        let consent = svc.classify_subscribe_request(req).unwrap();
+        svc.resolve_consent(consent, ConsentChoice::AllowPane);
         assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
-        assert!(svc
-            .monitor()
-            .store()
-            .records()
-            .iter()
-            .all(|record| record.duration != crate::broker::GrantDuration::Always));
-        // A fresh load reads the disk, not the process cache.
-        let restored = crate::broker::gate::PermissionMonitor::open_profile(dir.path()).unwrap();
-        assert!(
-            restored.store().records().is_empty(),
-            "no pane row is written to disk"
-        );
+        emit(&timeline, "probe.tick");
+        assert_eq!(delivered(&timeline), vec!["probe.tick"]);
+        let (mut req, rx) = request();
+        req.subscriber_override = Some("second-registration".into());
+        assert!(svc.classify_subscribe_request(req).is_none());
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+
+        let entries = svc.monitor().records_for(&principal).entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].duration, "pane");
+        crate::broker::save_plugin_disk_control(svc.monitor(), dir.path());
+        crate::broker::assert_plugin_only_on_disk(dir.path());
+
+        emit(&timeline, "probe.tick");
+        let caller = crate::broker::gate::PermissionCaller {
+            owner: crate::broker::principal::RecordOwner::Host("desktop".into()),
+            revoke_scope: crate::broker::gate::RevokeScope::Any,
+        };
+        assert!(matches!(
+            svc.monitor()
+                .mutate_entry(&entries[0].id, "revoke", &caller),
+            crate::broker::gate::PermissionMutation::Applied { .. },
+        ));
+        assert!(delivered(&timeline).is_empty(), "queued delivery withheld");
+        emit(&timeline, "probe.tick");
+        assert!(delivered(&timeline).is_empty(), "future delivery withheld");
+        assert!(timeline
+            .lock()
+            .unwrap()
+            .take_deliveries_for(ActorType::Pane, "second-registration",)
+            .is_empty());
+        assert!(svc.classify_subscribe_request(request().0).is_some());
     }
 
-    /// The rows `actor` holds in the service's live store.
-    fn grant_ids_of(svc: &HostSubscriptionService, actor: &str) -> Vec<String> {
-        svc.monitor()
-            .store()
-            .records()
-            .iter()
-            .filter(|record| record.actor.id() == actor)
-            .map(|record| record.grant_id.clone())
-            .collect()
-    }
-
-    /// Stint 1716, one grant store: an Always grant the person gives through
-    /// a subscription consent lands in the permission monitor's store, and
-    /// revoking it there stops the open subscription's deliveries at once,
-    /// with the pane and its scope revision unchanged.
     #[test]
-    fn an_always_subscription_grant_revoked_through_the_monitor_stops_delivery() {
+    fn pane_disk_host_created_lifecycle_grant_stays_live_after_plugin_mint() {
+        use crate::broker::principal::PluginInstance;
+        let dir = tempfile::tempdir().unwrap();
         let timeline = timeline_with_stream();
-        let mut svc =
-            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let mut svc = HostSubscriptionService::new(dir.path(), timeline);
         let admitted = pane_scope(7, &[]);
-        let (mut req, rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
-        req.principal = Principal::Pane(admitted.authority.principal());
-        req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
-        let consent = svc
-            .classify_subscribe_request(req)
-            .expect("no grant yet: consent is asked");
-        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
-        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
-        let granted = grant_ids_of(&svc, admitted.authority.principal().actor_id());
-        assert_eq!(granted.len(), 1, "the Always row is in the monitor's store");
+        let pane = admitted.authority.principal();
+        let workspace = Path::new("/tmp/ws");
+        svc.allow_parent_child_lifecycle(&pane, workspace);
 
-        emit(&timeline, "probe.tick");
-        assert_eq!(delivered(&timeline), vec!["probe.tick"], "positive control");
-        emit(&timeline, "probe.tick");
-        let revision = admitted.authority.scope().revision;
-        assert!(svc.monitor().revoke_grant_id(&granted[0]).unwrap());
-        assert!(!admitted.authority.is_revoked());
-        assert_eq!(admitted.authority.scope().revision, revision);
-        assert_eq!(
-            delivered(&timeline),
-            Vec::<String>::new(),
-            "queued item withheld"
+        let principal = Principal::Pane(pane);
+        let can_subscribe = || {
+            evaluate_subscription(
+                &svc.monitor().store(),
+                None,
+                Some(workspace),
+                crate::host::pane_lifecycle::PUBLISHER,
+                &principal,
+                ActorScope::User,
+                Some(svc.monitor().session_id()),
+                &[crate::host::pane_lifecycle::STREAM.to_owned()],
+            )
+        };
+        assert_eq!(can_subscribe(), Decision::Allow);
+        svc.monitor().materialize_wasm_sets(
+            &PluginInstance::new("durability-probe", None),
+            workspace,
+            &["probe".to_string()].into(),
         );
-        emit(&timeline, "probe.tick");
-        assert_eq!(
-            delivered(&timeline),
-            Vec::<String>::new(),
-            "nothing routed after"
-        );
-
-        // The next subscribe asks again.
-        let (mut req, _rx) = subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
-        req.principal = Principal::Pane(admitted.authority.principal());
-        req.subscriber_authority = SubscriberAuthority::Pane(admitted);
-        assert!(svc.classify_subscribe_request(req).is_some());
+        crate::broker::assert_plugin_only_on_disk(dir.path());
+        assert_eq!(can_subscribe(), Decision::Allow);
     }
 
     /// Stint 1497 with one grant store: a seal-key rotation resets grants.
@@ -1939,7 +1906,7 @@ mod tests {
         req.principal = Principal::Pane(admitted.authority.principal());
         req.subscriber_authority = SubscriberAuthority::Pane(admitted.clone());
         let consent = svc.classify_subscribe_request(req).expect("asks first");
-        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
+        svc.resolve_consent(consent, ConsentChoice::AllowPane);
         assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
         emit(&timeline, "probe.tick");
 
@@ -1952,7 +1919,10 @@ mod tests {
         // replaced by the reset file.
         *svc.monitor().store() = GrantStore::load_or_default(dir.path()).unwrap();
         assert!(
-            grant_ids_of(&svc, admitted.authority.principal().actor_id()).is_empty(),
+            svc.monitor()
+                .records_for(&Principal::Pane(admitted.authority.principal()),)
+                .entries()
+                .is_empty(),
             "grants were reset"
         );
         assert_eq!(delivered(&timeline), Vec::<String>::new(), "dropped");
@@ -2066,6 +2036,55 @@ mod tests {
             reply: tx,
         };
         (req, rx)
+    }
+
+    #[test]
+    fn pane_disk_event_publish_is_scoped_to_the_approved_target() {
+        use crate::broker::caller::{PaneCaller, PeerWitness, SocketCaller};
+        let dir = tempfile::tempdir().unwrap();
+        let timeline = timeline_with_stream();
+        declare(&timeline, "probe.late");
+        let mut svc = HostSubscriptionService::new(dir.path(), Arc::clone(&timeline));
+        let admitted = pane_scope(7, &[]);
+        let caller = SocketCaller::Pane(PaneCaller {
+            terminal_pane: 7,
+            visible_pane: 7,
+            context_id: CTX,
+            window_id: 1,
+            peer: PeerWitness::capture(std::process::id()),
+            authority: Arc::clone(&admitted.authority),
+        });
+        let request = |name: &str| {
+            let mut event = probe_event(3);
+            event.event = name.to_string();
+            let (mut req, rx) =
+                publish_request("event-probe", PublishAction::Emit(Box::new(event)), None);
+            req.socket_caller = Some(caller.clone());
+            (req, rx)
+        };
+        let (req, rx) = request("probe.tick");
+        let consent = svc.classify_publish_request(req).unwrap();
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways);
+        assert!(matches!(rx.recv().unwrap(), HostPublishReply::Err { .. }));
+        assert!(timeline.lock().unwrap().events().is_empty());
+
+        let (req, rx) = request("probe.tick");
+        let consent = svc.classify_publish_request(req).unwrap();
+        svc.resolve_consent(consent, ConsentChoice::AllowPane);
+        assert!(matches!(rx.recv().unwrap(), HostPublishReply::Ok { .. }));
+        let (req, rx) = request("probe.tick");
+        assert!(svc.classify_publish_request(req).is_none());
+        assert!(matches!(rx.recv().unwrap(), HostPublishReply::Ok { .. }));
+        assert!(svc
+            .classify_publish_request(request("probe.late").0)
+            .is_some());
+        let (mut subscribe, _rx) =
+            subscribe_request(vec!["probe.tick".into()], PayloadMode::Full, None);
+        subscribe.principal = caller.principal().unwrap();
+        subscribe.subscriber_authority = SubscriberAuthority::Pane(admitted);
+        assert!(svc.classify_subscribe_request(subscribe).is_some());
+        crate::broker::save_plugin_disk_control(svc.monitor(), dir.path());
+        crate::broker::assert_plugin_only_on_disk(dir.path());
     }
 
     /// A granted emit records the event and host-stamps the emitter identity

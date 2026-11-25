@@ -1524,11 +1524,59 @@ fn list_plugin_tools_snapshots_live_registry_for_context() {
 }
 
 #[test]
-fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
+fn pane_close_retires_standing_grants_and_rejects_late_answers() {
+    use crate::broker::gate::{Admission, AdmitRequest, ApprovalChoice, PermissionMonitor};
+    use crate::broker::principal::Principal;
+    use crate::broker::{ActorScope, TargetType};
+
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    let principal = Principal::Pane(h.app.pane_principal(id).unwrap());
+    let profile = crate::config::config_dir();
+    let monitor = PermissionMonitor::for_profile(&profile).unwrap();
+    let workspace = h.workspace_root();
+    let admit = |tool: &str| {
+        monitor.admit(AdmitRequest {
+            call_id: tool,
+            tool,
+            input_json: "{}",
+            principal: &principal,
+            actor_scope: ActorScope::User,
+            trust_origin: "host",
+            workspace_root: &workspace,
+            context_id: 1,
+            package_id: "",
+            instance_id: id,
+            target_type: TargetType::HostTool,
+        })
+    };
+    let Admission::Required { pending_request_id } = admit("test.standing") else {
+        panic!("expected an approval");
+    };
+    monitor
+        .approve_pending(&pending_request_id, ApprovalChoice::Session)
+        .unwrap();
+    assert!(matches!(admit("test.standing"), Admission::Proceed { .. }));
+    let Admission::Required {
+        pending_request_id: late,
+    } = admit("test.late")
+    else {
+        panic!("expected a second approval");
+    };
+
+    h.app.close_pane_by_id(id);
+    assert!(monitor.records_for(&principal).entries().is_empty());
+    assert!(monitor
+        .approve_pending(&late, ApprovalChoice::Session)
+        .is_err());
+    assert!(matches!(admit("test.standing"), Admission::Denied { .. }));
+}
+
+#[test]
+fn create_agent_approve_mints_pane_scoped_grant_and_retry_succeeds() {
     use crate::broker::gate::{
         NeedsYouDetails, NeedsYouFile, NeedsYouKind, ResolveSurface, RunOutcome,
     };
-    use sha2::{Digest, Sha256};
 
     let _mesh = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
     let mut h = HostHarness::new();
@@ -1586,22 +1634,8 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
         .expect("desktop approve must succeed");
     assert_eq!(receipt.run_outcome, RunOutcome::Unblocked);
 
-    // Grants file is written and `permission-integrity.toml` has matching `grants_sha256` != "absent".
-    let grants_path = profile_dir.join("grants.toml");
-    assert!(
-        grants_path.is_file(),
-        "grants.toml must be written on approve"
-    );
-    let grants_bytes = std::fs::read(&grants_path).unwrap();
-    let expected_sha = format!("{:x}", Sha256::digest(&grants_bytes));
-    let stamp_raw = std::fs::read_to_string(profile_dir.join("permission-integrity.toml")).unwrap();
-    let stamp_val: toml::Value = toml::from_str(&stamp_raw).unwrap();
-    let stamped_grants_sha = stamp_val
-        .get("grants_sha256")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    assert_ne!(stamped_grants_sha, "absent", "{stamp_raw}");
-    assert_eq!(stamped_grants_sha, expected_sha, "{stamp_raw}");
+    let principal = crate::broker::principal::Principal::Pane(h.app.pane_principal(pane).unwrap());
+    assert!(mon.records_for(&principal).entries().iter().any(|row| row.tool == "agents.ping"));
 
     // Audit `grant` fact (and `needs_you` fact) carries a non-empty `grant_id`.
     let audit_rows = mon.host_records().audit();

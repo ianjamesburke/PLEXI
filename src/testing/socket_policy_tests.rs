@@ -313,7 +313,11 @@ fn reused_pane_number_socket_questions_and_permission_observations_are_private()
         first_question
     );
     assert_eq!(monitor.host_records().run(&first).unwrap(), first_run);
-    assert!(monitor.host_records().pending_id(&first_pending).is_some());
+    assert!(monitor.host_records().pending_id(&first_pending).is_none());
+    assert_eq!(
+        monitor.host_records().question(&first_pending).unwrap().resolution,
+        Some(crate::broker::gate::NeedsYouResolution::Retired),
+    );
 }
 
 #[test]
@@ -337,7 +341,7 @@ fn reused_pane_number_send_requires_a_new_approval_and_ignores_a_late_submit() {
     };
     let first = dispatch(&mut h, "same-op", false);
     let approval = h.app.pending_send_approvals[0].pending_request_id.clone();
-    mon.approve_pending(&approval, ApprovalChoice::Always)
+    mon.approve_pending(&approval, ApprovalChoice::Session)
         .unwrap();
     h.hidden_frame();
     let reply = read_client(first, "first send");
@@ -1796,7 +1800,7 @@ fn a_covered_worker_deny_beats_an_exact_stored_allow() {
     let (worker, peer) = covered_worker(&mut h, "'secret.get'");
     let canary = "covered-deny-canary-1673";
     let root = workspace_secret(&h, "ws-1673-deny", "KEY_1673", canary);
-    // An exact Always row for this pane, written as an unrestricted read
+    // An exact pane-lifetime row for this pane, written as an unrestricted read
     // of the same secret would be.
     let monitor =
         crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir()).unwrap();
@@ -1823,7 +1827,7 @@ fn a_covered_worker_deny_beats_an_exact_stored_allow() {
         panic!("expected a pending request");
     };
     monitor
-        .approve_pending(&pending_id, crate::broker::gate::ApprovalChoice::Always)
+        .approve_pending(&pending_id, crate::broker::gate::ApprovalChoice::Session)
         .unwrap();
     assert!(
         matches!(read(), crate::workspace::secrets::ReadResult::Value(_)),

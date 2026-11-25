@@ -1746,7 +1746,7 @@ mod list_tests {
 
         let pid_a = pane_pid(&h, peer_a);
         let pid_b = pane_pid(&h, peer_b);
-        let ok_a = pane_get(&mut h, "BAR", pid_a, Some(ApprovalChoice::Always));
+        let ok_a = pane_get(&mut h, "BAR", pid_a, Some(ApprovalChoice::Session));
         assert_eq!(ok_a["status"], "value", "{ok_a}");
         assert_eq!(pane_get(&mut h, "BAR", pid_a, None)["status"], "value");
 
@@ -1968,7 +1968,7 @@ mod release_tests {
 
     #[test]
     fn the_value_is_released_only_while_pane_and_grant_still_hold() {
-        for choice in [ApprovalChoice::Once, ApprovalChoice::Always] {
+        for choice in [ApprovalChoice::Once, ApprovalChoice::Session] {
             let released = read_while(DuringRead::Nothing, choice);
             assert_eq!(released["status"], "value", "{choice:?}: {released}");
             assert_eq!(released["value"], "canary-1716");

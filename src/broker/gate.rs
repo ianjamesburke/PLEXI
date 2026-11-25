@@ -403,7 +403,7 @@ pub struct PermissionEntry {
     pub id: String,
     /// `allow`, `deny`, `pending`, or inactive `history`.
     pub kind: String,
-    /// `once`, `session`, `until`, `always`, or `ask`.
+    /// `once`, `pane`, `session`, `until`, `always`, or `ask`.
     pub duration: String,
     pub actor_type: String,
     pub actor_id: String,
@@ -912,10 +912,22 @@ impl ApprovalChoice {
         }
     }
 
+    pub(crate) fn allowed_for(self, owner: &RecordOwner) -> bool {
+        use super::principal::GrantLifetime;
+        match owner.grant_lifetime() {
+            GrantLifetime::Pane => self != Self::Always,
+            GrantLifetime::Session => {
+                !matches!(self, Self::Always | Self::AllowTool | Self::DenyAlways)
+            }
+            GrantLifetime::Durable => true,
+        }
+    }
+
     /// How a prompt names this grant's length.
-    fn duration_label(self) -> &'static str {
+    fn duration_label(self, owner: &RecordOwner) -> &'static str {
         match self {
             Self::Once => "once",
+            Self::Session | Self::AllowTool if owner.pane().is_some() => "until this pane closes",
             Self::Session | Self::AllowTool => "this session",
             Self::Always => "always",
             Self::Deny | Self::DenyAlways => "not allowed",
@@ -1163,7 +1175,7 @@ impl PermissionMonitor {
             {
                 // A permit's commit must not straddle the reset.
                 let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
-                *self.store() = loaded;
+                self.store().replace_loaded(loaded);
             }
             for fault in &faults {
                 self.raise_integrity(fault);
@@ -1980,6 +1992,8 @@ impl PermissionMonitor {
         let Some(pending) = pending else {
             return Err(format!("unknown pending request {pending_id}"));
         };
+        let owner = pending.binding.owner();
+        self.store().ensure_owner_active(&owner)?;
         if choice == ApprovalChoice::AllowTool
             && pending.binding.target_type != TargetType::PluginConnector
         {
@@ -1992,30 +2006,16 @@ impl PermissionMonitor {
         {
             return Err("An outside terminal needs a one-use approval for this secret.".into());
         }
-        if pending.binding.actor.kind() == ActorType::External
-            && matches!(
-                choice,
-                ApprovalChoice::Always | ApprovalChoice::AllowTool | ApprovalChoice::DenyAlways
-            )
-        {
-            log::info!(
-                "permission_monitor: refused {choice:?} on {pending_id}: an outside process holds a grant once or for the session"
-            );
-            return Err("an outside process can be decided once or for this session".to_string());
-        }
-        // A pane lifetime ends with the pane or a host restart, so a standing
-        // grant could never match again. Hold it for the session, in memory.
-        let choice = match choice {
-            ApprovalChoice::Always | ApprovalChoice::AllowTool
-                if pending.binding.actor.kind() == ActorType::Pane =>
-            {
-                log::info!(
-                    "permission_monitor: {choice:?} on {pending_id} held for the session: a pane lifetime is not remembered"
-                );
-                ApprovalChoice::Session
+        if !choice.allowed_for(&owner) {
+            log::info!("permission_monitor: refused {choice:?} on {pending_id} for {owner}");
+            return Err(match owner.grant_lifetime() {
+                super::principal::GrantLifetime::Pane => {
+                    "a pane grant lasts until this pane closes"
+                }
+                _ => "an outside process can be decided once or for this session",
             }
-            other => other,
-        };
+            .to_string());
+        }
         // Plugin code is allowed for one exact copy or folder, or not at all
         // (stint 1398); a once or session load has no meaning for a scan.
         if pending.binding.target_type == TargetType::Package
@@ -2144,23 +2144,12 @@ impl PermissionMonitor {
                     && (binding.target_id == "pane.send" || plugin_capability)))
             || (binding.target_type == TargetType::CliOperation
                 && matches!(choice, ApprovalChoice::Session | ApprovalChoice::Always));
-        match evidence {
-            Some(evidence) => self.store().record_decided(record, evidence),
-            None => return Err("an allow needs the person's decision".to_string()),
-        }
-        if choice == ApprovalChoice::Always {
-            // Drop the store guard before locking it again on failure. A
-            // temporary in `if let` lives for the whole block.
-            let save_error = self.store().try_save().err();
-            if let Some(error) = save_error {
-                self.store()
-                    .records_mut()
-                    .retain(|row| row.grant_id != grant_id);
-                let message = grant_not_saved(&error);
-                log::error!("permission_monitor: {message}");
-                return Err(message);
-            }
-        }
+        let evidence = evidence.ok_or("an allow needs the person's decision")?;
+        self.store()
+            .save_decisions(vec![record], evidence)
+            .inspect_err(|error| {
+                log::error!("permission_monitor: {error}");
+            })?;
         let trace_extra = serde_json::json!({
             "context_id": binding.context_id,
             "pending_request_id": pending_id,
@@ -2194,12 +2183,7 @@ impl PermissionMonitor {
             },
             trace_extra,
         ) {
-            self.store()
-                .records_mut()
-                .retain(|row| row.grant_id != grant_id);
-            if choice == ApprovalChoice::Always {
-                let _ = self.store().try_save();
-            }
+            self.store().rollback_decided(&grant_id);
             return Err(error);
         }
         self.pending
@@ -2546,6 +2530,20 @@ impl PermissionMonitor {
             withdrawn.push(id);
         }
         withdrawn
+    }
+
+    /// Close the exact incarnation under the same locks as desktop decisions
+    /// and permit commits. The live store also refuses a late producer.
+    pub(crate) fn retire_pane(&self, owner: &PanePrincipal) {
+        {
+            let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+            self.store().retire_pane(owner);
+            self.epoch.fetch_add(1, Ordering::SeqCst);
+        }
+        self.retire_requester_approvals(std::slice::from_ref(owner), &[], None);
+        self.note_retire_due("pane closed");
+        self.drain_retirements();
+        log::info!("permission_monitor: retired grants for {}", owner.label());
     }
 
     /// Retire approvals owned by a removed pane or context without granting them.
@@ -4214,7 +4212,7 @@ impl PermissionMonitor {
         if expired.is_empty() {
             return 0;
         }
-        if let Err(error) = self.save_durable() {
+        if let Err(error) = self.save_grants() {
             log::error!("permission_monitor: failed to save expired soft grants: {error}");
         }
         for (actor, grant_id, resource_id, workspace_root) in &expired {
@@ -4293,7 +4291,11 @@ impl PermissionMonitor {
         record.run_requester_pane = requester_pane.cloned().map(super::RunRequester::Pane);
         record.agent_run_id = Some(run_id.to_owned());
         let owner = record.owner();
-        self.store().record(record);
+        {
+            let mut store = self.store();
+            store.ensure_owner_active(&owner)?;
+            store.record(record);
+        }
         self.audit(&AuditFact {
             kind: "grant".to_string(),
             actor: owner,
@@ -4339,7 +4341,7 @@ impl PermissionMonitor {
         })
     }
 
-    /// Record and persist a pane-scoped session tool grant (`GrantDuration::Session`)
+    /// Record a pane-lifetime tool grant (`GrantDuration::Session`)
     /// for `pane_id` in the current host session, and audit it.
     pub fn record_pane_session_grant(
         &self,
@@ -4381,13 +4383,8 @@ impl PermissionMonitor {
         record.bound_operation_id = Some(pane_tag.clone());
         {
             let mut store = self.store();
+            store.ensure_owner_active(&record.owner())?;
             store.record(record);
-            if let Err(error) = store.try_save() {
-                store.records_mut().retain(|row| row.grant_id != grant_id);
-                let message = grant_not_saved(&error);
-                log::error!("permission_monitor: {message}");
-                return Err(message);
-            }
         }
         self.epoch.fetch_add(1, Ordering::SeqCst);
         self.audit(&AuditFact {
@@ -4572,7 +4569,9 @@ impl PermissionMonitor {
 
     /// Save the store's durable rows: the one writer of the profile's grants.
     pub(crate) fn save_grants(&self) -> Result<(), String> {
-        self.save_durable()
+        self.store().try_save()?;
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Revoke under the admission lock so a commit that has not entered yet
@@ -4609,7 +4608,7 @@ impl PermissionMonitor {
         let Some(actor) = removed.first().map(|record| record.owner()) else {
             return Ok(false);
         };
-        if let Err(error) = self.save_durable() {
+        if let Err(error) = self.save_grants() {
             self.store().records_mut().extend(removed);
             let message =
                 format!("revoke of {grant_id} was not saved: {error}. The grant still stands.");
@@ -4690,7 +4689,7 @@ impl PermissionMonitor {
             let mut store = self.store();
             store.upsert_capability(plugin_id, workspace_root, capability_id, decision, source);
         }
-        if let Err(error) = self.save_durable() {
+        if let Err(error) = self.save_grants() {
             log::error!(
                 "permission_monitor: capability {capability_id} for {plugin_id} was not saved: {error}"
             );
@@ -4743,7 +4742,7 @@ impl PermissionMonitor {
         record.args_unbound = true;
         record.expires_at = Some(self.now_secs() + ALWAYS_TTL_SECS);
         self.store().record(record);
-        if let Err(error) = self.save_durable() {
+        if let Err(error) = self.save_grants() {
             self.store()
                 .records_mut()
                 .retain(|row| row.grant_id != grant_id);
@@ -5050,27 +5049,6 @@ impl PermissionMonitor {
         outcome
     }
 
-    /// The duration a widening applies: what was asked, else the ask's own
-    /// one use, or the standing row a denial was. An outside process holds
-    /// nothing past the session.
-    fn effective_widen_duration(
-        &self,
-        id: &str,
-        entry: &PermissionEntry,
-        requested: Option<ApprovalChoice>,
-    ) -> ApprovalChoice {
-        let asked = requested.unwrap_or(if self.pending_exists(id) {
-            ApprovalChoice::Once
-        } else {
-            ApprovalChoice::Always
-        });
-        if entry.actor_type == "external" && asked == ApprovalChoice::Always {
-            ApprovalChoice::Session
-        } else {
-            asked
-        }
-    }
-
     fn file_widen(
         &self,
         id: &str,
@@ -5095,8 +5073,25 @@ impl PermissionMonitor {
                 entry_id: id.to_string(),
             };
         }
-        let duration = self.effective_widen_duration(id, &entry, requested);
+        use super::principal::GrantLifetime;
+        let lifetime = entry.owner.grant_lifetime();
+        let duration = match requested {
+            Some(ApprovalChoice::Always) if lifetime == GrantLifetime::Session => {
+                ApprovalChoice::Session
+            }
+            Some(choice) => choice,
+            None if self.pending_exists(id) => ApprovalChoice::Once,
+            None if lifetime.standing_duration() == GrantDuration::Session => ApprovalChoice::Session,
+            None => ApprovalChoice::Always,
+        };
         if action == "allow" {
+            if !duration.allowed_for(&entry.owner) {
+                return PermissionMutation::Rejected {
+                    entry_id: id.to_string(),
+                    error: "the requested duration exceeds this caller's grant lifetime"
+                        .to_string(),
+                };
+            }
             if let Some(error) = self.once_for_stored_secret_denial(id, duration) {
                 return PermissionMutation::Rejected {
                     entry_id: id.to_string(),
@@ -5105,7 +5100,7 @@ impl PermissionMonitor {
             }
         }
         let shown = if action == "allow" {
-            format!("{action} ({})", duration.duration_label())
+            format!("{action} ({})", duration.duration_label(&entry.owner))
         } else {
             action.to_string()
         };
@@ -5321,8 +5316,13 @@ impl PermissionMonitor {
         allow.created_at = self.now_secs();
         {
             let mut store = self.store();
+            if let Err(error) = store.try_record_decided(allow, evidence) {
+                return PermissionMutation::Rejected {
+                    entry_id: id.to_string(),
+                    error,
+                };
+            }
             store.records_mut().retain(|row| row.grant_id != id);
-            store.record_decided(allow, evidence);
         }
         #[cfg(test)]
         {
@@ -5335,7 +5335,7 @@ impl PermissionMonitor {
                 hook();
             }
         }
-        if let Err(error) = self.save_durable() {
+        if let Err(error) = self.save_grants() {
             self.store()
                 .records_mut()
                 .retain(|row| row.grant_id != grant_id);
@@ -5385,20 +5385,9 @@ impl PermissionMonitor {
         evidence: CoveredDecision<'_>,
     ) -> Result<String, String> {
         let grant_id = format!("grant_{}", uuid::Uuid::new_v4());
-        // A pane lifetime ends with the pane or a host restart, so its
-        // standing choice is held for the session, never stored (stint 1743).
-        let pane = binding.actor.kind() == ActorType::Pane;
-        let mut record = GrantRecord::from_binding(
-            binding,
-            decision,
-            if pane {
-                GrantDuration::Session
-            } else {
-                GrantDuration::Always
-            },
-            GrantSource::User,
-            &grant_id,
-        );
+        let duration = binding.owner().grant_lifetime().standing_duration();
+        let mut record =
+            GrantRecord::from_binding(binding, decision, duration, GrantSource::User, &grant_id);
         if is_plugin_capability(binding) {
             // Plugin-wide, like a remembered allow (stint 1489).
             record.instance_id = None;
@@ -5406,40 +5395,18 @@ impl PermissionMonitor {
         }
         record.tool_scoped = true;
         record.expires_at = expires_at;
-        record.session_id = pane.then(|| self.session_id().to_string());
-        self.store().record_decided(record, evidence);
-        if let Err(error) = self.save_durable() {
-            self.store()
-                .records_mut()
-                .retain(|row| row.grant_id != grant_id);
-            let message = grant_not_saved(&error);
-            log::error!("permission_monitor: {message}");
-            return Err(message);
-        }
+        record.session_id = (duration == GrantDuration::Session).then(|| self.session_id.clone());
+        self.store()
+            .save_decisions(vec![record], evidence)
+            .inspect_err(|error| {
+                log::error!("permission_monitor: {error}");
+            })?;
         log::info!(
             "permission_monitor: stored tool-scoped {} {grant_id} tool={}",
             decision.as_str(),
             binding.target_id
         );
         Ok(grant_id)
-    }
-
-    /// Write durable rows and leave session and one-shot rows in memory only.
-    fn save_durable(&self) -> Result<(), String> {
-        let mut store = self.store();
-        let ephemeral: Vec<GrantRecord> = store
-            .records()
-            .iter()
-            .filter(|record| !record_is_durable(record))
-            .cloned()
-            .collect();
-        store.records_mut().retain(record_is_durable);
-        let saved = store.try_save();
-        store.records_mut().extend(ephemeral);
-        saved?;
-        drop(store);
-        self.epoch.fetch_add(1, Ordering::SeqCst);
-        Ok(())
     }
 
     fn list_pending(&self) -> Vec<PendingView> {
@@ -6010,24 +5977,6 @@ fn stored_capability_decision(
     }
 }
 
-fn record_is_durable(record: &GrantRecord) -> bool {
-    if record.is_legacy_pane_history() {
-        return true;
-    }
-    if record
-        .bound_operation_id
-        .as_deref()
-        .is_some_and(|op| op.starts_with("pane:"))
-    {
-        return true;
-    }
-    record.source != GrantSource::Session
-        && !matches!(
-            record.duration,
-            GrantDuration::Once | GrantDuration::Session
-        )
-}
-
 fn snake<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()
@@ -6045,7 +5994,9 @@ fn when_label(unix: i64) -> String {
 }
 
 fn duration_label(record: &GrantRecord) -> &'static str {
-    if record.expires_at.is_some() {
+    if record.duration == GrantDuration::Session && record.owner().pane().is_some() {
+        "pane"
+    } else if record.expires_at.is_some() {
         "until"
     } else {
         match record.duration {
@@ -7867,47 +7818,186 @@ mod tests {
     }
 
     #[test]
-    fn pane_always_grant_requires_fresh_consent_on_reuse_and_after_restart() {
+    fn pane_disk_pending_approval_once_session_and_tool() {
+        use crate::broker::principal::Principal;
         let dir = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
-        let args = r#"{"operation_id":"shared","game_id":"game"}"#;
-        let mut base = binding(&fingerprint_args(args).unwrap());
-        base.actor = crate::broker::principal::Principal::Pane(PanePrincipal::for_test(7)).into();
-        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
-            panic!("first consent")
+        let pane = PanePrincipal::for_test(7);
+        let mut base = binding("unused");
+        base.actor = Principal::Pane(pane.clone()).into();
+        let ask = |monitor: &PermissionMonitor, base: &ExactBinding, args: &str| {
+            let Admission::Required { pending_request_id } = admit_of(monitor, base, args) else {
+                panic!("expected a pending approval");
+            };
+            pending_request_id
         };
-        monitor
-            .approve_pending(&pending_request_id, ApprovalChoice::Always)
-            .unwrap();
-        assert!(
-            monitor.store().records().iter().all(|record| record.duration
-                == GrantDuration::Once
-                || record.duration == GrantDuration::Session),
-            "an Always for a pane lifetime is held for the session and never persisted"
-        );
+        for (choice, game) in [
+            (ApprovalChoice::Once, "once"),
+            (ApprovalChoice::Session, "session"),
+            (ApprovalChoice::AllowTool, "tool"),
+        ] {
+            let args = format!(r#"{{"game_id":"{game}","move":"first"}}"#);
+            let pending = ask(&monitor, &base, &args);
+            assert!(monitor
+                .approve_pending(&pending, ApprovalChoice::Always)
+                .is_err());
+            monitor.approve_pending(&pending, choice).unwrap();
+            let Admission::Proceed { grant_id, .. } = admit_of(&monitor, &base, &args) else {
+                panic!("{choice:?} should allow the request");
+            };
+            if choice == ApprovalChoice::Once {
+                monitor.consume_once(&grant_id, None);
+                ask(&monitor, &base, &args);
+            } else if choice == ApprovalChoice::AllowTool {
+                assert!(matches!(
+                    admit_of(&monitor, &base, r#"{"game_id":"tool","move":"second"}"#),
+                    Admission::Proceed { .. },
+                ));
+            }
+        }
+        crate::broker::save_plugin_disk_control(&monitor, dir.path());
+        crate::broker::assert_plugin_only_on_disk(dir.path());
+
+        let args = r#"{"game_id":"late"}"#;
+        let late = ask(&monitor, &base, args);
+        monitor.retire_pane(&pane);
+        assert!(monitor
+            .approve_pending(&late, ApprovalChoice::Session)
+            .is_err());
+        assert!(monitor
+            .store()
+            .records()
+            .iter()
+            .all(|row| row.owner().pane().is_none()));
         assert!(matches!(
             admit_of(&monitor, &base, args),
-            Admission::Proceed { .. }
+            Admission::Denied { .. }
         ));
-        base.actor = crate::broker::principal::Principal::Pane(PanePrincipal::for_test(7)).into();
-        let Admission::Required {
-            pending_request_id: second,
-        } = admit_of(&monitor, &base, args)
-        else {
-            panic!("replacement must ask")
-        };
+        base.actor = Principal::Pane(PanePrincipal::for_test(7)).into();
+        let replacement = ask(&monitor, &base, r#"{"game_id":"session","move":"first"}"#);
         drop(monitor);
         let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
-        assert_retired_at_restart(&restored, &second);
-        base.actor = crate::broker::principal::Principal::Pane(PanePrincipal::for_test(7)).into();
+        assert_retired_at_restart(&restored, &replacement);
+        assert_eq!(restored.store().records().len(), 1);
+        assert_eq!(restored.store().records()[0].actor.id(), "durability-probe");
+        ask(&restored, &base, args);
+    }
+
+    #[test]
+    fn pane_disk_widening_defaults_to_the_pane_lifetime() {
+        use crate::broker::principal::Principal;
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let pane = PanePrincipal::for_test(7);
+        let mut binding = binding("unused");
+        binding.actor = Principal::Pane(pane.clone()).into();
+        let args = r#"{"game_id":"widen"}"#;
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &binding, args) else {
+            panic!("expected a pending approval");
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::DenyAlways)
+            .unwrap();
+        let entry = monitor
+            .host_records()
+            .entries()
+            .into_iter()
+            .find(|row| row.kind == "deny")
+            .unwrap();
+        let PermissionMutation::NeedsYou { needs_you_id, .. } =
+            monitor.mutate_entry(&entry.id, "allow", &human_caller())
+        else {
+            panic!("widening asks the desktop");
+        };
+        monitor
+            .resolve_needs_you_for_test(&needs_you_id, true)
+            .unwrap();
         assert!(matches!(
-            admit_of(&restored, &base, args),
-            Admission::Required { .. }
+            admit_of(&monitor, &binding, args),
+            Admission::Proceed { .. }
+        ));
+        let entry = monitor
+            .host_records()
+            .entries()
+            .into_iter()
+            .find(|row| row.kind == "allow")
+            .unwrap();
+        assert_eq!(entry.duration, "pane");
+        crate::broker::save_plugin_disk_control(&monitor, dir.path());
+        crate::broker::assert_plugin_only_on_disk(dir.path());
+        monitor.retire_pane(&pane);
+        assert!(monitor
+            .records_for(&Principal::Pane(pane))
+            .entries()
+            .is_empty());
+        assert!(matches!(
+            admit_of(&monitor, &binding, args),
+            Admission::Denied { .. }
         ));
     }
 
     #[test]
-    fn pane_deny_always_holds_for_the_session_and_is_never_stored() {
+    fn pane_disk_needs_you_grant_with_pane_operation_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let pane = PanePrincipal::for_test(7);
+        let id = monitor
+            .record_pane_session_grant(dir.path(), &pane, "agents.ping")
+            .unwrap();
+        assert!(monitor
+            .store()
+            .records()
+            .iter()
+            .any(|row| row.grant_id == id
+                && row.bound_operation_id.as_deref() == Some(pane.actor_id())));
+        crate::broker::save_plugin_disk_control(&monitor, dir.path());
+        crate::broker::assert_plugin_only_on_disk(dir.path());
+        monitor.retire_pane(&pane);
+        assert!(monitor
+            .record_pane_session_grant(dir.path(), &pane, "agents.ping")
+            .is_err());
+    }
+
+    #[test]
+    fn pane_disk_run_grant_is_excluded_by_its_requester() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
+        let pane = PanePrincipal::for_test(7);
+        let id = monitor
+            .record_run_only_grant(
+                dir.path(),
+                "named-agent",
+                "run-1",
+                "agents.ping",
+                Some(&pane),
+            )
+            .unwrap();
+        {
+            let mut store = monitor.store();
+            let row = store
+                .records_mut()
+                .iter_mut()
+                .find(|row| row.grant_id == id)
+                .unwrap();
+            assert_eq!(row.actor.kind(), ActorType::Agent);
+            assert_eq!(row.owner().pane(), Some(&pane));
+            // Make the requester the only property excluding this row.
+            row.duration = GrantDuration::Always;
+            row.source = GrantSource::User;
+            row.session_id = None;
+        }
+        crate::broker::save_plugin_disk_control(&monitor, dir.path());
+        crate::broker::assert_plugin_only_on_disk(dir.path());
+        monitor.retire_pane(&pane);
+        assert!(!monitor
+            .store()
+            .records()
+            .iter()
+            .any(|row| row.grant_id == id));
+    }
+
+    #[test]
+    fn pane_disk_standing_denial_survives_unrelated_plugin_approval_only_in_memory() {
         let dir = tempfile::tempdir().unwrap();
         let monitor = PermissionMonitor::open_profile(dir.path()).unwrap();
         let args = r#"{"operation_id":"shared","game_id":"game"}"#;
@@ -7931,12 +8021,19 @@ mod tests {
             admit_of(&monitor, &base, args),
             Admission::Denied { .. }
         ));
-        drop(monitor);
-        let restored = PermissionMonitor::open_profile(dir.path()).unwrap();
-        assert!(
-            restored.store().records().is_empty(),
-            "no dead pane row survives a restart"
-        );
+        let mut plugin = base.clone();
+        plugin.actor = crate::broker::principal::Principal::plugin("durability-probe", None).into();
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &plugin, args) else {
+            panic!("plugin consent")
+        };
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::Always)
+            .unwrap();
+        crate::broker::assert_plugin_only_on_disk(dir.path());
+        assert!(matches!(
+            admit_of(&monitor, &base, args),
+            Admission::Denied { .. }
+        ));
     }
 
     #[test]

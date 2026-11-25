@@ -1,5 +1,78 @@
 use super::*;
 
+/// Render the same pane consent the host parks for an event subscription.
+#[test]
+fn screenshot_pane_event_consent_offers_pane_lifetime() {
+    use crate::broker::pane_authority::{Ceiling, LivePaneAuthority, PaneAuthority};
+    use crate::broker::principal::Principal;
+    use crate::host::event_subscriptions::{
+        HostSubscribeRequest, HostSubscriptionService, SubscriberAuthority,
+    };
+    use crate::host::plugin_timeline::{AdmittedScope, PluginTimeline};
+    use crate::protocol::{EventStreamDecl, PayloadMode, TriggerMode};
+    use std::sync::{Arc, Mutex};
+
+    let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+    apply_fixture_theme(&mut h, "plexi-dusk");
+    let workspace = tempfile::tempdir().unwrap();
+    let profile = tempfile::tempdir().unwrap();
+    let root = workspace.path().to_path_buf();
+    let pane = LivePaneAuthority::admitted(PaneAuthority::for_test(
+        7,
+        Ceiling::Baseline,
+        1,
+        root.clone(),
+    ));
+    pane.mark_live();
+    let mut timeline = PluginTimeline::default();
+    timeline
+        .declare_streams(
+            1,
+            "build-status",
+            vec![EventStreamDecl {
+                name: "build.finished".to_string(),
+                schema: serde_json::json!({"type": "object"}),
+                description: None,
+            }],
+        )
+        .unwrap();
+    let (reply, _receiver) = std::sync::mpsc::sync_channel(1);
+    let service = HostSubscriptionService::new(profile.path(), Arc::new(Mutex::new(timeline)));
+    let consent = service
+        .classify_subscribe_request(HostSubscribeRequest {
+            publisher_plugin_id: "build-status".to_string(),
+            event_names: vec!["build.finished".to_string()],
+            payload_mode: PayloadMode::Full,
+            trigger_mode: TriggerMode::Conversation,
+            resource_id: None,
+            from_pane_id: Some(7),
+            subscriber_override: None,
+            principal: Principal::Pane(pane.principal()),
+            workspace_root_override: Some(root),
+            subscriber_authority: SubscriberAuthority::Pane(AdmittedScope::of(&pane)),
+            context_id_override: Some(1),
+            socket_caller: None,
+            cancelled: None,
+            reply,
+        })
+        .expect("the stream needs consent");
+    h.with_app_mut(|app| {
+        app.host_subscriptions = service;
+        app.pending_event_consents.push_back(consent);
+    });
+    h.run_steps(3);
+    h.with_app_mut(|app| {
+        app.event_consent_guard
+            .backdate(crate::broker::consent::ARM_DELAY)
+    });
+    h.run_steps(2);
+    assert!(h.host_has_label("Allow once"));
+    assert!(h.host_has_label("Allow until this pane closes"));
+    assert!(h.host_has_label("Deny"));
+    assert!(!h.host_has_label("Always"));
+    h.save_screenshot(&evidence_png!()).unwrap();
+}
+
 /// Stint 1498: dialog action rows take no Tab focus, so egui's keyboard
 /// click on a focused row cannot press a consent action. Even with the
 /// review armed, Tab then Space allows nothing and writes no grant.

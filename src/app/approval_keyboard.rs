@@ -223,7 +223,8 @@ impl PlexiApp {
             log::error!("approval: no permission monitor in this process");
             return KeyDisposition::Passthrough;
         };
-        if monitor.host_records().pending_id(&id).is_none() {
+        let pending = monitor.host_records().pending_id(&id);
+        if pending.is_none() {
             if let Some(record) = monitor
                 .host_records()
                 .question(&id)
@@ -295,7 +296,11 @@ impl PlexiApp {
                 self.leave_approval();
                 return KeyDisposition::Consumed;
             }
-            Some((egui::Key::A, egui::Modifiers::SHIFT)) => {
+            Some((egui::Key::A, egui::Modifiers::SHIFT))
+                if pending
+                    .as_ref()
+                    .is_some_and(|r| ApprovalChoice::DenyAlways.allowed_for(&r.owner)) =>
+            {
                 self.approval_keyboard.confirm_always = true;
                 // Require a second deliberate press after another arm interval.
                 self.approval_keyboard.guard.rearm(now);
@@ -314,10 +319,9 @@ impl PlexiApp {
             }
             Some((egui::Key::S, egui::Modifiers::NONE))
                 if !self.approval_keyboard.confirm_always
-                    && monitor
-                        .host_records()
-                        .pending_id(&id)
-                        .is_some_and(|r| r.allow_tool) =>
+                    && pending.as_ref().is_some_and(|r| {
+                        r.allow_tool && ApprovalChoice::AllowTool.allowed_for(&r.owner)
+                    }) =>
             {
                 Some(ApprovalChoice::AllowTool)
             }

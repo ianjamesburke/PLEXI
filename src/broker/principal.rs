@@ -165,7 +165,35 @@ pub enum RecordOwner {
     Legacy(String),
 }
 
+/// The longest a standing decision may live for its authenticated owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GrantLifetime {
+    Pane,
+    Session,
+    Durable,
+}
+
+impl GrantLifetime {
+    pub(crate) fn standing_duration(self) -> super::GrantDuration {
+        match self {
+            Self::Pane | Self::Session => super::GrantDuration::Session,
+            Self::Durable => super::GrantDuration::Always,
+        }
+    }
+}
+
 impl RecordOwner {
+    pub(crate) fn grant_lifetime(&self) -> GrantLifetime {
+        match self {
+            Self::Pane(_) => GrantLifetime::Pane,
+            Self::Actor {
+                actor_type: ActorType::External,
+                ..
+            } => GrantLifetime::Session,
+            _ => GrantLifetime::Durable,
+        }
+    }
+
     pub fn requester(principal: &Principal) -> Self {
         match principal {
             Principal::Pane(pane) => Self::Pane(pane.clone()),

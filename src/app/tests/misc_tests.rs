@@ -389,7 +389,7 @@ fn pane_send_connected_socket_receives_approval_and_dispatches_once() {
 
 #[cfg(unix)]
 #[test]
-fn pane_send_persistent_grant_deduplicates_and_unknown_claim_never_replays() {
+fn pane_send_pane_lifetime_grant_deduplicates_and_unknown_claim_never_replays() {
     pane_send_socket_approval(false, true);
 }
 
@@ -427,7 +427,7 @@ fn pane_send_explicit_operation_id_needs_a_brokered_caller() {
 }
 
 #[cfg(unix)]
-fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
+fn pane_send_socket_approval(disconnect: bool, standing: bool) {
     use std::io::Read as _;
     use std::io::Write as _;
     use std::time::Duration;
@@ -515,8 +515,8 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
     monitor
         .approve_pending(
             &pending,
-            if persistent {
-                crate::broker::gate::ApprovalChoice::Always
+            if standing {
+                crate::broker::gate::ApprovalChoice::Session
             } else {
                 crate::broker::gate::ApprovalChoice::Once
             },
@@ -568,7 +568,7 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
                 .state,
             crate::broker::gate::ContinuationState::Completed
         );
-        if persistent {
+        if standing {
             let dispatch = |h: &mut crate::testing::HostHarness, operation: &str, name: &str| {
                 let reply = profile.path().join(name);
                 h.inject_socket(
@@ -592,7 +592,7 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
             let fresh = dispatch(&mut h, "persistent-fresh", "fresh");
             assert_eq!(
                 fresh["ok"], true,
-                "the persistent grant permits a fresh operation: {fresh}"
+                "the standing grant permits a fresh operation: {fresh}"
             );
             assert_eq!(h.terminal_backend(target).take_input_tap(), b"hello");
             assert!(monitor.host_records().pending().is_empty());
