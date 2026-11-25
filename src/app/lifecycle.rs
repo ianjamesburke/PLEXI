@@ -748,6 +748,11 @@ impl PlexiApp {
                 {
                     Self::prepare_agent_memory(name, &placement.effective_cwd)?;
                 }
+                let launch_command = crate::cli::agent::with_claude_resume_hooks(
+                    crate::cli::AgentHarness::parse(&record.harness),
+                    &resume_cmd,
+                    record.session_id.as_deref(),
+                );
                 self.launch_agent_worker(
                     crate::pane_ops::create::AgentWorkerLaunch {
                         grant: crate::pane_ops::create::AgentWorkerGrant {
@@ -759,7 +764,7 @@ impl PlexiApp {
                         spawned_by: None,
                         role: &role,
                         harness: &record.harness,
-                        command: &resume_cmd,
+                        command: &launch_command,
                         task: record.summary.as_deref().unwrap_or_default(),
                         ephemeral: false,
                         result_schema: None,

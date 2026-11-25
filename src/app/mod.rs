@@ -6367,6 +6367,11 @@ pub(crate) fn restore_workspace(
                                     session.session_id.as_deref(),
                                     &flags,
                                 );
+                                let resume_launch_cmd = crate::cli::agent::with_claude_resume_hooks(
+                                    Some(harness),
+                                    &resume_cmd,
+                                    session.session_id.as_deref(),
+                                );
                                 if session
                                     .session_id
                                     .as_deref()
@@ -6384,7 +6389,7 @@ pub(crate) fn restore_workspace(
                                 worker_env
                                     .push(("PLEXI_RESUME_COMMAND".to_string(), resume_cmd.clone()));
                                 launch_command = Some(crate::pane_ops::construct::LaunchCommand {
-                                    command: resume_cmd.clone(),
+                                    command: resume_launch_cmd,
                                     close_on_exit: session.ephemeral,
                                 });
                                 auto_resume_launched = true;

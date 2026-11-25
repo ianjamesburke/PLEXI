@@ -1458,10 +1458,15 @@ impl TerminalPane {
                     a.session_id = None;
                 }
             }
+            let launch_command = crate::cli::agent::with_claude_resume_hooks(
+                harness,
+                resume_cmd,
+                standby.session_id.as_deref(),
+            );
             let line = if standby.ephemeral {
-                format!("{resume_cmd}; exit $?\n")
+                format!("{launch_command}; exit $?\n")
             } else {
-                format!("{resume_cmd}\n")
+                format!("{launch_command}\n")
             };
             self.backend
                 .process_command(egui_term::BackendCommand::Write(line.into_bytes()));
