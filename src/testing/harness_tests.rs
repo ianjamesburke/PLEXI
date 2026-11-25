@@ -17894,7 +17894,11 @@ pub(super) fn assert_claude_memory_command(
         .and_then(|command| command.split_once('\''))
         .unwrap_or_else(|| panic!("expected inline Claude settings in {command}"));
     let settings: serde_json::Value = serde_json::from_str(settings).unwrap();
-    assert_eq!(settings["autoMemoryDirectory"], memory.to_str().unwrap());
+    let bound = settings["autoMemoryDirectory"].as_str().unwrap();
+    assert_eq!(
+        std::path::Path::new(bound).canonicalize().unwrap(),
+        memory.canonicalize().unwrap(),
+    );
     assert_eq!(
         settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
         "plexi agent hook-event --agent claude-code"
@@ -17978,6 +17982,11 @@ mod agent_state_restoration_tests {
     fn lazy_standby_startup_restores_active_interrupted_skips_completed_ephemeral_and_keeps_background_standby(
     ) {
         let profile_dir = tempfile::tempdir().expect("profile_dir");
+        let recorded_memory = profile_dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("shared/agent_memory/lead");
         let tmp = tempfile::tempdir().expect("tempdir");
         #[cfg(unix)]
         let _shell = use_inert_agent_shell(tmp.path());
@@ -18004,6 +18013,15 @@ mod agent_state_restoration_tests {
                 ),
             )
             .expect("write agent settings");
+        }
+        let shadow = crate::agent::workspace_agents_dir(tmp.path()).join("lead");
+        std::fs::create_dir_all(&shadow).unwrap();
+        for file in ["AGENT.md", "settings.toml"] {
+            std::fs::copy(
+                profile_dir.path().join("agents/lead").join(file),
+                shadow.join(file),
+            )
+            .unwrap();
         }
         let slot_file = tmp.path().join("question.txt");
         std::fs::write(&slot_file, "Need API schema clarification").unwrap();
@@ -18077,6 +18095,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "claude".to_string(),
                                 config_name: Some("lead".to_string()),
+                                claude_memory_dir: Some(recorded_memory.clone()),
                                 permission_posture: None,
                                 session_id: Some("sess-active-10".to_string()),
                                 last_state: AgentState::Working,
@@ -18152,6 +18171,7 @@ mod agent_state_restoration_tests {
                             last_interaction_at: 0,
                             harness: "codex".to_string(),
                             config_name: Some("worker".to_string()),
+                            claude_memory_dir: None,
                             permission_posture: None,
                             session_id: Some("thread-bg-20".to_string()),
                             last_state: AgentState::Blocked,
@@ -18200,6 +18220,7 @@ mod agent_state_restoration_tests {
                             last_interaction_at: 0,
                             harness: "pi".to_string(),
                             config_name: Some("scout".to_string()),
+                            claude_memory_dir: None,
                             permission_posture: None,
                             session_id: Some("pi-done-30".to_string()),
                             last_state: AgentState::Completed,
@@ -18257,13 +18278,13 @@ mod agent_state_restoration_tests {
             "auto-resume records its launch"
         );
         assert_eq!(h.app.running_named_agent_pane("lead"), Some(10));
-        let memory = crate::config::shared_dir().join("agent_memory").join("lead");
         assert_claude_memory_command(
             active_term.last_resumed_command.as_deref().unwrap(),
-            &memory,
+            &recorded_memory,
             " --verbose --resume sess-active-10",
         );
-        assert!(memory.is_dir());
+        assert!(recorded_memory.is_dir());
+        assert!(!tmp.path().join(".plexi/agent_memory/lead").exists());
         assert_eq!(
             active_term.agent.as_ref().map(|a| &a.state),
             Some(&AgentState::Interrupted),
@@ -18396,6 +18417,7 @@ mod agent_state_restoration_tests {
             last_interaction_at: 0,
             harness: "codex".to_string(),
             config_name: Some("worker".to_string()),
+            claude_memory_dir: None,
             permission_posture: None,
             session_id: Some("thread-enter".to_string()),
             last_state: AgentState::Idle,
@@ -18456,6 +18478,7 @@ mod agent_state_restoration_tests {
             last_interaction_at: 0,
             harness: "claude".to_string(),
             config_name: None,
+            claude_memory_dir: None,
             permission_posture: None,
             session_id: Some("9faadb29-no-transcript".to_string()),
             last_state: AgentState::Idle,
@@ -18692,6 +18715,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                claude_memory_dir: None,
                                 permission_posture: None,
                                 session_id: None,
                                 last_state: AgentState::Idle,
@@ -18727,6 +18751,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                claude_memory_dir: None,
                                 permission_posture: None,
                                 session_id: Some("pi-unpersisted-11".to_string()),
                                 last_state: AgentState::Idle,
@@ -18762,6 +18787,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                claude_memory_dir: None,
                                 permission_posture: None,
                                 session_id: Some("pi-persisted-12".to_string()),
                                 last_state: AgentState::Idle,
@@ -18809,6 +18835,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                claude_memory_dir: None,
                                 permission_posture: None,
                                 session_id: None,
                                 last_state: AgentState::Idle,
@@ -18844,6 +18871,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
+                                claude_memory_dir: None,
                                 permission_posture: None,
                                 session_id: Some("pi-unpersisted-21".to_string()),
                                 last_state: AgentState::Idle,
@@ -21440,6 +21468,7 @@ ask = ["pane.send"]
                         last_interaction_at: 0,
                         harness: "claude".to_string(),
                         config_name: Some("lead".to_string()),
+                        claude_memory_dir: None,
                         permission_posture: None,
                         session_id: Some("sess-lead-10".to_string()),
                         last_state: crate::protocol::AgentState::Idle,
@@ -22257,6 +22286,7 @@ mod restore_followups_0983b {
                         last_interaction_at: 0,
                         harness: "script".to_string(),
                         config_name: None,
+                        claude_memory_dir: None,
                         permission_posture: None,
                         session_id: None,
                         last_state: AgentState::Completed,
@@ -25005,6 +25035,7 @@ pub(super) fn researcher_history_record(
         pane_name: Some("researcher".into()),
         harness: harness.into(),
         config_name: Some("researcher".into()),
+        claude_memory_dir: None,
         permission_posture: None,
         authority: None,
         session_id: Some(session_id.into()),
@@ -25496,6 +25527,7 @@ fn named_agent_focuses_standby_pane_without_waking_it() {
         last_interaction_at: 0,
         harness: "pi".to_string(),
         config_name: Some("researcher".to_string()),
+        claude_memory_dir: None,
         permission_posture: None,
         session_id: Some("sess-standby".to_string()),
         last_state: crate::protocol::AgentState::Idle,

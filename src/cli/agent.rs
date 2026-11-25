@@ -3559,13 +3559,10 @@ pub(crate) fn with_claude_auto_memory(command: &str, memory: &Path) -> Result<St
     ))
 }
 
-/// Attach the saved named agent's memory to a restore or standby launch.
-/// A missing definition leaves the harness's ordinary restore command intact.
+/// Bind the memory recorded by the original named Claude launch.
 pub(crate) fn with_saved_claude_memory(
     command: String,
     session: &crate::workspace::SavedAgentSession,
-    profile_dir: &Path,
-    cwd: Option<&Path>,
 ) -> String {
     let Some(role) = session.config_name.as_deref() else {
         return command;
@@ -3573,18 +3570,15 @@ pub(crate) fn with_saved_claude_memory(
     if session.ephemeral || AgentHarness::parse(&session.harness) != Some(AgentHarness::Claude) {
         return command;
     }
-    let workspace_root = cwd.and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
-    let definition = match resolve_agent_definition_in(role, profile_dir, workspace_root.as_deref()) {
-        Ok((definition, _)) => definition,
-        Err(error) => {
-            log::debug!("agent_memory: cannot resolve saved role={role}: {error}");
-            return command;
-        }
-    };
-    match crate::agent::memory::ensure_memory_dir(&definition)
-        .and_then(|memory| with_claude_auto_memory(&command, &memory))
-    {
-        Ok(command) => command,
+    let bound = crate::agent::memory::saved_memory_dir(session.claude_memory_dir.as_deref())
+        .and_then(|memory| {
+            memory
+                .map(|dir| with_claude_auto_memory(&command, &dir))
+                .transpose()
+        });
+    match bound {
+        Ok(Some(command)) => command,
+        Ok(None) => command,
         Err(error) => {
             log::warn!("agent_memory: Claude binding for saved role={role} failed: {error}");
             command

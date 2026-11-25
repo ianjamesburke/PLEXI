@@ -113,6 +113,7 @@ pub(crate) struct AgentWorkerLaunch<'a> {
     pub(crate) role: &'a str,
     pub(crate) harness: &'a str,
     pub(crate) command: &'a str,
+    pub(crate) claude_memory_dir: Option<PathBuf>,
     pub(crate) task: &'a str,
     pub(crate) ephemeral: bool,
     pub(crate) result_schema: Option<serde_json::Value>,
@@ -2525,10 +2526,16 @@ impl PlexiApp {
         // A raw spawn names its command; its role is a label unless a
         // definition of it exists, which must then resolve. A team
         // coordinator is no exception: a defined role keeps its ceiling.
-        let role_grant = self.admit_defined_worker_role(role, &placement.effective_cwd)?;
-        if !ephemeral && role_grant.is_some() {
-            Self::prepare_agent_memory(role, &placement.effective_cwd)?;
-        }
+        let definition = Self::resolve_defined_worker_role(role, &placement.effective_cwd)?;
+        let memory = definition
+            .as_ref()
+            .filter(|_| !ephemeral)
+            .map(crate::agent::memory::ensure_memory_dir)
+            .transpose()?;
+        let claude_memory_dir = memory.filter(|_| {
+            crate::cli::AgentHarness::parse(harness) == Some(crate::cli::AgentHarness::Claude)
+        });
+        let role_grant = definition.map(Self::admitted_worker_role);
         self.launch_agent_worker(
             AgentWorkerLaunch {
                 grant: AgentWorkerGrant {
@@ -2541,6 +2548,7 @@ impl PlexiApp {
                 role,
                 harness,
                 command: cmd,
+                claude_memory_dir,
                 task,
                 ephemeral,
                 result_schema,
@@ -2558,55 +2566,41 @@ impl PlexiApp {
         role: &str,
         lookup_cwd: &Path,
     ) -> Result<Option<crate::broker::pane_authority::AdmittedRole>, String> {
+        Self::resolve_defined_worker_role(role, lookup_cwd)
+            .map(|definition| definition.map(Self::admitted_worker_role))
+    }
+
+    fn resolve_defined_worker_role(
+        role: &str,
+        lookup_cwd: &Path,
+    ) -> Result<Option<crate::agent::AgentDefinition>, String> {
         let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_cwd);
+        let profile_dir = crate::config::config_dir();
         if !crate::cli::agent::agent_definition_exists(
             role,
-            &crate::config::config_dir(),
+            &profile_dir,
             lookup_root.as_deref(),
         ) {
             log::info!("agent_spawn: role={role} has no definition; unconfigured worker");
             return Ok(None);
         }
-        self.admit_worker_role(role, lookup_cwd).map(Some)
+        crate::cli::agent::resolve_agent_definition_in(role, &profile_dir, lookup_root.as_deref())
+            .map(|(definition, _)| Some(definition))
+            .map_err(|error| {
+                log::info!("agent_spawn: role={role} not admitted: {error}");
+                format!("permission_denied: agent role '{role}' did not resolve: {error}")
+            })
     }
 
-    /// Create the memory folder of `role`'s definition visible at
-    /// `lookup_cwd` before a named chat of it launches (stint 1397). Memory is
-    /// not authority: this reads the definition for its location only.
-    pub(crate) fn prepare_agent_memory(role: &str, lookup_cwd: &Path) -> Result<PathBuf, String> {
-        let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_cwd);
-        let (definition, _) = crate::cli::agent::resolve_agent_definition_in(
-            role,
-            &crate::config::config_dir(),
-            lookup_root.as_deref(),
-        )?;
-        crate::agent::memory::ensure_memory_dir(&definition)
-    }
-
-    /// `role`'s definition visible at `lookup_cwd`, admitted for a new named
-    /// worker. A role that does not resolve refuses the launch (stint 1632):
-    /// a missing definition never means the baseline.
-    pub(crate) fn admit_worker_role(
-        &self,
-        role: &str,
-        lookup_cwd: &Path,
-    ) -> Result<crate::broker::pane_authority::AdmittedRole, String> {
-        let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_cwd);
-        let (definition, _) = crate::cli::agent::resolve_agent_definition_in(
-            role,
-            &crate::config::config_dir(),
-            lookup_root.as_deref(),
-        )
-        .map_err(|error| {
-            log::info!("agent_spawn: role={role} not admitted: {error}");
-            format!("permission_denied: agent role '{role}' did not resolve: {error}")
-        })?;
-        Ok(crate::broker::pane_authority::AdmittedRole {
+    fn admitted_worker_role(
+        definition: crate::agent::AgentDefinition,
+    ) -> crate::broker::pane_authority::AdmittedRole {
+        crate::broker::pane_authority::AdmittedRole {
             id: definition.id,
             posture: definition.posture,
             can_call: definition.can_call,
             can_handoff: definition.can_handoff,
-        })
+        }
     }
 
     /// Construct and install an agent worker at `placement` under an already
@@ -2626,6 +2620,7 @@ impl PlexiApp {
             role,
             harness,
             command,
+            claude_memory_dir,
             task,
             ephemeral,
             result_schema,
@@ -2713,6 +2708,7 @@ impl PlexiApp {
         pane.parent_pane_id = parent_pane_id;
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
+        pane.claude_memory_dir = claude_memory_dir;
         pane.begin_agent_launch(crate::host::pane::AgentLaunchKind::Command);
         if let Ok(Some(posture)) = pane.permission_ceiling() {
             log::info!(

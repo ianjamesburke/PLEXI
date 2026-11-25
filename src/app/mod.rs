@@ -6382,12 +6382,8 @@ pub(crate) fn restore_workspace(
                                     session.session_id.as_deref(),
                                     &flags,
                                 );
-                                let resume_cmd = crate::cli::agent::with_saved_claude_memory(
-                                    resume_cmd,
-                                    session,
-                                    collaborators.profile_dir,
-                                    cwd.as_deref(),
-                                );
+                                let resume_cmd =
+                                    crate::cli::agent::with_saved_claude_memory(resume_cmd, session);
                                 if session
                                     .session_id
                                     .as_deref()
@@ -6516,6 +6512,7 @@ pub(crate) fn restore_workspace(
                                 pane.agent_harness = Some(session.harness.clone());
                                 pane.agent_session_id = session.session_id.clone();
                                 pane.agent_role = session.config_name.clone();
+                                pane.claude_memory_dir = session.claude_memory_dir.clone();
                                 pane.last_blocked_reason = session.last_blocked_reason;
                                 pane.tail_preview = session.tail_preview.clone();
                                 pane.agent_completed = session.last_state

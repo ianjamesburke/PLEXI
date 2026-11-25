@@ -156,6 +156,7 @@ pub(crate) struct AgentCallAuthority {
     pub(crate) role: String,
     pub(crate) harness: String,
     pub(crate) command: String,
+    pub(crate) claude_memory_dir: Option<PathBuf>,
     pub(crate) ephemeral: bool,
     pub(crate) result_schema: Option<Value>,
     /// The role as admitted for the worker's grant.
@@ -979,6 +980,8 @@ impl PlexiApp {
             role: def.id.clone(),
             harness: adapter.harness.as_str().to_string(),
             command,
+            claude_memory_dir: memory
+                .filter(|_| adapter.harness == crate::cli::AgentHarness::Claude),
             ephemeral: harness.ephemeral,
             result_schema: harness.result_schema.clone(),
             worker_role: crate::broker::pane_authority::AdmittedRole {
@@ -1311,6 +1314,7 @@ impl PlexiApp {
                 role: &authority.role,
                 harness: &authority.harness,
                 command: &authority.command,
+                claude_memory_dir: authority.claude_memory_dir.clone(),
                 task: &plan.task,
                 ephemeral: authority.ephemeral,
                 result_schema: authority.result_schema.clone(),
@@ -4110,6 +4114,7 @@ mod tests {
             pane_name: None,
             harness: "pi".into(),
             config_name: Some("tester".into()),
+            claude_memory_dir: None,
             permission_posture: None,
             authority: Some(recorded),
             session_id: None,
@@ -4172,6 +4177,7 @@ mod tests {
             pane_name: None,
             harness: "pi".into(),
             config_name: Some("helper".into()),
+            claude_memory_dir: None,
             permission_posture: None,
             authority: None,
             session_id: None,

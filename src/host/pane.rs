@@ -870,6 +870,8 @@ pub struct TerminalPane {
     pub agent_session_id: Option<String>,
     /// Optional agent role config name (`.plexi/agents/<name>.toml`).
     pub agent_role: Option<String>,
+    /// The named Claude memory directory selected at launch.
+    pub(crate) claude_memory_dir: Option<PathBuf>,
     /// The pane's credentials and the authority binding they were issued
     /// from (posture, provenance), fixed at construction (stint 1632).
     /// `None` only for a credential-free fixture.
@@ -1167,6 +1169,7 @@ impl TerminalPane {
             agent_harness,
             agent_session_id: None,
             agent_role,
+            claude_memory_dir: None,
             credentials,
             last_blocked_reason: None,
             tail_preview: None,
@@ -1444,9 +1447,7 @@ impl TerminalPane {
                 harness.restore_command_with_flags(standby.session_id.as_deref(), &flags)
             })
         });
-        let cmd = cmd.map(|command| {
-            crate::cli::agent::with_saved_claude_memory(command, &standby, &profile_dir, cwd)
-        });
+        let cmd = cmd.map(|command| crate::cli::agent::with_saved_claude_memory(command, &standby));
         if let Some(ref resume_cmd) = cmd {
             if harness.is_some_and(|h| {
                 standby
@@ -1828,6 +1829,7 @@ impl TerminalPane {
             last_interaction_at: self.last_interaction_at,
             harness,
             config_name: self.agent_role.clone(),
+            claude_memory_dir: self.claude_memory_dir.clone(),
             permission_posture: self.permission_ceiling().ok().flatten().cloned(),
             session_id,
             last_state,
@@ -1879,6 +1881,7 @@ impl TerminalPane {
             pane_name: self.name.clone(),
             harness: session.harness,
             config_name: session.config_name,
+            claude_memory_dir: session.claude_memory_dir,
             permission_posture: session.permission_posture,
             authority: self
                 .authority()
@@ -2071,6 +2074,7 @@ mod agent_source_tests {
             last_interaction_at: 0,
             harness: harness.to_string(),
             config_name: None,
+            claude_memory_dir: None,
             permission_posture: None,
             session_id: session_id.map(str::to_string),
             last_state: AgentState::Blocked,

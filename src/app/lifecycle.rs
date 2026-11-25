@@ -747,17 +747,15 @@ impl PlexiApp {
                     Some(name) => self.admit_defined_worker_role(name, &placement.effective_cwd)?,
                     None => None,
                 };
-                let memory = record
-                    .config_name
-                    .as_deref()
-                    .filter(|_| role_grant.is_some() && !record.ephemeral)
-                    .map(|name| Self::prepare_agent_memory(name, &placement.effective_cwd))
-                    .transpose()?;
-                let resume_cmd = match (claude, memory.as_deref()) {
-                    (Some(_), Some(memory)) => {
-                        crate::cli::agent::with_claude_auto_memory(&resume_cmd, memory)?
-                    }
-                    _ => resume_cmd,
+                let memory = if claude.is_some() && record.config_name.is_some() && !record.ephemeral
+                {
+                    crate::agent::memory::saved_memory_dir(record.claude_memory_dir.as_deref())?
+                } else {
+                    None
+                };
+                let resume_cmd = match memory.as_deref() {
+                    Some(memory) => crate::cli::agent::with_claude_auto_memory(&resume_cmd, memory)?,
+                    None => resume_cmd,
                 };
                 self.launch_agent_worker(
                     crate::pane_ops::create::AgentWorkerLaunch {
@@ -771,6 +769,7 @@ impl PlexiApp {
                         role: &role,
                         harness: &record.harness,
                         command: &resume_cmd,
+                        claude_memory_dir: memory,
                         task: record.summary.as_deref().unwrap_or_default(),
                         ephemeral: false,
                         result_schema: None,

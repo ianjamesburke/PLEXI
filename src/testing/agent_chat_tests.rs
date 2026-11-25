@@ -284,8 +284,13 @@ fn archived_claude_chat_reopens_with_its_agent_memory() {
     let mut record = researcher_history_record(&fx.proj_dir, "archived-claude", "claude");
     record.chat_archived = true;
     let memory = memory_dir("researcher");
-    for ephemeral in [true, false] {
+    let canonical_memory = crate::config::shared_dir()
+        .canonicalize()
+        .unwrap()
+        .join("agent_memory/researcher");
+    for (ephemeral, has_binding) in [(false, false), (true, true), (false, true)] {
         record.ephemeral = ephemeral;
+        record.claude_memory_dir = has_binding.then(|| canonical_memory.clone());
         let reply = h.app.reopen_agent_record(
             &record,
             None,
@@ -295,7 +300,7 @@ fn archived_claude_chat_reopens_with_its_agent_memory() {
         assert_eq!(reply["ok"], true, "{reply}");
         assert_eq!(reply["session_id"], "archived-claude");
         let command = reply["command"].as_str().unwrap();
-        if ephemeral {
+        if ephemeral || !has_binding {
             assert_eq!(command, "claude --resume archived-claude");
             assert!(!memory.exists());
         } else {
@@ -319,6 +324,7 @@ fn claude_standby_wake_binds_named_memory_for_resume_and_fallback() {
     std::fs::write(sessions.join("-proj").join("saved-claude.jsonl"), "{}\n").unwrap();
     let _sessions = crate::cli::agent::set_test_claude_projects_dir(sessions);
     let memory = memory_dir("researcher");
+    let caller = h.add_focused_terminal();
 
     for (session_id, cached_command, args) in [
         (
@@ -328,10 +334,8 @@ fn claude_standby_wake_binds_named_memory_for_resume_and_fallback() {
         ),
         ("missing-claude", None, ""),
     ] {
-        let pane_id = h.add_focused_terminal();
+        let pane_id = start_agent(&mut h, &fx, "researcher", caller);
         let pane = terminal_mut(&mut h, pane_id);
-        pane.agent_harness = Some("claude".into());
-        pane.agent_role = Some("researcher".into());
         pane.agent_session_id = Some(session_id.into());
         pane.standby_session = pane.build_saved_agent_session();
         pane.standby_cwd = Some(fx.proj_dir.clone());
@@ -345,6 +349,60 @@ fn claude_standby_wake_binds_named_memory_for_resume_and_fallback() {
             cached_command.map(|_| session_id)
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_reopen_keeps_the_launched_memory_after_workspace_shadowing() {
+    let mut h = HostHarness::new();
+    let fx = AgentFocusFixture::new();
+    write_agent(&fx, "researcher", "claude");
+    let _shell = use_inert_agent_shell(fx.home.path());
+    let caller = h.add_focused_terminal();
+    let pane_id = start_agent(&mut h, &fx, "researcher", caller);
+    let pane = terminal_mut(&mut h, pane_id);
+    pane.agent_session_id = Some("saved-claude".into());
+    let saved = pane.build_saved_agent_session().unwrap();
+    let saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+    let record = pane
+        .build_history_record(1, "test", fx.proj_dir.clone())
+        .unwrap();
+    let record = serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+
+    let shadow = crate::agent::workspace_agents_dir(&fx.proj_dir).join("researcher");
+    std::fs::create_dir_all(&shadow).unwrap();
+    for file in ["AGENT.md", "settings.toml"] {
+        std::fs::copy(
+            fx.profile_dir.join("agents/researcher").join(file),
+            shadow.join(file),
+        )
+        .unwrap();
+    }
+
+    let reply = h.app.reopen_agent_record(
+        &record,
+        None,
+        None,
+        crate::broker::pane_authority::GrantSource::OutsideProcess,
+    );
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_claude_memory_command(
+        reply["command"].as_str().unwrap(),
+        &memory_dir("researcher"),
+        " --resume saved-claude",
+    );
+
+    let pane = terminal_mut(&mut h, pane_id);
+    pane.standby_session = Some(saved);
+    pane.standby_cwd = Some(fx.proj_dir.clone());
+    pane.standby_resume_command = Some("claude --resume saved-claude".into());
+    let command = pane.resume_from_standby().unwrap();
+    assert_claude_memory_command(
+        &command,
+        &memory_dir("researcher"),
+        " --resume saved-claude",
+    );
+    assert!(!fx.proj_dir.join(".plexi/agent_memory/researcher").exists());
 }
 
 #[test]

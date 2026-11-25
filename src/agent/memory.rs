@@ -11,7 +11,10 @@
 //! moves or deletes it. The definition folder (`AGENT.md`, `settings.toml`) is
 //! never touched.
 
+use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Once;
 
 use super::{AgentDefinition, AgentSource};
 use crate::host::state_scope::{self, StateScope, UserDataKind};
@@ -65,33 +68,151 @@ pub fn memory_dir(definition: &AgentDefinition) -> Result<PathBuf, String> {
 
 /// Create `definition`'s memory folder if it is missing and return it. An
 /// existing folder and everything in it are left exactly as they are. A
-/// redirected (symlinked) `.plexi/` or `agent_memory/` is refused.
+/// symlink anywhere below the scope base is refused.
 pub fn ensure_memory_dir(definition: &AgentDefinition) -> Result<PathBuf, String> {
     let dir = memory_dir(definition)?;
     let (scope, root) = memory_scope(definition)?;
-    state_scope::assert_within_scope(&dir, scope, UserDataKind::AgentMemory, &root)?;
-    if dir.is_dir() {
-        return Ok(dir);
-    }
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        log::error!(
-            "agent_memory: create memory folder for agent={} path={} failed: {error}",
-            definition.id,
+    let parent = state_scope::assert_within_scope(&dir, scope, UserDataKind::AgentMemory, &root)?;
+    ensure_canonical_memory_dir(&dir, &parent.join(&definition.id))
+}
+
+/// Recheck the exact address saved at admission before handing it to Claude.
+pub(crate) fn saved_memory_dir(dir: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = dir else {
+        static LEGACY_NOTICE: Once = Once::new();
+        LEGACY_NOTICE.call_once(|| {
+            log::info!("agent_memory: saved Claude run has no recorded named memory directory");
+        });
+        return Ok(None);
+    };
+    if !dir.is_absolute()
+        || dir.ancestors().nth(3).is_none()
+        || dir.parent().and_then(Path::file_name) != Some(UserDataKind::AgentMemory.dir().as_ref())
+    {
+        return Err(format!(
+            "invalid saved agent memory folder {}",
             dir.display()
-        );
-        format!(
-            "create memory folder {} for agent '{}': {error}",
+        ));
+    }
+    ensure_canonical_memory_dir(dir, dir).map(Some)
+}
+
+fn ensure_canonical_memory_dir(dir: &Path, expected: &Path) -> Result<PathBuf, String> {
+    let metadata = match fs::symlink_metadata(dir) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            create_directory_tree(expected)
+                .map_err(|error| format!("create memory folder {}: {error}", dir.display()))?;
+            log::info!(
+                "agent_memory: prepared memory folder path={}",
+                dir.display()
+            );
+            fs::symlink_metadata(dir)
+        }
+        result => result,
+    }
+    .map_err(|error| format!("inspect memory folder {}: {error}", dir.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "agent memory folder {} is a symlink",
+            dir.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "agent memory folder {} is not a directory",
+            dir.display()
+        ));
+    }
+    let actual = fs::canonicalize(dir)
+        .map_err(|error| format!("canonicalize memory folder {}: {error}", dir.display()))?;
+    if actual != expected {
+        return Err(format!(
+            "agent memory folder {} escapes its scope: resolves to {} instead of {}",
             dir.display(),
-            definition.id
-        )
-    })?;
-    log::info!(
-        "agent_memory: created memory folder for agent={} scope={} path={}",
-        definition.id,
-        scope.as_str(),
-        dir.display()
-    );
-    Ok(dir)
+            actual.display(),
+            expected.display(),
+        ));
+    }
+    Ok(actual)
+}
+
+/// Open each canonical ancestor without following links, then create only the
+/// scope's three new components relative to the open parent descriptors.
+#[cfg(unix)]
+fn create_directory_tree(dir: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    #[cfg(target_vendor = "apple")]
+    let access = libc::O_SEARCH;
+    #[cfg(target_os = "linux")]
+    let access = libc::O_PATH;
+    #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+    let access = libc::O_RDONLY;
+
+    let base = dir.ancestors().nth(3).ok_or(io::ErrorKind::InvalidInput)?;
+    let mut parent = OwnedFd::from(fs::File::open("/")?);
+    let mut path = PathBuf::from("/");
+    for component in dir.components() {
+        let Component::Normal(name) = component else {
+            if component == Component::RootDir {
+                continue;
+            }
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
+        path.push(name);
+        let name = CString::new(name.as_bytes())?;
+        // SAFETY: parent is an open directory and name is one C string component.
+        if path != base
+            && path.starts_with(base)
+            && unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o777) } == -1
+        {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::AlreadyExists {
+                return Err(error);
+            }
+        }
+        // SAFETY: parent and name remain valid for the syscall.
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: openat returned a new owned descriptor.
+        parent = unsafe { OwnedFd::from_raw_fd(fd) };
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_directory_tree(dir: &Path) -> io::Result<()> {
+    let scope = dir.ancestors().take(4).collect::<Vec<_>>();
+    let mut directories = scope.into_iter().rev();
+    let base = directories.next().ok_or(io::ErrorKind::InvalidInput)?;
+    if base.canonicalize()? != base {
+        return Err(io::Error::other("redirected memory scope"));
+    }
+    for component in directories {
+        match fs::create_dir(component) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            result => result?,
+        }
+        if fs::symlink_metadata(component)?.file_type().is_symlink()
+            || component.canonicalize()? != component
+        {
+            return Err(io::Error::other(format!(
+                "redirected directory {}",
+                component.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -189,6 +310,44 @@ mod tests {
         );
         let error = ensure_memory_dir(&def).unwrap_err();
         assert!(error.contains("escapes its scope"), "{error}");
+        assert!(!elsewhere.path().join("writer").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_refuses_a_symlink_at_the_agent_directory() {
+        let ws = tempfile::tempdir().unwrap();
+        let def = definition(
+            "writer",
+            AgentSource::Workspace,
+            Some(crate::agent::workspace_agents_dir(ws.path()).join("writer")),
+        );
+        let dir = memory_dir(&def).unwrap();
+        let other_agent = dir.with_file_name("researcher");
+        std::fs::create_dir_all(&other_agent).unwrap();
+        std::os::unix::fs::symlink(&other_agent, &dir).unwrap();
+
+        let error = ensure_memory_dir(&def).expect_err("refuse another agent's memory");
+        assert!(error.contains("symlink"), "{error}");
+        assert!(error.contains(dir.to_str().unwrap()), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_memory_refuses_a_redirected_scope() {
+        let ws = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let root = ws
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(".plexi/agent_memory");
+        let dir = root.join("writer");
+        fs::create_dir_all(root.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), &root).unwrap();
+
+        let error = saved_memory_dir(Some(&dir)).unwrap_err();
+        assert!(error.contains(dir.to_str().unwrap()), "{error}");
         assert!(!elsewhere.path().join("writer").exists());
     }
 

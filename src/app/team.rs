@@ -865,6 +865,7 @@ impl PlexiApp {
                     role: &member.role,
                     harness: &member.harness,
                     command: &command,
+                    claude_memory_dir: None,
                     task: &task,
                     ephemeral: false,
                     result_schema: Some(run.team.schema()),
