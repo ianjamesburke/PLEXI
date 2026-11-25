@@ -4,7 +4,14 @@
 # Usage: scripts/release-version.sh [patch|minor|major]   — called by `just bump`
 set -euo pipefail
 
-REPO_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [[ "${1:-}" == --alpha-lock-inner ]]; then
+    shift
+    python3 -I "$SCRIPT_DIR/alpha_lock.py" --verify
+else
+    exec python3 -I "$SCRIPT_DIR/alpha_lock.py" bash "$SCRIPT_DIR/release-version.sh" --alpha-lock-inner "$@"
+fi
+REPO_ROOT=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
 TREE="$REPO_ROOT"
 
 die() { echo "error: $*" >&2; exit 1; }

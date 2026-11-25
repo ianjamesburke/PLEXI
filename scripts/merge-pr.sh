@@ -18,6 +18,17 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
 
+# Acquire before entering full-flow landing or the standalone squash recovery.
+case "${1:-}" in
+    --alpha-lock-inner)
+        shift
+        python3 -I "$SCRIPT_DIR/alpha_lock.py" --verify
+        ;;
+    squash|[0-9]*)
+        exec python3 -I "$SCRIPT_DIR/alpha_lock.py" bash "$SCRIPT_DIR/merge-pr.sh" --alpha-lock-inner "$@"
+        ;;
+esac
+
 do_rebase() {
     local BRANCH="$1"
     git fetch origin
@@ -33,8 +44,41 @@ do_rebase() {
 
 do_squash() {
     local PR="$1" REVIEWED_HEAD="$2"
+    if [[ -n "${PLEXI_QUEUE_EXPECTED_ALPHA:-}" ]]; then
+        if [[ ! "${PLEXI_QUEUE_EXPECTED_TREE:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: merge-queue requires the tested squash tree." >&2
+            return 1
+        fi
+        git fetch --quiet origin +refs/heads/alpha:refs/remotes/origin/alpha
+        if [[ "$(git rev-parse refs/remotes/origin/alpha)" != "$PLEXI_QUEUE_EXPECTED_ALPHA" ]]; then
+            echo "ERROR: merge-queue pre-merge base mismatch; expected $PLEXI_QUEUE_EXPECTED_ALPHA" >&2
+            return 1
+        fi
+    fi
     echo "==> Squash-merging PR #$PR at reviewed head $REVIEWED_HEAD"
-    gh pr merge "$PR" --squash --match-head-commit "$REVIEWED_HEAD"
+    if [[ -n "${PLEXI_QUEUE_EXPECTED_ALPHA:-}" ]]; then
+        # The synchronous API won't enroll a PR in GitHub's native merge queue.
+        gh api --method PUT "repos/{owner}/{repo}/pulls/$PR/merge" \
+            -f merge_method=squash -f "sha=$REVIEWED_HEAD" --jq '.merged' | grep -qx true
+    else
+        gh pr merge "$PR" --squash --match-head-commit "$REVIEWED_HEAD"
+    fi
+}
+
+verify_queue_squash() {
+    local PR="$1" STATE MERGE_COMMIT REMOTE
+    STATE=$(gh pr view "$PR" --json state,mergeCommit)
+    MERGE_COMMIT=$(jq -r '.mergeCommit.oid // ""' <<< "$STATE")
+    REMOTE=$(git rev-parse origin/alpha)
+    if [[ "$(jq -r .state <<< "$STATE")" != MERGED || ! "$MERGE_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
+       ! git merge-base --is-ancestor "$MERGE_COMMIT" "$REMOTE" ||
+       [[ "$(git rev-parse "$REMOTE^{tree}")" != "$PLEXI_QUEUE_EXPECTED_TREE" ||
+          "$(git rev-parse "$MERGE_COMMIT^{tree}")" != "$PLEXI_QUEUE_EXPECTED_TREE" ||
+          "$(git show -s --format=%P "$MERGE_COMMIT")" != "$PLEXI_QUEUE_EXPECTED_ALPHA" ||
+          "$REMOTE" != "$MERGE_COMMIT" ]]; then
+        echo "ERROR: merge-queue post-merge verification failed for #$PR at $REMOTE; retaining lane and closeout state." >&2
+        return 1
+    fi
 }
 
 do_sync() {
@@ -776,6 +820,10 @@ case "$CMD" in
         ;;
     *)
         PR="${1:?PR number required}"
+        if [[ ! "$PR" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: expected a numeric PR number." >&2
+            exit 1
+        fi
         shift
         NO_ISSUE=0
         REVIEWED_HEAD=""
@@ -862,6 +910,9 @@ case "$CMD" in
         fi
 
         do_sync
+        if [[ -n "${PLEXI_QUEUE_EXPECTED_ALPHA:-}" ]]; then
+            verify_queue_squash "$PR"
+        fi
         do_cleanup "$PR" "$BRANCH" "$REVIEWED_HEAD"
         if [ "$NO_ISSUE" -eq 1 ]; then
             echo "==> Skipping issue/stint close (no-issue)"
