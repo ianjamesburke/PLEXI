@@ -317,14 +317,16 @@ impl PlexiApp {
                         "OpenArtifact: pane {sender_pane_id} rejected — path {path:?} outside \
                          workspace {root:?}"
                     );
+                    self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, false);
                     return;
                 }
                 let checked = canonicalize_existing_prefix(&absolute);
                 if !within_canonical_root(root, &checked) {
                     log::warn!(
-                        "OpenArtifact: pane {sender_pane_id} rejected — real path of {path:?} \
-                         escapes workspace {root:?} (symlink)"
+                        "OpenArtifact: pane {sender_pane_id} rejected — {path:?} resolves to \
+                         {checked:?} outside workspace {root:?}"
                     );
+                    self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, false);
                     return;
                 }
                 checked
@@ -349,6 +351,31 @@ impl PlexiApp {
                 let _logged = shell_open(&target, false);
             }
         }
+        self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, true);
+    }
+
+    fn report_artifact_guard_to_explorer(
+        &mut self,
+        sender_pane_id: PaneId,
+        path: &str,
+        mode: ArtifactOpenMode,
+        allowed: bool,
+    ) {
+        let Some((window, _)) = self.find_pane_in_any_window(sender_pane_id) else {
+            return;
+        };
+        let Some(pane) = self.windows[window]
+            .panes
+            .get_mut(&sender_pane_id)
+            .and_then(Pane::as_view_mut)
+        else {
+            return;
+        };
+        let crate::host::pane::ViewRuntime::Builtin(view) = &mut pane.runtime else {
+            return;
+        };
+        view.artifact_guard_finished(path, mode, allowed);
+        self.ctx.request_repaint();
     }
 
     /// Queue an outbound `PlexiEvent` to the view pane identified by
