@@ -67,6 +67,21 @@ class LandingSafety(unittest.TestCase):
     def script(self, name, *args):
         return self.run_cmd('bash', str(SCRIPTS / name), *args, env=self.env, check=False)
 
+    def test_writer_entry_points_verify_lock_before_dispatch(self):
+        # Stub the GitHub call to verify the inherited lock at the actual
+        # dispatch boundary. No remote command or version mutation runs.
+        self.env["ALPHA_LOCK_SCRIPT"] = str(SCRIPTS / "alpha_lock.py")
+        self.stub("gh", 'python3 -I "$ALPHA_LOCK_SCRIPT" --verify; echo locked >&2; exit 32')
+        for args in (("squash", "1", "0" * 40), ("1", "--reviewed-head", "0" * 40)):
+            with self.subTest(args=args):
+                result = self.script("merge-pr.sh", *args)
+                self.assertEqual(result.returncode, 32, result.stdout + result.stderr)
+                self.assertIn("locked", result.stderr)
+        for script in ("merge-pr.sh", "release-version.sh"):
+            result = self.script(script, "--alpha-lock-inner", "patch")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("alpha writer lock", result.stderr)
+
     def remote_commit(self, filename):
         other = self.base / 'other'
         self.run_cmd('git', 'clone', '-b', 'alpha', str(self.remote), str(other), cwd=self.base)
