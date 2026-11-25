@@ -143,11 +143,76 @@ impl ClaudeMemoryIdentity {
                 ensure_canonical_memory_dir(&dir, &dir)
             }
             ClaudeMemoryScope::WorkspaceRoot(root) => {
-                let dir = state_scope::user_data_dir(StateScope::Context, kind, root)
+                let root = root.canonicalize().map_err(|error| {
+                    format!(
+                        "canonicalize Claude memory project root {}: {error}",
+                        root.display()
+                    )
+                })?;
+                let relative = state_scope::user_data_dir(StateScope::Context, kind, Path::new(""))
                     .join(&self.agent_id);
-                fs::create_dir_all(&dir)
-                    .map_err(|error| format!("create memory folder {}: {error}", dir.display()))?;
-                Ok(dir)
+                let expected = root.join(&relative);
+                let containment_error = |actual: &Path| {
+                    format!(
+                        "claude_memory_containment: agent '{}' expected a symlink-free directory at {}, actual path {}",
+                        self.agent_id,
+                        expected.display(),
+                        actual.display()
+                    )
+                };
+
+                // Check each component before descending so creation stays in the project.
+                let mut path = root;
+                let mut components = relative.components();
+                while let Some(component) = components.next() {
+                    path.push(component.as_os_str());
+                    let metadata = match path.symlink_metadata() {
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                            match fs::create_dir(&path) {
+                                Ok(()) => {}
+                                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                                Err(error) => {
+                                    return Err(format!(
+                                        "create memory folder {}: {error}",
+                                        path.display()
+                                    ));
+                                }
+                            }
+                            path.symlink_metadata()
+                        }
+                        result => result,
+                    }
+                    .map_err(|error| {
+                        format!("inspect memory folder {}: {error}", path.display())
+                    })?;
+                    if metadata.is_symlink() {
+                        let remainder = components.as_path();
+                        let actual = expected
+                            .canonicalize()
+                            .or_else(|_| path.canonicalize().map(|target| target.join(remainder)))
+                            .or_else(|_| {
+                                path.read_link()
+                                    .map(|target| path.with_file_name(target).join(remainder))
+                            })
+                            .map_err(|error| {
+                                format!("resolve memory symlink {}: {error}", path.display())
+                            })?;
+                        return Err(containment_error(&actual));
+                    }
+                    if !metadata.is_dir() {
+                        return Err(format!(
+                            "agent memory folder {} is not a directory",
+                            path.display()
+                        ));
+                    }
+                }
+                let actual = expected.canonicalize().map_err(|error| {
+                    format!("canonicalize memory folder {}: {error}", expected.display())
+                })?;
+                if actual != expected {
+                    return Err(containment_error(&actual));
+                }
+                Ok(actual)
             }
         }
     }
@@ -321,6 +386,70 @@ mod tests {
             serde_json::from_value(serde_json::json!({"scope": "global", "agent_id": "default"}))
                 .unwrap();
         assert_eq!(identity.agent_id, "default");
+    }
+
+    fn workspace_claude_memory(root: &Path) -> ClaudeMemoryIdentity {
+        let def = definition("writer", AgentSource::Workspace, None);
+        ClaudeMemoryIdentity::from_canonical_workspace(&def, Some(root)).unwrap()
+    }
+
+    #[test]
+    fn claude_workspace_memory_containment_accepts_a_normal_directory() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().canonicalize().unwrap();
+        let expected = root.join(".plexi/agent_memory/writer");
+        let memory = workspace_claude_memory(&root);
+
+        assert_eq!(memory.ensure_dir().unwrap(), expected);
+        assert!(expected.is_dir());
+        assert_eq!(memory.ensure_dir().unwrap(), expected);
+    }
+
+    #[cfg(unix)]
+    fn assert_claude_workspace_memory_refuses_symlink(link: &str, tail: &str, exists: bool) {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().canonicalize().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let target = elsewhere.path().canonicalize().unwrap();
+        let actual = if tail.is_empty() {
+            target.clone()
+        } else {
+            target.join(tail)
+        };
+        if exists {
+            fs::create_dir_all(&actual).unwrap();
+        }
+        let link = root.join(link);
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let expected = root.join(".plexi/agent_memory/writer");
+        let error = workspace_claude_memory(&root)
+            .ensure_dir()
+            .expect_err("refuse a redirected Claude memory directory");
+        assert!(error.contains("claude_memory_containment"), "{error}");
+        assert!(error.contains("agent 'writer'"), "{error}");
+        assert!(error.contains(expected.to_str().unwrap()), "{error}");
+        assert!(error.contains(actual.to_str().unwrap()), "{error}");
+        assert_eq!(actual.exists(), exists);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_workspace_memory_containment_refuses_agent_symlink() {
+        assert_claude_workspace_memory_refuses_symlink(".plexi/agent_memory/writer", "", true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_workspace_memory_containment_refuses_agent_memory_symlink() {
+        assert_claude_workspace_memory_refuses_symlink(".plexi/agent_memory", "writer", true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_workspace_memory_containment_refuses_plexi_symlink() {
+        assert_claude_workspace_memory_refuses_symlink(".plexi", "agent_memory/writer", false);
     }
 
     #[test]
