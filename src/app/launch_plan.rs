@@ -475,11 +475,19 @@ impl PlexiApp {
                     "the launch's caller could not be identified: {reason}"
                 )))
             }
-            RequestOrigin::Socket(SocketCaller::Pane(pane)) => (
-                Some(pane.terminal_pane),
-                None,
-                self.caller_grant_source(pane.terminal_pane),
-            ),
+            RequestOrigin::Socket(SocketCaller::Pane(pane)) => {
+                let live = self
+                    .pane_authority(pane.terminal_pane)
+                    .filter(|live| {
+                        std::sync::Arc::ptr_eq(live, &pane.authority) && !live.is_revoked()
+                    })
+                    .ok_or_else(|| refused("the launch's caller pane is no longer live".into()))?;
+                (
+                    Some(pane.terminal_pane),
+                    None,
+                    GrantSource::VerifiedPane(Box::new(live.grant().clone())),
+                )
+            }
             RequestOrigin::Socket(SocketCaller::External(_)) => {
                 (None, None, GrantSource::OutsideProcess)
             }
@@ -3005,6 +3013,120 @@ mod tests {
             .open_named_agent("tester", &root, Some(claimed), &crate::broker::caller::RequestOrigin::unidentified_for_test())
             .expect_err("an unverified open is refused");
         assert!(error.contains("could not be identified"), "{error}");
+    }
+
+    #[test]
+    fn pane_injected_palette_launch_keeps_caller_ceiling() {
+        let (h, caller, opened) = palette_definition_launch(true);
+        assert_eq!(
+            h.app.terminal_incarnation(opened).unwrap().parent_pane_id,
+            Some(caller)
+        );
+        let grant = grant_of(&h, opened);
+        assert_eq!(grant.parent, Some(caller));
+        assert_eq!(
+            grant.provenance,
+            Provenance::VerifiedPane { pane_id: caller }
+        );
+        assert!(grant.posture().unwrap().unwrap().denies("tool.secret"));
+    }
+
+    #[test]
+    fn desktop_palette_launch_has_no_parent_or_focused_pane_ceiling() {
+        let (h, _, opened) = palette_definition_launch(false);
+        assert_eq!(
+            h.app.terminal_incarnation(opened).unwrap().parent_pane_id,
+            None
+        );
+        let grant = grant_of(&h, opened);
+        assert_eq!(grant.parent, None);
+        assert_eq!(grant.provenance, Provenance::DesktopInput);
+        let posture = grant.posture().unwrap().unwrap();
+        assert!(posture.denies("reviewer.only"));
+        assert!(!posture.denies("tool.secret"));
+    }
+
+    fn palette_definition_launch(injected: bool) -> (HostHarness, PaneId, PaneId) {
+        use crate::host::picker::{PickerCommand, AGENTS_SOURCE};
+
+        let _features =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
+        let mut h = HostHarness::new();
+        let other = h.add_test_pane();
+        let dispatch_focus = h.add_test_pane();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let caller = spawn_tester(&mut h, &root);
+        let definition = h.profile_dir().join("agents/palette-reviewer");
+        std::fs::create_dir_all(&definition).unwrap();
+        std::fs::write(definition.join("AGENT.md"), "Review the fixture.").unwrap();
+        std::fs::write(
+            definition.join("settings.toml"),
+            "[agent]\nid='palette-reviewer'\ndisplay_name='Palette Reviewer'\n[harness]\ncli='script'\n[permissions]\ndefault_posture='ask'\ndeny=['reviewer.only']\n",
+        )
+        .unwrap();
+
+        // Hold the definition source so Enter crosses both picker deferral and
+        // the queued launch. Only the desktop case uses the restricted pane
+        // as its anchor. The injector must win over either focused pane.
+        h.focus_pane(if injected { other } else { caller });
+        h.app.open_command_palette("");
+        let release = h.app.hold_palette_agents_load();
+        h.app
+            .apply_palette_command(PickerCommand::SetStop(AGENTS_SOURCE));
+        h.app.set_palette_query("palette-reviewer");
+        h.run_frames(2);
+        if injected {
+            h.inject_from_pane(
+                caller,
+                HostRequest::HostKey {
+                    key: "enter".into(),
+                    response_file: String::new(),
+                },
+            );
+            h.run_frames(1);
+        } else {
+            // A pane's unrelated input in the same pass must leave the real
+            // Enter attributed to the desktop.
+            h.inject_from_pane(
+                caller,
+                HostRequest::HostKey {
+                    key: "up".into(),
+                    response_file: String::new(),
+                },
+            );
+            h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+        }
+        assert!(
+            h.app.command_palette_open(),
+            "Enter waits for the definition"
+        );
+        h.focus_pane(dispatch_focus);
+        release.send(Ok(())).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let opened = loop {
+            let pane = h
+                .app
+                .windows
+                .iter()
+                .flat_map(|w| w.panes.values())
+                .find_map(|p| {
+                    let terminal = p.as_terminal()?;
+                    (terminal.agent_role.as_deref() == Some("palette-reviewer"))
+                        .then_some(terminal.id)
+                });
+            if let Some(pane) = pane {
+                break pane;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "palette never launched the reviewer"
+            );
+            h.run_hidden_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        (h, caller, opened)
     }
 
     #[test]

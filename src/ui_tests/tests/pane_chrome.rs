@@ -115,6 +115,86 @@ fn child_agent_chip_offers_navigation_only_for_conjoined_children() {
     }
 }
 
+fn child_agent_chip_with_unrelated_worker() -> (PlexiUiHarness, u64) {
+    let (mut h, parent, _) = child_agent_chip_fixture(false);
+    let parent_context = h.with_app(|app| app.router.active().context_id);
+    let (worker, child_context) = h.with_app_mut(|app| {
+        app.spawn_agent_worker_pane(
+            "temporary-worker",
+            "pi",
+            "sleep 120",
+            "Review evidence",
+            Some("Agent tools"),
+            true,
+            Some(parent),
+            None,
+            None,
+            None,
+            true,
+            None,
+        )
+        .unwrap()
+    });
+    h.focus_pane(worker).unwrap();
+    h.with_app_mut(|app| {
+        let (_, unrelated_context) = app
+            .spawn_agent_worker_pane(
+                "unrelated",
+                "pi",
+                "sleep 120",
+                "Other work",
+                None,
+                true,
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(unrelated_context, child_context);
+        app.close_pane_by_id(worker);
+        assert_eq!(app.conjoined_contexts.get(&child_context), Some(&parent));
+    });
+    h.focus_pane(parent).unwrap();
+    h.run_steps(3);
+    (h, parent_context)
+}
+
+#[test]
+fn child_agent_chip_and_shortcut_ignore_unrelated_worker() {
+    let (mut h, parent_context) = child_agent_chip_with_unrelated_worker();
+    hover_child_agent_chip(&mut h);
+    assert!(!painted_texts(&mut h)
+        .iter()
+        .any(|(_, text)| text.starts_with("Open child agents (")));
+    assert!(h
+        .harness()
+        .query_all_by(|node| {
+            node.role() == egui::accesskit::Role::Button
+                && node
+                    .label()
+                    .is_some_and(|label| label.starts_with("researcher · "))
+        })
+        .next()
+        .is_none());
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
+    h.run_steps(3);
+    assert_eq!(
+        h.with_app(|app| app.router.active().context_id),
+        parent_context
+    );
+}
+
+#[test]
+fn screenshot_child_agent_chip_ignores_unrelated_worker() {
+    let (mut h, _) = child_agent_chip_with_unrelated_worker();
+    hover_child_agent_chip(&mut h);
+    h.save_screenshot(&evidence_png!()).unwrap();
+}
+
 #[test]
 fn screenshot_child_agent_chip_navigation() {
     for conjoined in [false, true] {

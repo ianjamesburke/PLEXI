@@ -481,6 +481,10 @@ impl PickerState {
         self.loading
     }
 
+    pub(crate) fn has_pending_enter(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// The presented rows are the current query's, and more may follow.
     pub(crate) fn is_partial(&self) -> bool {
         self.answered && self.loading

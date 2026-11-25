@@ -78,10 +78,7 @@ fn inject_key(h: &mut HostHarness, pane: PaneId, k: Key) {
         .pending_pane_inputs
         .entry(pane)
         .or_default()
-        .push(keys(vec![
-            key_event(k, true, false),
-            key_event(k, false, false),
-        ]));
+        .push(keys(vec![key_event(k, true, false), key_event(k, false, false)]).into());
     h.run_frames(1);
     assert!(
         h.app
@@ -204,8 +201,8 @@ fn event_consent_ignores_a_click_on_a_synthetic_frame() {
     let allow = first_modal_action(&h);
 
     let frames = h.app.pending_pane_pointer_frames.entry(pane).or_default();
-    frames.push_back(pointer(allow, true));
-    frames.push_back(pointer(allow, false));
+    frames.push_back(pointer(allow, true).into());
+    frames.push_back(pointer(allow, false).into());
     h.run_frames(3);
     assert!(h
         .app
@@ -414,8 +411,8 @@ fn raw_wasm_review_ignores_a_click_on_a_synthetic_frame() {
     let allow = first_modal_action(&h);
 
     let frames = h.app.pending_pane_pointer_frames.entry(pane).or_default();
-    frames.push_back(pointer(allow, true));
-    frames.push_back(pointer(allow, false));
+    frames.push_back(pointer(allow, true).into());
+    frames.push_back(pointer(allow, false).into());
     h.run_frames(3);
     assert!(h
         .app

@@ -3811,10 +3811,13 @@ mod tests {
                 .pending_pane_inputs
                 .entry(self.pane_id)
                 .or_default()
-                .push(egui::RawInput {
-                    events,
-                    ..Default::default()
-                });
+                .push(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    }
+                    .into(),
+                );
             self.h.run_frames(1);
             assert!(
                 !self.h.app.pending_pane_inputs.contains_key(&self.pane_id),
@@ -3927,7 +3930,7 @@ mod tests {
                     // pane drag pacing: one pointer batch per frame, press then release.
                     let button = egui::PointerButton::Primary;
                     let modifiers = egui::Modifiers::NONE;
-                    let frames = std::collections::VecDeque::from([
+                    let frames = [
                         egui::RawInput {
                             events: vec![
                                 egui::Event::PointerMoved(center),
@@ -3949,7 +3952,10 @@ mod tests {
                             }],
                             ..Default::default()
                         },
-                    ]);
+                    ]
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
                     self.h
                         .app
                         .pending_pane_pointer_frames

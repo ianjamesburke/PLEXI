@@ -73,7 +73,12 @@ fn harness_with_queued_pane_input(batch: RawInput) -> (super::PlexiUiHarness, u6
     let pane = h
         .with_app(|app| app.active_focused_pane_id())
         .expect("file browser is focused");
-    h.with_app_mut(|app| app.pending_pane_inputs.entry(pane).or_default().push(batch));
+    h.with_app_mut(|app| {
+        app.pending_pane_inputs
+            .entry(pane)
+            .or_default()
+            .push(batch.into())
+    });
     (h, pane)
 }
 

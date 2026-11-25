@@ -1,5 +1,7 @@
 use super::user_command_run::{spawn_shell_step, HostStepOutcome, UserCommandRun};
+use crate::app::input_router::{InputEvent, InputOrigin};
 use crate::app::PlexiApp;
+use crate::broker::caller::RequestOrigin;
 use crate::host::model::{HostAction, HostEffect};
 use crate::host::picker::{
     files::{FileHit, FileIndex},
@@ -773,6 +775,7 @@ fn shell_single_quote(s: &str) -> String {
 #[derive(Clone)]
 pub(crate) struct PendingUserCommand {
     pub(super) name: String,
+    origin: RequestOrigin,
     palette_scope: Option<crate::cli::UserCommandScope>,
     palette_root: Option<std::path::PathBuf>,
     context_root: std::path::PathBuf,
@@ -1577,6 +1580,11 @@ impl PlexiApp {
     /// so no source I/O runs on the draw path. `Activate` comes before
     /// `Closed`; the row runs after the close, with focus synchronized once.
     pub(crate) fn apply_palette_command(&mut self, command: PickerCommand) {
+        self.apply_palette_command_from(command, InputOrigin::Unattributed);
+    }
+
+    fn apply_palette_command_from(&mut self, command: PickerCommand, origin: InputOrigin) {
+        let answering = matches!(command, PickerCommand::Rows { .. });
         let was_showing_actions = self
             .host
             .picker(PickerId::Palette)
@@ -1584,6 +1592,23 @@ impl PlexiApp {
         let effects = self
             .host
             .apply(HostAction::Picker(PickerId::Palette, command));
+        let pending_origin = if self
+            .host
+            .picker(PickerId::Palette)
+            .is_some_and(|picker| picker.has_pending_enter())
+        {
+            self.palette_input
+                .pending_enter_origin
+                .get_or_insert_with(|| origin.clone());
+            None
+        } else {
+            self.palette_input.pending_enter_origin.take()
+        };
+        let origin = if answering {
+            pending_origin.unwrap_or_default()
+        } else {
+            origin
+        };
         if let Some(picker) = self.host.picker(PickerId::Palette) {
             if picker.is_open() && picker.showing_actions() != was_showing_actions {
                 self.palette_input.draft = picker.field_text().to_owned();
@@ -1617,7 +1642,7 @@ impl PlexiApp {
                             #[cfg(test)]
                             palette_test_log::activated(row.clone());
                             self.palette_sources.usage.record(row.as_str());
-                            self.queue_palette_agent_activation(target, action);
+                            self.queue_palette_agent_activation(target, action, origin.clone());
                         } else {
                             log::warn!("palette: no target for an activated agent row");
                         }
@@ -1653,7 +1678,7 @@ impl PlexiApp {
         }
         self.sync_command_palette_focus();
         if let Some(target) = activation {
-            self.run_palette_target(target);
+            self.run_palette_target(target, origin);
         }
     }
 
@@ -2008,22 +2033,19 @@ impl PlexiApp {
         }
         self.palette_input.activation_at = None;
         self.palette_input.hover_at = None;
-        let waiting = std::mem::take(&mut self.palette_input.waiting);
+        let mut waiting = std::mem::take(&mut self.palette_input.waiting);
         if !waiting.is_empty() {
             if self.palette_owns_input() {
                 log::debug!(
                     "palette: {} waiting field edit(s) lead this pass",
                     waiting.len()
                 );
-                ctx.input_mut(|i| {
-                    let fresh = std::mem::replace(&mut i.events, waiting);
-                    i.events.extend(fresh);
-                });
             } else {
                 log::info!(
                     "palette: {} waiting field edit(s) expired with their session",
                     waiting.len()
                 );
+                waiting.clear();
             }
         }
         // A release lost to another window: egui holds no button and this
@@ -2037,6 +2059,7 @@ impl PlexiApp {
         }) {
             self.palette_input.held.clear();
             self.palette_input.pane_held.clear();
+            self.palette_input.primary_press_origin = None;
         }
         let owns = self.palette_owns_input();
         let continuing = !self.palette_input.held.is_empty() || self.palette_input.scrolling;
@@ -2044,6 +2067,7 @@ impl PlexiApp {
             let opening = self.overlay_surface().is_none()
                 && ctx.input(|i| i.events.iter().any(|e| self.palette_toggle_chord(e)));
             if !opening {
+                self.input_origins.clear();
                 let events = ctx.input(|i| i.events.clone());
                 for event in &events {
                     self.note_pane_pointer(event);
@@ -2052,7 +2076,14 @@ impl PlexiApp {
             }
         }
         let events = ctx.input_mut(|i| std::mem::take(&mut i.events));
-        let mut kept = Vec::with_capacity(events.len());
+        let origins = self.input_origins.take(events.len());
+        let mut kept = Vec::with_capacity(waiting.len() + events.len());
+        waiting.extend(
+            events
+                .into_iter()
+                .zip(origins)
+                .map(|(event, origin)| InputEvent { event, origin }),
+        );
         let mut closed_session = logic_owned;
         let mut dropped = 0usize;
         // Whether the field has focus to edit with. egui's own begin-of-pass
@@ -2062,56 +2093,57 @@ impl PlexiApp {
             m.has_focus(palette_field_id()) || m.had_focus_last_frame(palette_field_id())
         });
         let mut order = DrawOrder::default();
-        for (index, event) in events.into_iter().enumerate() {
+        for (index, input) in waiting.into_iter().enumerate() {
+            let event = &input.event;
             let release = matches!(event, egui::Event::Key { pressed: false, .. });
             // A gesture a pane took keeps its moves and release, whoever
             // owns input now.
-            if self.pane_gesture_continues(&event) {
-                self.note_pane_pointer(&event);
-                kept.push(event);
+            if self.pane_gesture_continues(event) {
+                self.note_pane_pointer(event);
+                kept.push(input.event);
                 continue;
             }
             if self.palette_owns_input() {
                 closed_session = true;
-                self.note_palette_pointer(&event);
-                if self.take_owned_palette_event(ctx, index, &event, field_focused, &mut order) {
+                self.note_palette_pointer(event);
+                if self.take_owned_palette_event(ctx, index, &input, field_focused, &mut order) {
                     continue;
                 }
-                if release || !is_palette_input(&event) || is_field_input(&event) {
-                    kept.push(event);
+                if release || !is_palette_input(event) || is_field_input(event) {
+                    kept.push(input.event);
                 }
                 continue;
             }
             if self.palette_input.opener.is_some() {
-                if release || !is_palette_input(&event) {
-                    kept.push(event);
-                } else if is_field_input(&event) {
-                    self.palette_input.opening_tail.push(event);
+                if release || !is_palette_input(event) {
+                    kept.push(input.event);
+                } else if is_field_input(event) {
+                    self.palette_input.opening_tail.push(input);
                 } else {
-                    self.note_palette_pointer(&event);
+                    self.note_palette_pointer(event);
                 }
                 continue;
             }
-            if closed_session || self.palette_pointer_continues(&event) {
-                if release || !is_palette_input(&event) {
-                    kept.push(event);
+            if closed_session || self.palette_pointer_continues(event) {
+                if release || !is_palette_input(event) {
+                    kept.push(input.event);
                 } else {
-                    self.note_palette_pointer(&event);
+                    self.note_palette_pointer(event);
                     dropped += 1;
                 }
                 continue;
             }
-            if self.overlay_surface().is_none() && self.palette_toggle_chord(&event) {
+            if self.overlay_surface().is_none() && self.palette_toggle_chord(event) {
                 log::info!("palette: opening chord at input {index} of its delivery");
                 // Resolved here, so the chord's release claim is in place for
                 // a key-up later in this delivery; it acts after the old
                 // owner has finished what came before it.
                 self.palette_input.opener =
-                    Some(self.palette_host_actions(&event).unwrap_or_default());
+                    Some(self.palette_host_actions(event).unwrap_or_default());
                 continue;
             }
-            self.note_pane_pointer(&event);
-            kept.push(event);
+            self.note_pane_pointer(event);
+            kept.push(input.event);
         }
         if dropped > 0 {
             log::info!("palette: {dropped} input event(s) after its session closed were its own");
@@ -2133,8 +2165,9 @@ impl PlexiApp {
         &mut self,
         ctx: &egui::Context,
         index: usize,
-        event: &egui::Event,
+        input: &InputEvent,
     ) -> bool {
+        let event = &input.event;
         let close = self.key_bindings.close_pane;
         let quick_note = self.key_bindings.open_quick_note;
         if let egui::Event::Key {
@@ -2191,7 +2224,7 @@ impl PlexiApp {
         match command {
             Some(command) => {
                 log::debug!("palette: input {index} -> {command:?}");
-                self.apply_palette_command(command);
+                self.apply_palette_command_from(command, input.origin.clone());
                 true
             }
             None => false,
@@ -2276,11 +2309,19 @@ impl PlexiApp {
         &mut self,
         ctx: &egui::Context,
         index: usize,
-        event: &egui::Event,
+        input: &InputEvent,
         field_focused: bool,
         order: &mut DrawOrder,
     ) -> bool {
+        let event = &input.event;
         match event {
+            egui::Event::PointerButton {
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                ..
+            } => {
+                self.palette_input.primary_press_origin = Some(input.origin.clone());
+            }
             egui::Event::PointerButton {
                 button: egui::PointerButton::Primary,
                 pressed: false,
@@ -2289,7 +2330,25 @@ impl PlexiApp {
             | egui::Event::AccessKitActionRequest(_) => {
                 // The draw decides whether this activated a row or the scrim;
                 // commands after it wait for that.
-                self.palette_input.activation_at.get_or_insert(index);
+                let origin = match event {
+                    egui::Event::PointerButton { .. } => {
+                        let press = self.palette_input.primary_press_origin.take();
+                        match input.origin {
+                            InputOrigin::Desktop => press.unwrap_or_default(),
+                            _ => input.origin.clone(),
+                        }
+                    }
+                    _ => input.origin.clone(),
+                };
+                let activation = self
+                    .palette_input
+                    .activation_at
+                    .get_or_insert_with(|| (index, origin.clone()));
+                if activation.1 != origin {
+                    // egui reports the clicked row, but not which of several
+                    // releases hit it. Mixed origins cannot identify that click.
+                    activation.1 = InputOrigin::Unattributed;
+                }
                 order.deferring = true;
                 // egui reads accessibility requests from `events`.
                 return !matches!(event, egui::Event::AccessKitActionRequest(_));
@@ -2319,16 +2378,16 @@ impl PlexiApp {
             }
             if order.deferring || order.field_dirty || order.moved {
                 order.deferring = true;
-                self.palette_input.after_draw.push((index, event.clone()));
+                self.palette_input.after_draw.push((index, input.clone()));
             } else {
-                self.route_owned_palette_event(ctx, index, event);
+                self.route_owned_palette_event(ctx, index, input);
             }
             return true;
         }
         if is_field_input(event) {
             if order.deferring || !field_focused {
                 order.deferring = true;
-                self.palette_input.after_draw.push((index, event.clone()));
+                self.palette_input.after_draw.push((index, input.clone()));
                 return true;
             }
             self.note_palette_composition(event);
@@ -2388,29 +2447,34 @@ impl PlexiApp {
             self.apply_palette_command(PickerCommand::QueryEdited(draft));
         }
         enum Step {
-            Input(egui::Event),
-            Picker(PickerCommand),
+            Input(InputEvent),
+            Picker(PickerCommand, InputOrigin),
         }
         let mut steps: Vec<(usize, Step)> = after
             .into_iter()
             .map(|(index, event)| (index, Step::Input(event)))
             .collect();
-        if let Some(at) = activation_at {
-            if let Some((hit, opening, action)) = rows.action {
-                steps.push((
-                    at,
-                    Step::Picker(PickerCommand::ClickAction(hit, opening, action)),
-                ));
+        if let Some((at, origin)) = activation_at {
+            let command = if let Some((hit, opening, action)) = rows.action {
+                Some(PickerCommand::ClickAction(hit, opening, action))
             } else if let Some(stop) = rows.stop {
-                steps.push((at, Step::Picker(PickerCommand::SetStop(stop))));
+                Some(PickerCommand::SetStop(stop))
             } else if let Some(hit) = rows.clicked {
-                steps.push((at, Step::Picker(PickerCommand::Click(hit))));
+                Some(PickerCommand::Click(hit))
             } else if dismissed {
-                steps.push((at, Step::Picker(PickerCommand::Close)));
+                Some(PickerCommand::Close)
+            } else {
+                None
+            };
+            if let Some(command) = command {
+                steps.push((at, Step::Picker(command, origin)));
             }
         }
         if let (Some(at), Some(hit)) = (hover_at, rows.hovered) {
-            steps.push((at, Step::Picker(PickerCommand::Hover(hit))));
+            steps.push((
+                at,
+                Step::Picker(PickerCommand::Hover(hit), InputOrigin::Unattributed),
+            ));
         }
         steps.sort_by_key(|(index, _)| *index);
         let mut steps = steps.into_iter();
@@ -2421,19 +2485,19 @@ impl PlexiApp {
                 break;
             }
             match step {
-                Step::Picker(command) => {
+                Step::Picker(command, origin) => {
                     log::debug!("palette: input {index} -> {command:?} after the draw");
-                    self.apply_palette_command(command);
+                    self.apply_palette_command_from(command, origin);
                 }
-                Step::Input(event) if self.palette_command_key(&event) => {
-                    self.route_owned_palette_event(ctx, index, &event);
+                Step::Input(input) if self.palette_command_key(&input.event) => {
+                    self.route_owned_palette_event(ctx, index, &input);
                 }
                 Step::Input(event) => {
                     self.palette_input.waiting.push(event);
                     for (_, rest) in steps.by_ref() {
                         match rest {
                             Step::Input(event) => self.palette_input.waiting.push(event),
-                            Step::Picker(_) => dropped += 1,
+                            Step::Picker(..) => dropped += 1,
                         }
                     }
                     log::debug!(
@@ -2712,9 +2776,9 @@ impl PlexiApp {
 
     /// Run an activated row: a Commands row, or open a file through the
     /// host's one open resolver, anchored on the pane the palette serves.
-    fn run_palette_target(&mut self, target: PaletteTarget) {
+    fn run_palette_target(&mut self, target: PaletteTarget, origin: InputOrigin) {
         match target {
-            PaletteTarget::Command(id) => self.run_palette_selection(id),
+            PaletteTarget::Command(id) => self.run_palette_selection(id, origin),
             PaletteTarget::File(path) => {
                 #[cfg(test)]
                 if let Some(key) = crate::host::picker::files::file_key(&path) {
@@ -2731,7 +2795,7 @@ impl PlexiApp {
     }
 
     /// Execute a Commands-stop row.
-    fn run_palette_selection(&mut self, id: CommandRowId) {
+    fn run_palette_selection(&mut self, id: CommandRowId, origin: InputOrigin) {
         #[cfg(test)]
         palette_test_log::activated(id.key());
         // Bounded: the result kind only, never the query or row text.
@@ -2751,7 +2815,10 @@ impl PlexiApp {
             CommandRowId::UpdateReady(_) => {
                 self.run_palette_command(PaletteCommand::RestartToUpdate)
             }
-            CommandRowId::UserCommand { name, scope } => self.run_user_command(&name, scope),
+            CommandRowId::UserCommand { name, scope } => match origin.launch_request() {
+                Ok(origin) => self.queue_user_command_from(&name, Some(scope), origin.clone()),
+                Err(error) => self.notify_command_refused(&name, error),
+            },
             CommandRowId::Focus(target) => self.focus_palette_target(target),
             CommandRowId::Unavailable(name) => {
                 log::warn!("palette: parked context '{name}' has no live window to restore");
@@ -2944,29 +3011,51 @@ impl PlexiApp {
     /// step runner; single-line `run` commands run in the focused terminal pane
     /// when it is an idle shell (unless `split = true`), or open a new split
     /// pane when focused on a busy shell, agent pane, or view pane.
-    fn run_user_command(&mut self, name: &str, scope: crate::cli::UserCommandScope) {
-        self.queue_user_command(name, Some(scope));
-    }
-
     pub(crate) fn queue_user_command(
         &mut self,
         name: &str,
         palette_scope: Option<crate::cli::UserCommandScope>,
     ) {
-        let win = &self.windows[self.active_window];
-        let source_tile = win
-            .focused_pane
-            .or_else(|| win.tree.root.and_then(|root| win.find_first_pane_in(root)));
+        self.queue_user_command_from(name, palette_scope, RequestOrigin::HostUi);
+    }
+
+    fn queue_user_command_from(
+        &mut self,
+        name: &str,
+        palette_scope: Option<crate::cli::UserCommandScope>,
+        origin: RequestOrigin,
+    ) {
+        let (win, source_tile, caller) =
+            if let Some(pane) = origin.socket_caller().and_then(|c| c.pane()) {
+                let Some((win, tile)) = self.find_pane_in_any_window(pane.visible_pane) else {
+                    self.notify_command_refused(name, "The injecting pane is no longer available");
+                    return;
+                };
+                (&self.windows[win], Some(tile), Some(pane.terminal_pane))
+            } else {
+                let win = &self.windows[self.active_window];
+                let tile = win
+                    .focused_pane
+                    .or_else(|| win.tree.root.and_then(|root| win.find_first_pane_in(root)));
+                (win, tile, self.focused_pane_id())
+            };
+        let context_root = self
+            .router
+            .iter()
+            .find(|context| context.context_id == win.context_id)
+            .map(|context| context.root.clone())
+            .unwrap_or_else(|| win.path.clone());
         log::info!("user_command: queued name={name} scope={palette_scope:?}");
         self.pending_user_commands.push(PendingUserCommand {
             name: name.into(),
+            origin,
             palette_scope,
             palette_root: self.palette_workspace_root.clone(),
-            context_root: self.router.active().root.clone(),
+            context_root,
             source_window: win.window_id,
             source_context: win.context_id,
             source_tile,
-            caller: self.focused_pane_id(),
+            caller,
         });
         self.ctx.request_repaint();
     }
@@ -3150,6 +3239,13 @@ impl PlexiApp {
         ws_root: Option<std::path::PathBuf>,
     ) -> Option<u64> {
         let name = &command.name;
+        let source = match self.resolve_launch_source(&command.origin, command.caller) {
+            Ok(launch) => launch.source,
+            Err(error) => {
+                self.notify_command_refused(name, &error);
+                return None;
+            }
+        };
         if !force_split {
             if let Some(pane_id) = command
                 .caller
@@ -3161,15 +3257,18 @@ impl PlexiApp {
                     pane_id,
                     shell_cmd.chars().count()
                 );
-                self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::SendToPane {
-                    generated_operation_id: false,
-                    pane_id,
-                    text: shell_cmd.to_string(),
-                    submit: true,
-                    paste: false,
-                    response_file: None,
-                    operation_id: None,
-                });
+                self.handle_pane_ipc_request(
+                    command.origin.clone(),
+                    crate::protocol::HostRequest::SendToPane {
+                        generated_operation_id: false,
+                        pane_id,
+                        text: shell_cmd.to_string(),
+                        submit: true,
+                        paste: false,
+                        response_file: None,
+                        operation_id: None,
+                    },
+                );
                 return Some(pane_id);
             }
         }
@@ -3189,7 +3288,7 @@ impl PlexiApp {
         // A user command runs the workspace's command, not a shell for its
         // folder: no folder secrets.
         let launch = self.terminal_launch_with(
-            crate::broker::pane_authority::GrantSource::DesktopInput,
+            source,
             context,
             ws_root,
             Some(crate::pane_ops::construct::LaunchCommand {
@@ -3447,7 +3546,7 @@ impl PlexiApp {
                         worktree,
                         result_schema: parsed_result_schema,
                     };
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, req);
+                    self.handle_pane_ipc_request(command.origin.clone(), req);
                     let mut created_pane_id = self.user_command_focused_pane(command);
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -3485,10 +3584,10 @@ impl PlexiApp {
                     if !exists {
                         return HostStepOutcome::Exited(1);
                     }
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::SetPaneTitle {
-                        pane_id: pid,
-                        name,
-                    });
+                    self.handle_pane_ipc_request(
+                        command.origin.clone(),
+                        crate::protocol::HostRequest::SetPaneTitle { pane_id: pid, name },
+                    );
                     HostStepOutcome::Exited(0)
                 }
                 PaneCmd::Focus {
@@ -3509,9 +3608,10 @@ impl PlexiApp {
                     if !exists {
                         return HostStepOutcome::Exited(1);
                     }
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::FocusPane {
-                        pane_id,
-                    });
+                    self.handle_pane_ipc_request(
+                        command.origin.clone(),
+                        crate::protocol::HostRequest::FocusPane { pane_id },
+                    );
                     HostStepOutcome::Exited(0)
                 }
                 PaneCmd::Close { pane_id } => {
@@ -3527,10 +3627,13 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::ClosePane {
-                        pane_id: pid,
-                        response_file: Some(resp_str),
-                    });
+                    self.handle_pane_ipc_request(
+                        command.origin.clone(),
+                        crate::protocol::HostRequest::ClosePane {
+                            pane_id: pid,
+                            response_file: Some(resp_str),
+                        },
+                    );
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                             if val.get("error").is_some() {
@@ -3552,15 +3655,18 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::SendToPane {
-                        generated_operation_id: false,
-                        pane_id,
-                        text,
-                        submit,
-                        paste,
-                        response_file: Some(resp_str),
-                        operation_id,
-                    });
+                    self.handle_pane_ipc_request(
+                        command.origin.clone(),
+                        crate::protocol::HostRequest::SendToPane {
+                            generated_operation_id: false,
+                            pane_id,
+                            text,
+                            submit,
+                            paste,
+                            response_file: Some(resp_str),
+                            operation_id,
+                        },
+                    );
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                             if val.get("error").is_some() {
@@ -3576,11 +3682,14 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::KeyPane {
-                        pane_id,
-                        key,
-                        response_file: Some(resp_str),
-                    });
+                    self.handle_pane_ipc_request(
+                        command.origin.clone(),
+                        crate::protocol::HostRequest::KeyPane {
+                            pane_id,
+                            key,
+                            response_file: Some(resp_str),
+                        },
+                    );
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                             if val.get("error").is_some() {
@@ -3628,7 +3737,12 @@ impl PlexiApp {
                 else {
                     return HostStepOutcome::Exited(1);
                 };
-                let reply = self.agent_spawn_reply_admitted(&crate::broker::caller::RequestOrigin::HostUi, default_pane_id, &req, admitted);
+                let reply = self.agent_spawn_reply_admitted(
+                    &command.origin,
+                    default_pane_id,
+                    &req,
+                    admitted,
+                );
                 if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
                     self.notify_command_refused("agent launch", error);
                     return HostStepOutcome::Exited(1);
@@ -3645,12 +3759,7 @@ impl PlexiApp {
                     .unwrap_or_else(|| command.context_root.clone());
                 // The entire saved command now runs in logic, so admission
                 // and resolution can finish before the next step executes.
-                match self.open_named_agent(
-                    &name,
-                    &eff_cwd,
-                    default_pane_id,
-                    &crate::broker::caller::RequestOrigin::HostUi,
-                ) {
+                match self.open_named_agent(&name, &eff_cwd, default_pane_id, &command.origin) {
                     Ok(_) => HostStepOutcome::Exited(0),
                     Err(error) => {
                         self.notify_command_refused(&format!("agent open {name}"), &error);
@@ -3704,7 +3813,8 @@ impl PlexiApp {
                 else {
                     return HostStepOutcome::Exited(1);
                 };
-                let reply = self.agent_spawn_reply_admitted(&crate::broker::caller::RequestOrigin::HostUi, from_id, &req, admitted);
+                let reply =
+                    self.agent_spawn_reply_admitted(&command.origin, from_id, &req, admitted);
                 if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
                     self.notify_command_refused("agent launch", error);
                     return HostStepOutcome::Exited(1);
@@ -3776,7 +3886,7 @@ impl PlexiApp {
                     worktree: None,
                     result_schema: None,
                 };
-                self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, req);
+                self.handle_pane_ipc_request(command.origin.clone(), req);
                 if let Ok(content) = std::fs::read_to_string(&resp_path) {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                         if val.get("error").is_some() {
@@ -4222,10 +4332,13 @@ mod tests {
                         &ctx,
                     );
                 } else {
-                    h.app.run_palette_selection(CommandRowId::UserCommand {
-                        name: "gate-test".into(),
-                        scope: crate::cli::UserCommandScope::Workspace,
-                    });
+                    h.app.run_palette_selection(
+                        CommandRowId::UserCommand {
+                            name: "gate-test".into(),
+                            scope: crate::cli::UserCommandScope::Workspace,
+                        },
+                        InputOrigin::Desktop,
+                    );
                 }
                 assert!(
                     !logs
@@ -6571,8 +6684,10 @@ mod tests {
         let global_commands = h.profile_dir().join("commands.toml");
         assert!(!global_commands.exists());
 
-        h.app
-            .run_palette_selection(CommandRowId::Command(PaletteCommand::EditCommands));
+        h.app.run_palette_selection(
+            CommandRowId::Command(PaletteCommand::EditCommands),
+            InputOrigin::Desktop,
+        );
 
         assert!(
             global_commands.exists(),
@@ -6692,10 +6807,13 @@ steps = [
         // 2. Trigger `play` from the Command Palette and verify it also opens two panes.
         let before_palette = h.pane_count();
         h.app.palette_commands = crate::cli::resolve_user_commands(Some(&ws_root));
-        h.app.run_palette_selection(CommandRowId::UserCommand {
-            name: "play".to_string(),
-            scope: crate::cli::UserCommandScope::Workspace,
-        });
+        h.app.run_palette_selection(
+            CommandRowId::UserCommand {
+                name: "play".to_string(),
+                scope: crate::cli::UserCommandScope::Workspace,
+            },
+            InputOrigin::Desktop,
+        );
         h.hidden_frame();
         assert_eq!(
             h.pane_count(),
@@ -6809,8 +6927,10 @@ steps = [
         // Switch scope via `PaletteCommand::SwitchCommandsScope`: switches in-place to global
         // commands.toml without opening a second editor pane.
         h.focus_pane(editor_pane_id);
-        h.app
-            .run_palette_selection(CommandRowId::Command(PaletteCommand::SwitchCommandsScope));
+        h.app.run_palette_selection(
+            CommandRowId::Command(PaletteCommand::SwitchCommandsScope),
+            InputOrigin::Desktop,
+        );
         assert_eq!(
             h.pane_count(),
             2,
@@ -6902,10 +7022,13 @@ split = true
         );
         let count_before = h.pane_count();
         h.terminal_backend(term).enable_input_tap();
-        h.app.run_palette_selection(CommandRowId::UserCommand {
-            name: "in_place".to_string(),
-            scope: crate::cli::UserCommandScope::Workspace,
-        });
+        h.app.run_palette_selection(
+            CommandRowId::UserCommand {
+                name: "in_place".to_string(),
+                scope: crate::cli::UserCommandScope::Workspace,
+            },
+            InputOrigin::Desktop,
+        );
         h.hidden_frame();
         assert_eq!(
             h.pane_count(),

@@ -823,7 +823,9 @@ mod tests {
                 .push(egui::RawInput {
                     events,
                     ..Default::default()
-                });
+                }
+                .into(),
+            );
         });
         h.step();
         assert!(

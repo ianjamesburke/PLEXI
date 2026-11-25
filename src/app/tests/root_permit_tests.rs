@@ -194,7 +194,11 @@ fn input_frame(h: &mut HostHarness, socket_pane: Option<u64>, events: Vec<egui::
     };
     match socket_pane {
         Some(pane) => {
-            h.app.pending_pane_inputs.entry(pane).or_default().push(raw);
+            h.app
+                .pending_pane_inputs
+                .entry(pane)
+                .or_default()
+                .push(raw.into());
             h.frame(egui::RawInput::default());
             assert!(
                 h.app.synthetic_input_frame,

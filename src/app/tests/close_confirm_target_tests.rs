@@ -80,6 +80,7 @@ fn choose_palette_close(h: &mut HostHarness, pane: u64) {
             ask: None,
         },
         "close",
+        crate::app::input_router::InputOrigin::Unattributed,
     );
     h.app.service_palette_agent_activation();
 }

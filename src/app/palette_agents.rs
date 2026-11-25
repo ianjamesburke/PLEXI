@@ -7,6 +7,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
 use super::attention_queue::QueueCategory;
+use super::input_router::InputOrigin;
 use super::PlexiApp;
 use crate::agent::fleet::{self, AgentInput, BlockedOn, DisplayState};
 use crate::broker::gate::{NeedsYouRecord, PermissionMonitor};
@@ -121,6 +122,7 @@ pub(crate) enum AgentTarget {
 
 pub(crate) struct AgentActivation {
     origin: AgentOrigin,
+    input_origin: InputOrigin,
     target: AgentTarget,
     action: &'static str,
 }
@@ -445,10 +447,12 @@ impl PlexiApp {
         &mut self,
         target: AgentTarget,
         action: &'static str,
+        input_origin: InputOrigin,
     ) {
         if let Some(origin) = self.palette_agents.origin.clone() {
             self.palette_agent_activation = Some(AgentActivation {
                 origin,
+                input_origin,
                 target,
                 action,
             });
@@ -469,6 +473,7 @@ impl PlexiApp {
     fn run_palette_agent_action(&mut self, activation: AgentActivation) -> Result<(), String> {
         let AgentActivation {
             origin,
+            input_origin,
             target,
             action,
         } = activation;
@@ -483,7 +488,7 @@ impl PlexiApp {
                     &name,
                     &origin.cwd,
                     origin.caller,
-                    &crate::broker::caller::RequestOrigin::HostUi,
+                    input_origin.launch_request()?,
                 )?;
             }
             (AgentTarget::Pane { ask: Some(id), .. }, "answer") => {

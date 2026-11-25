@@ -122,10 +122,16 @@ impl PlexiApp {
     pub(crate) fn conjoined_child_context_index(&self, parent: u64) -> Option<usize> {
         self.conjoined_contexts.iter().find_map(|(&ctx, &id)| {
             if id != parent
-                || !self
-                    .windows
-                    .iter()
-                    .any(|w| w.context_id == ctx && !w.panes.is_empty())
+                || !self.windows.iter().any(|w| {
+                    w.context_id == ctx
+                        && w.panes.values().any(|pane| {
+                            pane.terminal_incarnation().is_some_and(|worker| {
+                                worker.parent_pane_id == Some(parent)
+                                    && worker.is_agent_pane()
+                                    && !worker.exited
+                            })
+                        })
+                })
             {
                 return None;
             }

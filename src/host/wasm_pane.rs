@@ -6126,7 +6126,7 @@ mod tests {
             .pending_pane_inputs
             .entry(pane_id)
             .or_default()
-            .push(injected);
+            .push(injected.into());
         h.run_frames(1);
         assert!(h
             .app
@@ -6318,8 +6318,8 @@ mod tests {
             .pending_pane_pointer_frames
             .entry(pane_id)
             .or_default();
-        frames.push_back(pointer(grant, true));
-        frames.push_back(pointer(grant, false));
+        frames.push_back(pointer(grant, true).into());
+        frames.push_back(pointer(grant, false).into());
         h.run_frames(3);
         assert!(pending(&mut h, pane_id), "an injected click granted");
 

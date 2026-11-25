@@ -102,6 +102,15 @@ fn conjoined_navigation_fixture(h: &mut HostHarness) -> (u64, egui_tiles::TileId
 }
 
 #[test]
+fn conjoined_dive_requires_a_worker_for_this_parent() {
+    let mut h = HostHarness::new();
+    let (parent, _, unrelated) = conjoined_navigation_fixture(&mut h);
+    assert!(h.app.windows[1].panes.contains_key(&unrelated));
+    assert_eq!(h.app.conjoined_child_context_index(parent), None);
+    assert!(!h.app.dive_into_agent_children(parent));
+}
+
+#[test]
 fn conjoined_strip_keyboard_navigation_routes_input_and_restores_context() {
     use crate::app::input_owner::InputOwner;
     let mut h = HostHarness::new();
@@ -129,6 +138,13 @@ fn conjoined_strip_keyboard_navigation_routes_input_and_restores_context() {
         .app
         .split_focused(true, None, false, false, None)
         .expect("child terminal");
+    let worker = h.app.windows[1]
+        .panes
+        .get_mut(&child)
+        .and_then(|pane| pane.as_terminal_mut())
+        .expect("child worker");
+    worker.parent_pane_id = Some(parent);
+    worker.agent_role = Some("fixture-worker".into());
     h.app.conjoined_contexts.insert(child_context, parent);
     h.app.focus_pane_in_strip(child);
     h.run_frames(2);

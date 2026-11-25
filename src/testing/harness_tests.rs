@@ -12727,7 +12727,9 @@ fn pending_pane_inputs_survive_hidden_passes() {
                 modifiers: egui::Modifiers::NONE,
             }],
             ..Default::default()
-        });
+        }
+        .into(),
+    );
     h.run_hidden_frames(3);
     assert!(
         h.app

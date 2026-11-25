@@ -276,6 +276,7 @@ pub struct PlexiApp {
     pub(crate) approval_buttons: Vec<ApprovalButton>,
     /// This frame's raw input includes socket-injected pane events.
     pub(crate) synthetic_input_frame: bool,
+    pub(crate) input_origins: input_router::InputOrigins,
     /// `plexi pane slot wait` requests parked until the watched slot's
     /// value matches, or their caller-supplied deadline passes (stint 0585).
     pub(crate) pending_slot_waits: Vec<crate::app::pane_wait::PendingSlotWait>,
@@ -687,7 +688,7 @@ pub struct PlexiApp {
     /// production render. Egui 0.34 rebuilds `InputState` at `begin_pass`, so
     /// writing directly into `Context::input_mut` from IPC dispatch can be
     /// acknowledged and then discarded before the widget sees it.
-    pub(crate) pending_pane_inputs: HashMap<crate::spatial::tiling::PaneId, Vec<egui::RawInput>>,
+    pub(crate) pending_pane_inputs: HashMap<PaneId, Vec<input_router::PaneInputBatch>>,
     /// Per-frame drag samples for canvas/process/WASM panes queued by
     /// `HostRequest::DragPane` (stint 0510). One sample is promoted into
     /// `pending_pane_clicks` per rendered frame so the target pane sees
@@ -704,7 +705,7 @@ pub struct PlexiApp {
     /// trajectory and resolves real drag state on whatever widget owns the
     /// positions.
     pub(crate) pending_pane_pointer_frames:
-        HashMap<crate::spatial::tiling::PaneId, std::collections::VecDeque<egui::RawInput>>,
+        HashMap<PaneId, std::collections::VecDeque<input_router::PaneInputBatch>>,
     pub zoom: zoom::ZoomState,
     pub attention_queue: attention_queue::AttentionQueueState,
     claude_questions: claude_question::ClaudeQuestions,
@@ -1943,6 +1944,7 @@ impl PlexiApp {
                     pending_screenshots: Vec::new(),
                     approval_buttons: Vec::new(),
                     synthetic_input_frame: false,
+                    input_origins: Default::default(),
                     pending_slot_waits: Vec::new(),
                     pane_mailboxes: HashMap::new(),
                     pending_message_recvs: Vec::new(),
@@ -2245,6 +2247,7 @@ impl PlexiApp {
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
+            input_origins: Default::default(),
             pending_slot_waits: Vec::new(),
             pane_mailboxes: HashMap::new(),
             pending_message_recvs: Vec::new(),
@@ -3219,6 +3222,7 @@ impl PlexiApp {
             pending_screenshots: Vec::new(),
             approval_buttons: Vec::new(),
             synthetic_input_frame: false,
+            input_origins: Default::default(),
             pending_slot_waits: Vec::new(),
             pending_agent_boots: Vec::new(),
             pending_submits: Vec::new(),
@@ -3684,6 +3688,7 @@ impl eframe::App for PlexiApp {
         }
         self.synthetic_input_frame = false;
         self.fulfill_screenshot_events(ctx, raw_input);
+        self.input_origins.begin_desktop(raw_input.events.len());
         // A hidden window (minimized/occluded) gets logic-only passes with no
         // widget pass to receive events — leave queued pane inputs in place so
         // the next visible frame delivers them instead of silently eating them.
@@ -3706,6 +3711,7 @@ impl eframe::App for PlexiApp {
                     .is_some_and(|batches| {
                         batches.iter().any(|batch| {
                             batch
+                                .raw
                                 .events
                                 .iter()
                                 .any(|event| matches!(event, egui::Event::Text(_)))
@@ -3726,8 +3732,12 @@ impl eframe::App for PlexiApp {
                     self.synthetic_input_frame = true;
                 }
                 for batch in batches {
-                    raw_input.modifiers = batch.modifiers;
-                    raw_input.events.extend(batch.events);
+                    raw_input.modifiers = batch.raw.modifiers;
+                    self.input_origins.append(
+                        &mut raw_input.events,
+                        batch.raw.events,
+                        batch.origin,
+                    );
                 }
             }
             // Drag pacing (stint 0510): exactly ONE pointer batch per visible
@@ -3736,7 +3746,11 @@ impl eframe::App for PlexiApp {
             if let Some(frames) = self.pending_pane_pointer_frames.get_mut(&pane_id) {
                 if let Some(batch) = frames.pop_front() {
                     self.synthetic_input_frame = true;
-                    raw_input.events.extend(batch.events);
+                    self.input_origins.append(
+                        &mut raw_input.events,
+                        batch.raw.events,
+                        batch.origin,
+                    );
                 }
                 if frames.is_empty() {
                     self.pending_pane_pointer_frames.remove(&pane_id);

@@ -35,6 +35,104 @@
 //! is keyboard/text-input scoped only. `Event::Ime` composition is also
 //! deliberately excluded — see [`is_input_intent`].
 
+use std::sync::Arc;
+
+use crate::broker::caller::RequestOrigin;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InputOrigin {
+    Desktop,
+    Injected(Arc<RequestOrigin>),
+    #[default]
+    Unattributed,
+}
+
+impl InputOrigin {
+    pub(crate) fn injected(origin: RequestOrigin) -> Self {
+        match origin {
+            RequestOrigin::HostUi | RequestOrigin::HostSystem => Self::Unattributed,
+            origin => Self::Injected(Arc::new(origin)),
+        }
+    }
+
+    pub(crate) fn launch_request(&self) -> Result<&RequestOrigin, &'static str> {
+        match self {
+            Self::Desktop => Ok(&RequestOrigin::HostUi),
+            Self::Injected(origin) => Ok(origin),
+            Self::Unattributed => Err("The palette input's origin could not be verified"),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct InputEvent {
+    pub(crate) event: egui::Event,
+    pub(crate) origin: InputOrigin,
+}
+
+/// Sidecar in delivery order for egui's event buffer, consumed by the palette
+/// before other UI owners rewrite or consume events.
+#[derive(Default)]
+pub(crate) struct InputOrigins(Vec<InputOrigin>);
+
+impl InputOrigins {
+    pub(crate) fn begin_desktop(&mut self, count: usize) {
+        self.0.clear();
+        self.0.resize(count, InputOrigin::Desktop);
+    }
+
+    pub(crate) fn append(
+        &mut self,
+        events: &mut Vec<egui::Event>,
+        injected: Vec<egui::Event>,
+        origin: InputOrigin,
+    ) {
+        self.align(events.len());
+        self.0.resize(events.len() + injected.len(), origin);
+        events.extend(injected);
+    }
+
+    pub(crate) fn take(&mut self, count: usize) -> Vec<InputOrigin> {
+        self.align(count);
+        std::mem::take(&mut self.0)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    fn align(&mut self, count: usize) {
+        if self.0.len() != count {
+            self.0.clear();
+            self.0.resize(count, InputOrigin::Unattributed);
+        }
+    }
+}
+
+pub(crate) struct PaneInputBatch {
+    pub(crate) raw: egui::RawInput,
+    pub(crate) origin: InputOrigin,
+}
+
+impl PaneInputBatch {
+    pub(crate) fn injected(raw: egui::RawInput, origin: &RequestOrigin) -> Self {
+        Self {
+            raw,
+            origin: InputOrigin::injected(origin.clone()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl From<egui::RawInput> for PaneInputBatch {
+    fn from(raw: egui::RawInput) -> Self {
+        Self {
+            raw,
+            origin: InputOrigin::Unattributed,
+        }
+    }
+}
+
 /// Returns true for events this router takes ownership of: physical keys,
 /// typed text, paste, and the clipboard `Copy`/`Cut` shortcut events (on macOS
 /// Cmd+C / Cmd+X arrive as `Event::Copy` / `Event::Cut`, and both the terminal

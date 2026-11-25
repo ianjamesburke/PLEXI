@@ -623,6 +623,7 @@ impl PlexiApp {
                 source: matches!(
                     source,
                     crate::broker::pane_authority::GrantSource::DesktopInput
+                        | crate::broker::pane_authority::GrantSource::VerifiedPane(_)
                 )
                 .then_some(source),
             },
@@ -1187,6 +1188,8 @@ impl PlexiApp {
         origin: crate::broker::caller::RequestOrigin,
         cmd: crate::protocol::HostRequest,
     ) {
+        use super::input_router::{InputOrigin, PaneInputBatch};
+
         match &cmd {
             crate::protocol::HostRequest::SubmitAssistantTurn {
                 text,
@@ -3583,14 +3586,17 @@ impl PlexiApp {
                                     Err(format!("pane {pane_id} could not be focused"))
                                 } else {
                                     self.pending_pane_inputs.entry(*pane_id).or_default().push(
-                                        egui::RawInput {
-                                            events: vec![if *paste {
-                                                egui::Event::Paste(text_with_newlines)
-                                            } else {
-                                                egui::Event::Text(text_with_newlines)
-                                            }],
-                                            ..Default::default()
-                                        },
+                                        PaneInputBatch::injected(
+                                            egui::RawInput {
+                                                events: vec![if *paste {
+                                                    egui::Event::Paste(text_with_newlines)
+                                                } else {
+                                                    egui::Event::Text(text_with_newlines)
+                                                }],
+                                                ..Default::default()
+                                            },
+                                            &origin,
+                                        ),
                                     );
                                     self.ctx.request_repaint();
                                     log::info!(
@@ -3863,7 +3869,7 @@ impl PlexiApp {
                             self.pending_pane_inputs
                                 .entry(*pane_id)
                                 .or_default()
-                                .push(raw);
+                                .push(PaneInputBatch::injected(raw, &origin));
                             self.ctx.request_repaint();
                         } else {
                             result = Err(format!("pane {pane_id} could not be focused"));
@@ -4020,10 +4026,13 @@ impl PlexiApp {
                                 },
                             ];
                             self.pending_pane_inputs.entry(*pane_id).or_default().push(
-                                egui::RawInput {
-                                    events,
-                                    ..Default::default()
-                                },
+                                PaneInputBatch::injected(
+                                    egui::RawInput {
+                                        events,
+                                        ..Default::default()
+                                    },
+                                    &origin,
+                                ),
                             );
                         } else {
                             // Canvas/Python panes: the render branch
@@ -4245,17 +4254,22 @@ impl PlexiApp {
                             ],
                             ..Default::default()
                         };
+                        let input_origin = InputOrigin::injected(origin.clone());
+                        let batch = |raw| PaneInputBatch {
+                            raw,
+                            origin: input_origin.clone(),
+                        };
                         let mut frames = std::collections::VecDeque::new();
-                        frames.push_back(press(from_abs, true));
+                        frames.push_back(batch(press(from_abs, true)));
                         for i in 1..=steps {
-                            frames.push_back(egui::RawInput {
+                            frames.push_back(batch(egui::RawInput {
                                 events: vec![egui::Event::PointerMoved(lerp(
                                     i as f32 / (steps + 1) as f32,
                                 ))],
                                 ..Default::default()
-                            });
+                            }));
                         }
-                        frames.push_back(press(to_abs, false));
+                        frames.push_back(batch(press(to_abs, false)));
                         self.pending_pane_pointer_frames.insert(*pane_id, frames);
                     } else {
                         use crate::host::pane::{PendingPaneClick, PointerPhase};
@@ -4503,8 +4517,9 @@ impl PlexiApp {
             }
             crate::protocol::HostRequest::HostKey { key, response_file } => {
                 log::info!(
-                    "pane_ipc: kind=host_key key={key:?} key_chars={}",
-                    key.chars().count()
+                    "pane_ipc: kind=host_key key={key:?} key_chars={} origin={}",
+                    key.chars().count(),
+                    origin.class()
                 );
                 match super::key_str_to_egui_raw_input(key) {
                     Some(raw) => {
@@ -4514,8 +4529,12 @@ impl PlexiApp {
                         // must never mistake these injected events for desktop input.
                         self.synthetic_input_frame = true;
                         self.ctx.input_mut(|input| {
+                            self.input_origins.append(
+                                &mut input.events,
+                                raw.events,
+                                InputOrigin::injected(origin.clone()),
+                            );
                             input.modifiers = modifiers;
-                            input.events.extend(raw.events);
                         });
                         self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                         write_json_response(response_file, serde_json::json!({"ok": true}));
