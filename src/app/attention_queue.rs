@@ -6659,23 +6659,119 @@ mod tests {
         );
     }
 
-    /// An `agent ask` whose question was not filed for the person answers
-    /// `ok: false`, not success (Codex 3312).
+    fn ask_from_pane(h: &mut HostHarness, pane_id: u64, question: &str) -> serde_json::Value {
+        let response = h.workspace_root().join("ask.json");
+        h.inject_from_pane(
+            pane_id,
+            crate::protocol::HostRequest::AgentAsk {
+                pane_id,
+                question: question.into(),
+                response_file: response.to_string_lossy().into_owned(),
+            },
+        );
+        h.hidden_frame();
+        serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap()
+    }
+
+    fn assert_agent_ask_refuses_plain_shell(experiments: &[crate::release::ReleaseFeature]) {
+        let _experiments = crate::release::set_test_experiments(experiments);
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let questions = monitor.host_records().questions(true);
+        let terminal = h.app.terminal_incarnation(pane_id).unwrap();
+        assert!(!terminal.is_agent_pane());
+        let slots = terminal.slots.clone();
+        let blocked_reason = terminal.last_blocked_reason;
+        let waiter = h.workspace_root().join("parent-wait.json");
+        h.app.park_agent_tool_wait(pane_id, waiter.to_str().unwrap());
+
+        let reply = ask_from_pane(&mut h, pane_id, "Which branch?");
+
+        assert_eq!(reply["ok"], false, "{reply}");
+        let error = reply["error"].as_str().unwrap();
+        assert!(error.contains("requires an agent terminal"), "{error}");
+        assert!(error.contains("pane new --agent"), "{error}");
+        let terminal = h.app.terminal_incarnation(pane_id).unwrap();
+        assert!(!terminal.is_agent_pane());
+        assert_eq!(terminal.last_blocked_reason, blocked_reason);
+        assert_eq!(terminal.slots, slots);
+        assert_eq!(monitor.host_records().questions(true), questions);
+        h.app.sync_attention_queue();
+        assert!(h.app.attention_queue.items.is_empty());
+        assert!(!waiter.exists(), "refused ask woke the parent waiter");
+    }
+
+    #[test]
+    fn agent_ask_refuses_plain_shell_without_agent_mesh() {
+        assert_agent_ask_refuses_plain_shell(&[]);
+    }
+
+    #[test]
+    fn agent_ask_refuses_plain_shell_with_agent_mesh() {
+        assert_agent_ask_refuses_plain_shell(&[crate::release::ReleaseFeature::AgentMesh]);
+    }
+
+    fn add_unparented_agent(h: &mut HostHarness) -> u64 {
+        let pane_id = h.add_focused_terminal();
+        h.inject_from_pane(
+            pane_id,
+            crate::protocol::HostRequest::SetAgentState {
+                pane_id,
+                state: crate::protocol::AgentState::Working,
+                agent: "codex".into(),
+                detail: None,
+                session_id: None,
+                event: None,
+                blocked_reason: None,
+            },
+        );
+        h.hidden_frame();
+        assert!(h.app.terminal_incarnation(pane_id).unwrap().is_agent_pane());
+        pane_id
+    }
+
+    #[test]
+    fn agent_ask_from_unparented_agent_files_human_question_without_agent_mesh() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let mut h = HostHarness::new();
+        let pane_id = add_unparented_agent(&mut h);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let question = "Which branch?";
+
+        let reply = ask_from_pane(&mut h, pane_id, question);
+
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["state"], "blocked");
+        assert!(reply["parent_pane_id"].is_null());
+        let terminal = h.app.terminal_incarnation(pane_id).unwrap();
+        assert_eq!(
+            terminal.agent.as_ref().unwrap().state,
+            crate::protocol::AgentState::Blocked
+        );
+        let slot = std::fs::read(&terminal.slots["question"]).unwrap();
+        let slot: serde_json::Value = serde_json::from_slice(&slot).unwrap();
+        assert_eq!(slot["question"], question);
+        let questions = monitor.host_records().questions(true);
+        assert_eq!(questions.len(), 1, "{questions:?}");
+        assert_eq!(questions[0].kind, NeedsYouKind::Question);
+        assert_eq!(questions[0].summary, question);
+        assert_eq!(questions[0].actor.pane().unwrap().number(), pane_id);
+        h.app.sync_attention_queue();
+        assert!(h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .any(|item| item.id == questions[0].id));
+    }
+
     #[test]
     fn agent_ask_reports_a_question_that_was_not_filed() {
         let mut h = HostHarness::new();
-        let pane_id = h.add_focused_terminal();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let response = dir.path().join("ask.json");
-        // An empty question is refused by the Needs-you store.
-        h.inject_ipc(crate::protocol::HostRequest::AgentAsk {
-            pane_id,
-            question: String::new(),
-            response_file: response.to_string_lossy().into_owned(),
-        });
-        h.hidden_frame();
-        let body: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap();
+        let pane_id = add_unparented_agent(&mut h);
+        // An empty question is refused by the Needs You store.
+        let body = ask_from_pane(&mut h, pane_id, "");
         assert_eq!(body["ok"], false, "{body}");
         assert!(
             body["error"].as_str().unwrap().contains("not filed"),

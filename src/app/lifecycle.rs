@@ -5820,6 +5820,20 @@ impl PlexiApp {
                     self.refuse_cross_pane("agent_ask", &error, *pane_id, response_file);
                     return;
                 }
+                if !self
+                    .terminal_incarnation(*pane_id)
+                    .is_some_and(crate::host::pane::TerminalPane::is_agent_pane)
+                {
+                    log::info!("pane_ipc: kind=agent_ask refused pane_id={pane_id} reason=agent_terminal_required");
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({
+                            "ok": false,
+                            "error": "agent ask requires an agent terminal. Start one with `plexi pane new --agent <tier-alias>` and run `plexi agent ask` there.",
+                        }),
+                    );
+                    return;
+                }
                 log::info!(
                     "pane_ipc: kind=agent_ask pane_id={pane_id} question_len={}",
                     question.len()
