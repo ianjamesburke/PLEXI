@@ -41,4 +41,28 @@ open = { kind = "builtin", id = "text-editor", as = "reopened", args = ["{tmp}/r
 expect = { target = "reopened", source_text_contains = "keep these unsaved edits" }
 
 [[steps]]
+text = { target = "reopened", value = "Saved from the quit prompt." }
+
+[[steps]]
+key = { target = "host", value = "cmd+q" }
+
+[[steps]]
+assert = { layout_valid = true, layout_surfaces = ["modal_action"] }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+assert_label = { target = "host", label = "Ctrl+Q pressed 1 of 3 — press again to quit", macos_label = "⌘Q pressed 1 of 3 — press again to quit" }
+
+[[steps]]
+shot = "editor-quit-confirmation.png"
+
+[[steps]]
+key = { target = "host", value = "escape" }
+
+[[steps]]
+expect = { target = "reopened", source_text_contains = "Saved from the quit prompt.", focused = true }
+
+[[steps]]
 close = "reopened"
