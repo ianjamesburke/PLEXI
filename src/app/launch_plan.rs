@@ -152,15 +152,7 @@ pub(crate) struct AgentCallAuthority {
     pub(crate) parent: Option<PaneId>,
     /// Context root the caller's `can_call`/`can_handoff` grant was read from.
     pub(crate) grant_root: PathBuf,
-    /// The role id the definition resolved to.
-    pub(crate) role: String,
-    pub(crate) harness: String,
-    pub(crate) command: String,
-    pub(crate) claude_memory_dir: Option<PathBuf>,
-    pub(crate) ephemeral: bool,
-    pub(crate) result_schema: Option<Value>,
-    /// The role as admitted for the worker's grant.
-    pub(crate) worker_role: crate::broker::pane_authority::AdmittedRole,
+    pub(crate) launch: crate::pane_ops::create::ConfiguredAgentLaunch,
     /// The caller's grant, which bounds the worker's.
     pub(crate) caller_grant: Option<crate::broker::pane_authority::PaneAuthority>,
 }
@@ -945,25 +937,11 @@ impl PlexiApp {
     ) -> Result<AgentCallAuthority, String> {
         let grant_root =
             self.check_agent_tool_permission(parent, origin_context_id, role, handoff)?;
-        let workspace = crate::app::registry::resolve_agent_lookup_workspace_root(lookup_root);
-        let (def, _) = crate::cli::agent::resolve_agent_definition_in(
+        let launch = crate::pane_ops::create::ConfiguredAgentLaunch::resolve(
             role,
-            &crate::config::config_dir(),
-            workspace.as_deref(),
-        )?;
-        let harness = def
-            .harness
-            .as_ref()
-            .ok_or("agent role has no CLI harness")?;
-        let adapter = crate::cli::agent::resolve_harness_adapter(harness)?;
-        let memory = (!harness.ephemeral)
-            .then(|| crate::agent::memory::ensure_memory_dir(&def))
-            .transpose()?;
-        let command = crate::cli::agent::build_agent_launch_command(
-            &def,
-            adapter,
+            lookup_root,
             Some(task_text),
-            memory.as_deref(),
+            None,
         )?;
         let caller_grant = match parent {
             Some(id) => Some(
@@ -977,19 +955,7 @@ impl PlexiApp {
         Ok(AgentCallAuthority {
             parent,
             grant_root,
-            role: def.id.clone(),
-            harness: adapter.harness.as_str().to_string(),
-            command,
-            claude_memory_dir: memory
-                .filter(|_| adapter.harness == crate::cli::AgentHarness::Claude),
-            ephemeral: harness.ephemeral,
-            result_schema: harness.result_schema.clone(),
-            worker_role: crate::broker::pane_authority::AdmittedRole {
-                id: def.id.clone(),
-                posture: def.posture.clone(),
-                can_call: def.can_call.clone(),
-                can_handoff: def.can_handoff.clone(),
-            },
+            launch,
             caller_grant,
         })
     }
@@ -1065,7 +1031,12 @@ impl PlexiApp {
         let successor = match (request.handoff, parent) {
             (true, Some(old)) => {
                 let successor = self.host.alloc_pane_id();
-                self.validate_handoff_completion(old, &authority.role, request.task, successor)?;
+                self.validate_handoff_completion(
+                    old,
+                    &authority.launch.role.id,
+                    request.task,
+                    successor,
+                )?;
                 Some(successor)
             }
             _ => None,
@@ -1120,7 +1091,7 @@ impl PlexiApp {
         });
         log::info!(
             "launch_plan: admitted agent_call role={} parent={parent:?} child_parent={child_parent:?} origin={origin:?} subcontext={subcontext:?} destination={destination:?} destination_scope={destination_scope:?} handoff={} worktree={:?}",
-            authority.role,
+            authority.launch.role.id,
             request.handoff,
             request.worktree
         );
@@ -1241,13 +1212,18 @@ impl PlexiApp {
         if now != plan.authority {
             return Err(refused(format!(
                 "permission_denied: the authority or definition of role '{}' changed after admission",
-                plan.authority.role
+                plan.authority.launch.role.id
             )));
         }
         // Immediately before startup: the same completion against the
         // predecessor's current result state. A refusal starts no worker.
         if let (Some(old), Some(successor)) = (parent, plan.successor) {
-            self.validate_handoff_completion(old, &plan.authority.role, &plan.task, successor)?;
+            self.validate_handoff_completion(
+                old,
+                &plan.authority.launch.role.id,
+                &plan.task,
+                successor,
+            )?;
         }
         let cwd = prepared
             .map(|wt| wt.path.clone())
@@ -1306,18 +1282,18 @@ impl PlexiApp {
                         ),
                         None => crate::broker::pane_authority::GrantSource::OutsideProcess,
                     },
-                    role: Some(authority.worker_role.clone()),
+                    role: Some(authority.launch.role.clone()),
                     recorded: None,
                 },
                 pane_id: plan.successor,
                 spawned_by: None,
-                role: &authority.role,
-                harness: &authority.harness,
-                command: &authority.command,
-                claude_memory_dir: authority.claude_memory_dir.clone(),
+                role: &authority.launch.role.id,
+                harness: authority.launch.harness.as_str(),
+                command: &authority.launch.command,
+                claude_memory: authority.launch.claude_memory.clone(),
                 task: &plan.task,
-                ephemeral: authority.ephemeral,
-                result_schema: authority.result_schema.clone(),
+                ephemeral: authority.launch.ephemeral,
+                result_schema: authority.launch.result_schema.clone(),
                 run_token: None,
             },
             placement,
@@ -2956,7 +2932,7 @@ mod tests {
             command: "sleep 30".to_string(),
             task: None,
             subcontext: None,
-            ephemeral: false,
+            ephemeral: Some(false),
             name: None,
             cwd: Some(root.to_string_lossy().into_owned()),
             worktree: None,
@@ -4114,7 +4090,7 @@ mod tests {
             pane_name: None,
             harness: "pi".into(),
             config_name: Some("tester".into()),
-            claude_memory_dir: None,
+            claude_memory: None,
             permission_posture: None,
             authority: Some(recorded),
             session_id: None,
@@ -4177,7 +4153,7 @@ mod tests {
             pane_name: None,
             harness: "pi".into(),
             config_name: Some("helper".into()),
-            claude_memory_dir: None,
+            claude_memory: None,
             permission_posture: None,
             authority: None,
             session_id: None,

@@ -2450,17 +2450,14 @@ impl PlexiApp {
 
     /// Resume a Standby agent pane by ID, marking the workspace dirty when
     /// a Standby pane wakes up.
-    pub(crate) fn resume_standby_pane(&mut self, pane_id: crate::spatial::tiling::PaneId) -> bool {
-        let mut resumed = false;
-        for win in &mut self.windows {
-            if let Some(pane) = win.panes.get_mut(&pane_id) {
-                if pane.resume_from_standby() {
-                    resumed = true;
-                }
-                break;
-            }
-        }
-        if resumed {
+    pub(crate) fn resume_standby_pane(
+        &mut self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Result<bool, String> {
+        let resumed = self.windows.iter_mut()
+            .find_map(|win| win.panes.get_mut(&pane_id))
+            .map_or(Ok(false), Pane::resume_from_standby);
+        if matches!(resumed, Ok(true) | Err(_)) {
             self.mark_workspace_dirty();
         }
         resumed
@@ -6327,6 +6324,7 @@ pub(crate) fn restore_workspace(
                         depth: ctx_depth,
                     };
                     let mut auto_resume_launched = false;
+                    let mut memory_restore_error = None;
                     let mut worker_env: Vec<(String, String)> = Vec::new();
                     let mut launch_command = None;
                     let mut effective_session = effective_session;
@@ -6382,29 +6380,39 @@ pub(crate) fn restore_workspace(
                                     session.session_id.as_deref(),
                                     &flags,
                                 );
-                                let resume_cmd =
-                                    crate::cli::agent::with_saved_claude_memory(resume_cmd, session);
-                                if session
-                                    .session_id
-                                    .as_deref()
-                                    .is_some_and(|sid| !harness.session_exists(sid))
-                                {
-                                    session.session_id = None;
+                                match crate::cli::agent::bind_saved_claude_memory(
+                                    resume_cmd, session.claude_memory.as_ref(), &session.harness,
+                                    session.config_name.as_deref(), session.ephemeral,
+                                ) {
+                                    Ok(resume_cmd) => {
+                                        if session
+                                            .session_id
+                                            .as_deref()
+                                            .is_some_and(|sid| !harness.session_exists(sid))
+                                        {
+                                            session.session_id = None;
+                                        }
+                                        log::info!(
+                                            "workspace_restore: auto-resuming agent pane {} harness={} session_id={:?} state={}",
+                                            saved_pane.id,
+                                            session.harness,
+                                            session.session_id,
+                                            session.last_state.as_str()
+                                        );
+                                        worker_env
+                                            .push(("PLEXI_RESUME_COMMAND".to_string(), resume_cmd.clone()));
+                                        launch_command = Some(crate::pane_ops::construct::LaunchCommand {
+                                            command: resume_cmd,
+                                            close_on_exit: session.ephemeral,
+                                        });
+                                        auto_resume_launched = true;
+                                    }
+                                    Err(error) => memory_restore_error = Some(error),
                                 }
-                                log::info!(
-                                    "workspace_restore: auto-resuming agent pane {} harness={} session_id={:?} state={}",
-                                    saved_pane.id,
-                                    session.harness,
-                                    session.session_id,
-                                    session.last_state.as_str()
-                                );
-                                worker_env
-                                    .push(("PLEXI_RESUME_COMMAND".to_string(), resume_cmd.clone()));
-                                launch_command = Some(crate::pane_ops::construct::LaunchCommand {
-                                    command: resume_cmd.clone(),
-                                    close_on_exit: session.ephemeral,
-                                });
-                                auto_resume_launched = true;
+                            } else if session.claude_memory.is_some() {
+                                memory_restore_error = Some(format!(
+                                    "invalid Claude memory binding for harness={}", session.harness
+                                ));
                             }
                         }
                     }
@@ -6512,7 +6520,7 @@ pub(crate) fn restore_workspace(
                                 pane.agent_harness = Some(session.harness.clone());
                                 pane.agent_session_id = session.session_id.clone();
                                 pane.agent_role = session.config_name.clone();
-                                pane.claude_memory_dir = session.claude_memory_dir.clone();
+                                pane.claude_memory = session.claude_memory.clone();
                                 pane.last_blocked_reason = session.last_blocked_reason;
                                 pane.tail_preview = session.tail_preview.clone();
                                 pane.agent_completed = session.last_state
@@ -6525,10 +6533,13 @@ pub(crate) fn restore_workspace(
                                     detail: session.last_detail.clone(),
                                     session_id: session.session_id.clone(),
                                 });
-                                if !should_auto_resume {
+                                if !should_auto_resume || memory_restore_error.is_some() {
                                     pane.standby_session = Some(session);
                                     pane.standby_resume_command = standby_resume_command;
                                     pane.standby_cwd = cwd.clone();
+                                    if let Some(error) = memory_restore_error {
+                                        pane.report_memory_restore_error(&error);
+                                    }
                                     log::info!(
                                         "workspace_restore: restored agent pane {} into standby ({})",
                                         saved_pane.id,

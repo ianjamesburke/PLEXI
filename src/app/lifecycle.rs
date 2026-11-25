@@ -557,7 +557,7 @@ impl PlexiApp {
         request: &crate::protocol::HostRequest,
     ) -> serde_json::Value {
         match super::agent_open::admit_agent_mesh_route("AgentSpawn") {
-            Ok(admitted) => self.agent_spawn_reply_admitted(origin, None, request, admitted),
+            Ok(admitted) => self.agent_spawn_reply_admitted(origin, None, request, admitted, None),
             Err(error) => serde_json::json!({ "ok": false, "error": error }),
         }
     }
@@ -573,6 +573,7 @@ impl PlexiApp {
         host_parent: Option<crate::spatial::tiling::PaneId>,
         request: &crate::protocol::HostRequest,
         _admitted: super::agent_open::AdmittedAgentMeshRoute,
+        prepared: Option<&crate::pane_ops::create::ConfiguredAgentLaunch>,
     ) -> serde_json::Value {
         let crate::protocol::HostRequest::AgentSpawn {
             role,
@@ -610,12 +611,28 @@ impl PlexiApp {
             None => spawned_by,
         };
         log::info!(
-            "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral} parent_pane_id={effective_parent:?} spawned_by={spawned_by}"
+            "pane_ipc: kind=agent_spawn role={role} harness={harness} subcontext={subcontext:?} ephemeral={ephemeral:?} parent_pane_id={effective_parent:?} spawned_by={spawned_by}"
         );
         if let Err(error) = self.authorize_agent_anchor(origin, *anchor_pane) {
             log::info!("pane_ipc: agent_spawn anchor={anchor_pane:?} refused: {error}");
             return serde_json::json!({ "ok": false, "error_code": "permission_denied", "error": error });
         }
+        use crate::pane_ops::create::WorkerCommand;
+        let command = match (command.is_empty(), harness.is_empty()) {
+            (true, true) => WorkerCommand::Configured {
+                ephemeral: *ephemeral,
+                admitted: prepared,
+            },
+            (false, false) => WorkerCommand::Raw {
+                harness,
+                command,
+                ephemeral: ephemeral.unwrap_or(false),
+                result_schema: result_schema.clone(),
+            },
+            _ => {
+                return serde_json::json!({ "ok": false, "error": "raw agent spawn requires both harness and command" });
+            }
+        };
         let result = self.spawn_agent_worker_attributed(
             crate::pane_ops::create::WorkerAttribution {
                 spawned_by: Some(spawned_by.clone()),
@@ -623,21 +640,20 @@ impl PlexiApp {
             },
             crate::pane_ops::create::WorkerSpawn {
                 role,
-                harness,
-                cmd: command,
+                command,
                 task: task.as_deref().unwrap_or_default(),
                 subcontext: subcontext.as_deref(),
-                ephemeral: *ephemeral,
                 from_pane_id: effective_parent,
                 cwd_override: cwd.as_deref().map(std::path::PathBuf::from),
-                result_schema: result_schema.clone(),
                 run_token: None,
                 conjoined: false,
                 origin_context_id: None,
             },
         );
         let payload = match result {
-            Ok((new_pane_id, target_ctx_id)) => {
+            Ok(worker) => {
+                let new_pane_id = worker.pane_id;
+                let target_ctx_id = worker.context_id;
                 self.record_pane_provenance(new_pane_id);
                 if *focus {
                     self.focus_started_agent_pane(new_pane_id, effective_parent);
@@ -677,8 +693,8 @@ impl PlexiApp {
                     "parent_pane_id": effective_parent,
                     "spawned_by": spawned_by,
                     "role": role,
-                    "harness": harness,
-                    "command": command,
+                    "harness": worker.harness,
+                    "command": worker.command,
                 })
             }
             Err(e) => serde_json::json!({ "ok": false, "error": e }),
@@ -747,16 +763,13 @@ impl PlexiApp {
                     Some(name) => self.admit_defined_worker_role(name, &placement.effective_cwd)?,
                     None => None,
                 };
-                let memory = if claude.is_some() && record.config_name.is_some() && !record.ephemeral
-                {
-                    crate::agent::memory::saved_memory_dir(record.claude_memory_dir.as_deref())?
-                } else {
-                    None
-                };
-                let resume_cmd = match memory.as_deref() {
-                    Some(memory) => crate::cli::agent::with_claude_auto_memory(&resume_cmd, memory)?,
-                    None => resume_cmd,
-                };
+                let resume_cmd = crate::cli::agent::bind_saved_claude_memory(
+                    resume_cmd,
+                    record.claude_memory.as_ref(),
+                    &record.harness,
+                    record.config_name.as_deref(),
+                    record.ephemeral,
+                )?;
                 self.launch_agent_worker(
                     crate::pane_ops::create::AgentWorkerLaunch {
                         grant: crate::pane_ops::create::AgentWorkerGrant {
@@ -769,7 +782,7 @@ impl PlexiApp {
                         role: &role,
                         harness: &record.harness,
                         command: &resume_cmd,
-                        claude_memory_dir: memory,
+                        claude_memory: record.claude_memory.clone(),
                         task: record.summary.as_deref().unwrap_or_default(),
                         ephemeral: false,
                         result_schema: None,
@@ -3532,9 +3545,9 @@ impl PlexiApp {
                                     "pane {pane_id} already has a `pane send --submit` in flight"
                                 ))
                             }
-                            Some("terminal") => {
-                                self.resume_standby_pane(*pane_id);
-                                match self
+                            Some("terminal") => match self.resume_standby_pane(*pane_id) {
+                                Err(error) => Err(error),
+                                Ok(_) => match self
                                     .windows
                                     .iter_mut()
                                     .find_map(|win| win.panes.get_mut(pane_id))
@@ -3565,8 +3578,8 @@ impl PlexiApp {
                                     None => {
                                         Err(format!("pane {pane_id} changed while routing text"))
                                     }
-                                }
-                            }
+                                },
+                            },
                             Some("view") if *submit => {
                                 log::warn!(
                                     "pane_submit: pane_id={pane_id} refused — not a terminal pane"
@@ -3756,8 +3769,8 @@ impl PlexiApp {
                                 let is_enter = key.eq_ignore_ascii_case("enter")
                                     || key.eq_ignore_ascii_case("return");
                                 if is_enter && term.is_standby() {
-                                    self.resume_standby_pane(*pane_id);
-                                    Ok(serde_json::json!({"ok": true}))
+                                    self.resume_standby_pane(*pane_id)
+                                        .map(|_| serde_json::json!({"ok": true}))
                                 } else {
                                     match super::key_str_to_pty_bytes(key) {
                                         Ok(bytes) => {
@@ -6479,6 +6492,7 @@ impl PlexiApp {
                         t.agent_reported_at = None;
                         t.agent_harness = None;
                         t.agent_role = None;
+                        t.claude_memory = None;
                         t.agent_session_id = None;
                         t.set_reported_7501(None);
                         log::info!("observed agent: pane {pane_id} returned to shell; cleared idle hand-launched agent");

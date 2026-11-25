@@ -113,11 +113,93 @@ pub(crate) struct AgentWorkerLaunch<'a> {
     pub(crate) role: &'a str,
     pub(crate) harness: &'a str,
     pub(crate) command: &'a str,
-    pub(crate) claude_memory_dir: Option<PathBuf>,
+    pub(crate) claude_memory: Option<crate::agent::memory::ClaudeMemoryIdentity>,
     pub(crate) task: &'a str,
     pub(crate) ephemeral: bool,
     pub(crate) result_schema: Option<serde_json::Value>,
     pub(crate) run_token: Option<&'a str>,
+}
+
+/// One host decision for a configured agent's command, grant and memory.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ConfiguredAgentLaunch {
+    pub(crate) role: crate::broker::pane_authority::AdmittedRole,
+    pub(crate) harness: crate::cli::AgentHarness,
+    pub(crate) command: String,
+    pub(crate) claude_memory: Option<crate::agent::memory::ClaudeMemoryIdentity>,
+    pub(crate) ephemeral: bool,
+    pub(crate) result_schema: Option<serde_json::Value>,
+}
+
+impl ConfiguredAgentLaunch {
+    pub(crate) fn resolve(
+        role: &str,
+        cwd: &Path,
+        task: Option<&str>,
+        ephemeral: Option<bool>,
+    ) -> Result<Self, String> {
+        let stops = crate::app::registry::workspace_walk_stops()?;
+        Self::resolve_in(
+            role,
+            cwd,
+            task,
+            ephemeral,
+            &crate::config::config_dir(),
+            &stops,
+        )
+    }
+
+    pub(crate) fn resolve_in(
+        role: &str,
+        cwd: &Path,
+        task: Option<&str>,
+        ephemeral: Option<bool>,
+        profile: &Path,
+        stops: &[PathBuf],
+    ) -> Result<Self, String> {
+        use crate::agent::memory::{ClaudeMemoryIdentity, ensure_memory_dir};
+        use crate::cli::agent::{
+            build_agent_start_command, resolve_agent_definition_in,
+            resolve_agent_workspace_root_for, resolve_harness_adapter, with_auto_state_hooks,
+            with_claude_auto_memory,
+        };
+
+        crate::agent::validate_agent_id(role)?;
+        let workspace = resolve_agent_workspace_root_for(role, cwd, stops);
+        let (definition, _) = resolve_agent_definition_in(role, profile, workspace.as_deref())?;
+        let config = definition.harness.as_ref().ok_or_else(|| {
+            format!("agent '{role}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be started as a CLI harness session)")
+        })?;
+        let adapter = resolve_harness_adapter(config)?;
+        let ephemeral = ephemeral.unwrap_or(config.ephemeral);
+        let result_schema = config.result_schema.clone();
+        let mut claude_memory = None;
+        let mut prompt_memory = None;
+        if !ephemeral {
+            if adapter.harness == crate::cli::AgentHarness::Claude {
+                claude_memory = Some(ClaudeMemoryIdentity::new(
+                    &definition,
+                    workspace.as_deref(),
+                )?);
+            } else {
+                prompt_memory = Some(ensure_memory_dir(&definition)?);
+            }
+        }
+        let command =
+            build_agent_start_command(&definition, adapter, task, prompt_memory.as_deref())?;
+        let command = match &claude_memory {
+            Some(memory) => with_claude_auto_memory(&command, &memory.ensure_dir()?)?,
+            None => with_auto_state_hooks(adapter, command),
+        };
+        Ok(Self {
+            role: PlexiApp::admitted_worker_role(definition),
+            harness: adapter.harness,
+            command,
+            claude_memory,
+            ephemeral,
+            result_schema,
+        })
+    }
 }
 
 /// Where an agent spawn hangs: see [`PlexiApp::agent_spawn_parent`].
@@ -2454,19 +2536,22 @@ impl PlexiApp {
             },
             WorkerSpawn {
                 role,
-                harness,
-                cmd,
+                command: WorkerCommand::Raw {
+                    harness,
+                    command: cmd,
+                    ephemeral,
+                    result_schema,
+                },
                 task,
                 subcontext,
-                ephemeral,
                 from_pane_id,
                 cwd_override,
-                result_schema,
                 run_token,
                 conjoined,
                 origin_context_id,
             },
         )
+        .map(|worker| (worker.pane_id, worker.context_id))
     }
 
     /// [`Self::spawn_agent_worker_pane`] with the attribution and placement
@@ -2475,21 +2560,18 @@ impl PlexiApp {
         &mut self,
         attribution: WorkerAttribution,
         spawn: WorkerSpawn<'_>,
-    ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+    ) -> Result<SpawnedWorker, String> {
         let WorkerAttribution {
             spawned_by,
             anchor_pane,
         } = attribution;
         let WorkerSpawn {
             role,
-            harness,
-            cmd,
+            command,
             task,
             subcontext,
-            ephemeral,
             from_pane_id,
             cwd_override,
-            result_schema,
             run_token,
             conjoined,
             origin_context_id,
@@ -2523,20 +2605,55 @@ impl PlexiApp {
             (Some(_), None) => crate::broker::pane_authority::GrantSource::Team,
             (None, None) => crate::broker::pane_authority::GrantSource::OutsideProcess,
         };
-        // A raw spawn names its command; its role is a label unless a
-        // definition of it exists, which must then resolve. A team
-        // coordinator is no exception: a defined role keeps its ceiling.
-        let definition = Self::resolve_defined_worker_role(role, &placement.effective_cwd)?;
-        let memory = definition
-            .as_ref()
-            .filter(|_| !ephemeral)
-            .map(crate::agent::memory::ensure_memory_dir)
-            .transpose()?;
-        let claude_memory_dir = memory.filter(|_| {
-            crate::cli::AgentHarness::parse(harness) == Some(crate::cli::AgentHarness::Claude)
-        });
-        let role_grant = definition.map(Self::admitted_worker_role);
-        self.launch_agent_worker(
+        let resolved;
+        let (role, harness, command, ephemeral, result_schema, claude_memory, role_grant) =
+            match command {
+                WorkerCommand::Raw {
+                    harness,
+                    command,
+                    ephemeral,
+                    result_schema,
+                } => {
+                    let role_grant =
+                        self.admit_defined_worker_role(role, &placement.effective_cwd)?;
+                    (
+                        role,
+                        harness,
+                        command,
+                        ephemeral,
+                        result_schema,
+                        None,
+                        role_grant,
+                    )
+                }
+                WorkerCommand::Configured {
+                    ephemeral,
+                    admitted,
+                } => {
+                    let launch = match admitted {
+                        Some(launch) => launch,
+                        None => {
+                            resolved = ConfiguredAgentLaunch::resolve(
+                                role,
+                                &placement.effective_cwd,
+                                Some(task),
+                                ephemeral,
+                            )?;
+                            &resolved
+                        }
+                    };
+                    (
+                        &*launch.role.id,
+                        launch.harness.as_str(),
+                        &*launch.command,
+                        launch.ephemeral,
+                        launch.result_schema.clone(),
+                        launch.claude_memory.clone(),
+                        Some(launch.role.clone()),
+                    )
+                }
+            };
+        let (pane_id, context_id) = self.launch_agent_worker(
             AgentWorkerLaunch {
                 grant: AgentWorkerGrant {
                     source,
@@ -2547,15 +2664,21 @@ impl PlexiApp {
                 spawned_by,
                 role,
                 harness,
-                command: cmd,
-                claude_memory_dir,
+                command,
+                claude_memory,
                 task,
                 ephemeral,
                 result_schema,
                 run_token,
             },
             placement,
-        )
+        )?;
+        Ok(SpawnedWorker {
+            pane_id,
+            context_id,
+            harness: harness.to_owned(),
+            command: command.to_owned(),
+        })
     }
 
     /// `role`'s definition if one exists at `lookup_cwd`; a label with no
@@ -2620,7 +2743,7 @@ impl PlexiApp {
             role,
             harness,
             command,
-            claude_memory_dir,
+            claude_memory,
             task,
             ephemeral,
             result_schema,
@@ -2708,7 +2831,7 @@ impl PlexiApp {
         pane.parent_pane_id = parent_pane_id;
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
-        pane.claude_memory_dir = claude_memory_dir;
+        pane.claude_memory = claude_memory;
         pane.begin_agent_launch(crate::host::pane::AgentLaunchKind::Command);
         if let Ok(Some(posture)) = pane.permission_ceiling() {
             log::info!(
@@ -4696,16 +4819,33 @@ pub(crate) struct WorkerAttribution {
 }
 
 /// What agent worker to start, and from where.
+pub(crate) struct SpawnedWorker {
+    pub(crate) pane_id: PaneId,
+    pub(crate) context_id: u64,
+    pub(crate) harness: String,
+    pub(crate) command: String,
+}
+
+pub(crate) enum WorkerCommand<'a> {
+    Raw {
+        harness: &'a str,
+        command: &'a str,
+        ephemeral: bool,
+        result_schema: Option<serde_json::Value>,
+    },
+    Configured {
+        ephemeral: Option<bool>,
+        admitted: Option<&'a ConfiguredAgentLaunch>,
+    },
+}
+
 pub(crate) struct WorkerSpawn<'a> {
     pub(crate) role: &'a str,
-    pub(crate) harness: &'a str,
-    pub(crate) cmd: &'a str,
+    pub(crate) command: WorkerCommand<'a>,
     pub(crate) task: &'a str,
     pub(crate) subcontext: Option<&'a str>,
-    pub(crate) ephemeral: bool,
     pub(crate) from_pane_id: Option<u64>,
     pub(crate) cwd_override: Option<std::path::PathBuf>,
-    pub(crate) result_schema: Option<serde_json::Value>,
     pub(crate) run_token: Option<&'a str>,
     pub(crate) conjoined: bool,
     pub(crate) origin_context_id: Option<u64>,

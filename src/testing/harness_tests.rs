@@ -16540,7 +16540,7 @@ mod pane_lifecycle_events {
             command: "sleep 30".into(),
             task: Some("Ship stint 0802".into()),
             subcontext: Some("squad-alpha".into()),
-            ephemeral: true,
+            ephemeral: Some(true),
             name: None,
             cwd: None,
             worktree: None,
@@ -16673,7 +16673,7 @@ mod pane_lifecycle_events {
             command: "sleep 30".into(),
             task: Some("Crash task".into()),
             subcontext: Some("squad-crash".into()),
-            ephemeral: true,
+            ephemeral: Some(true),
             name: None,
             cwd: None,
             worktree: None,
@@ -16742,7 +16742,7 @@ mod pane_lifecycle_events {
             command: "sleep 30".into(),
             task: Some("Implement feature".into()),
             subcontext: Some("squad-ask".into()),
-            ephemeral: true,
+            ephemeral: Some(true),
             name: None,
             cwd: None,
             worktree: None,
@@ -16880,7 +16880,7 @@ mod pane_lifecycle_events {
                 command: "sleep 30".into(),
                 task: Some(format!("Task for {role}")),
                 subcontext: Some("squad-visual".into()),
-                ephemeral: true,
+                ephemeral: Some(true),
                 name: Some(role.into()),
                 cwd: None,
                 worktree: None,
@@ -18095,7 +18095,9 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "claude".to_string(),
                                 config_name: Some("lead".to_string()),
-                                claude_memory_dir: Some(recorded_memory.clone()),
+                                claude_memory: Some(serde_json::from_value(
+                                    serde_json::json!({"scope": "global", "agent_id": "lead"}),
+                                ).unwrap()),
                                 permission_posture: None,
                                 session_id: Some("sess-active-10".to_string()),
                                 last_state: AgentState::Working,
@@ -18171,7 +18173,7 @@ mod agent_state_restoration_tests {
                             last_interaction_at: 0,
                             harness: "codex".to_string(),
                             config_name: Some("worker".to_string()),
-                            claude_memory_dir: None,
+                            claude_memory: None,
                             permission_posture: None,
                             session_id: Some("thread-bg-20".to_string()),
                             last_state: AgentState::Blocked,
@@ -18220,7 +18222,7 @@ mod agent_state_restoration_tests {
                             last_interaction_at: 0,
                             harness: "pi".to_string(),
                             config_name: Some("scout".to_string()),
-                            claude_memory_dir: None,
+                            claude_memory: None,
                             permission_posture: None,
                             session_id: Some("pi-done-30".to_string()),
                             last_state: AgentState::Completed,
@@ -18417,7 +18419,7 @@ mod agent_state_restoration_tests {
             last_interaction_at: 0,
             harness: "codex".to_string(),
             config_name: Some("worker".to_string()),
-            claude_memory_dir: None,
+            claude_memory: None,
             permission_posture: None,
             session_id: Some("thread-enter".to_string()),
             last_state: AgentState::Idle,
@@ -18478,7 +18480,7 @@ mod agent_state_restoration_tests {
             last_interaction_at: 0,
             harness: "claude".to_string(),
             config_name: None,
-            claude_memory_dir: None,
+            claude_memory: None,
             permission_posture: None,
             session_id: Some("9faadb29-no-transcript".to_string()),
             last_state: AgentState::Idle,
@@ -18534,7 +18536,7 @@ mod agent_state_restoration_tests {
             command: "sleep 30".into(),
             task: Some("Audit auth".into()),
             subcontext: None,
-            ephemeral: true,
+            ephemeral: Some(true),
             name: Some("auditor-worker".into()),
             cwd: Some(tmp.path().to_string_lossy().to_string()),
             worktree: None,
@@ -18715,7 +18717,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
-                                claude_memory_dir: None,
+                                claude_memory: None,
                                 permission_posture: None,
                                 session_id: None,
                                 last_state: AgentState::Idle,
@@ -18751,7 +18753,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
-                                claude_memory_dir: None,
+                                claude_memory: None,
                                 permission_posture: None,
                                 session_id: Some("pi-unpersisted-11".to_string()),
                                 last_state: AgentState::Idle,
@@ -18787,7 +18789,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
-                                claude_memory_dir: None,
+                                claude_memory: None,
                                 permission_posture: None,
                                 session_id: Some("pi-persisted-12".to_string()),
                                 last_state: AgentState::Idle,
@@ -18835,7 +18837,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
-                                claude_memory_dir: None,
+                                claude_memory: None,
                                 permission_posture: None,
                                 session_id: None,
                                 last_state: AgentState::Idle,
@@ -18871,7 +18873,7 @@ mod agent_state_restoration_tests {
                                 last_interaction_at: 0,
                                 harness: "pi".to_string(),
                                 config_name: None,
-                                claude_memory_dir: None,
+                                claude_memory: None,
                                 permission_posture: None,
                                 session_id: Some("pi-unpersisted-21".to_string()),
                                 last_state: AgentState::Idle,
@@ -20221,9 +20223,8 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
     std::fs::create_dir_all(&proj_dir).unwrap();
     let stops = vec![fake_home.path().to_path_buf()];
 
-    let start_payload = crate::cli::agent::resolve_agent_start_in_stopping_at(
+    let start_payload = crate::cli::agent::agent_start_payload(
         "researcher",
-        &profile_dir,
         &proj_dir,
         Some("Investigate module"),
         &stops,
@@ -20234,12 +20235,9 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
     let _profile_guard = crate::config::set_test_profile_dir(profile_dir.clone());
     let spawn_reply = temp_response(fake_home.path(), "agent-start-spawn");
     let mut req_json = start_payload.clone();
-    // Use a harmless sleep command in the headless harness while verifying the generated interactive command.
-    assert!(start_payload["command"].as_str().unwrap().contains(
-        "--append-system-prompt 'You are an interactive researcher.\n\n# Plexi worker contract"
-    ));
-    assert!(!start_payload["command"].as_str().unwrap().contains(" -p"));
-    req_json["command"] = serde_json::Value::String("sleep 30".to_string());
+    #[cfg(unix)]
+    let _shell = use_inert_agent_shell(fake_home.path());
+    assert!(start_payload.get("command").is_none());
     req_json["response_file"] = serde_json::Value::String(spawn_reply.clone());
 
     let plugin_req: HostRequest =
@@ -20362,6 +20360,7 @@ impl AgentFocusFixture {
     }
 
     pub(super) fn request(&self, mut payload: serde_json::Value) -> HostRequest {
+        payload["harness"] = serde_json::json!("pi");
         payload["command"] = serde_json::Value::String("sleep 30".into());
         payload["response_file"] =
             serde_json::Value::String(temp_response(self.home.path(), "agent-focus"));
@@ -20370,9 +20369,8 @@ impl AgentFocusFixture {
 
     pub(super) fn start(&self) -> HostRequest {
         self.request(
-            crate::cli::agent::resolve_agent_start_in_stopping_at(
+            crate::cli::agent::agent_start_payload(
                 "researcher",
-                &self.profile_dir,
                 &self.proj_dir,
                 None,
                 &self.stops(),
@@ -20383,9 +20381,8 @@ impl AgentFocusFixture {
 
     fn spawn(&self) -> HostRequest {
         self.request(
-            crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+            crate::cli::agent::agent_spawn_payload(
                 "researcher",
-                &self.profile_dir,
                 &self.proj_dir,
                 Some("background task"),
                 None,
@@ -20517,23 +20514,24 @@ fn agent_start_from_background_context_caller_preserves_active_focus() {
     assert_eq!(h.app.active_focused_pane_id(), Some(front_pane));
 }
 
-/// Stint 1117: an unresolvable agent never reaches the host, so nothing is
-/// created and focus is untouched.
+/// An unknown agent is refused before launch and focus stays with the caller.
 #[test]
 fn agent_start_unknown_agent_fails_before_launch_and_preserves_focus() {
     let fx = AgentFocusFixture::new();
     let mut h = HostHarness::new();
     let caller = h.add_focused_terminal();
     let before = h.app.windows[0].panes.len();
-    let err = crate::cli::agent::resolve_agent_start_in_stopping_at(
-        "no-such-agent",
-        &fx.profile_dir,
-        &fx.proj_dir,
-        None,
-        &fx.stops(),
-    );
-    assert!(err.is_err(), "unknown agent must fail to resolve");
+    let mut request = crate::cli::agent::agent_start_payload(
+        "no-such-agent", &fx.proj_dir, None, &fx.stops(),
+    ).unwrap();
+    let response = temp_response(fx.home.path(), "unknown-role");
+    request["response_file"] = serde_json::json!(response);
+    let _profile = crate::config::set_test_profile_dir(fx.profile_dir.clone());
+    h.inject_from_pane(caller, serde_json::from_value(request).unwrap());
     h.run_frames(2);
+    let reply = read_json_response(&response);
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(reply["error"].as_str().unwrap().contains("no-such-agent"), "{reply}");
     assert_eq!(h.app.windows[0].panes.len(), before);
     assert_eq!(h.app.active_focused_pane_id(), Some(caller));
 }
@@ -20556,7 +20554,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         command: "sleep 30".into(),
         task: Some("Investigate auth flow".into()),
         subcontext: None,
-        ephemeral: false,
+        ephemeral: Some(false),
         name: None,
         cwd: Some(workspace.to_string_lossy().into_owned()),
         worktree: None,
@@ -20581,7 +20579,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         command: "sleep 30".into(),
         task: Some("Audit token lifetimes".into()),
         subcontext: None,
-        ephemeral: false,
+        ephemeral: Some(false),
         name: None,
         cwd: Some(workspace.to_string_lossy().into_owned()),
         worktree: None,
@@ -20724,7 +20722,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
         command: "sleep 30".into(),
         task: Some("Coordinate two workers".into()),
         subcontext: None,
-        ephemeral: false,
+        ephemeral: Some(false),
         name: None,
         cwd: None,
         worktree: None,
@@ -20747,7 +20745,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
             command: "sleep 30".into(),
             task: Some(format!("Subtask {i}")),
             subcontext: None,
-            ephemeral: false,
+            ephemeral: Some(false),
             name: None,
             cwd: None,
             worktree: None,
@@ -20927,7 +20925,7 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
         command: "sleep 30".into(),
         task: None,
         subcontext: None,
-        ephemeral: false,
+        ephemeral: Some(false),
         name: None,
         cwd: Some(dir.path().to_string_lossy().into_owned()),
         worktree: None,
@@ -21073,38 +21071,24 @@ allow = ["pane.send"]
     let human_shell = h.add_focused_terminal();
 
     // 2. Start-without-message with human parent provenance:
-    // Calling `resolve_agent_start_in_stopping_at` with `message: None` from `proj_dir`.
-    let start_payload_no_msg = crate::cli::agent::resolve_agent_start_in_stopping_at(
+    // Calling `agent_start_payload` with `message: None` from `proj_dir`.
+    let start_payload_no_msg = crate::cli::agent::agent_start_payload(
         "researcher",
-        &profile_dir,
         &proj_dir,
         None,
         &stops,
     )
     .expect("resolve agent start without message");
 
-    // Command verification: interactive adapter launch with persona and worker contract,
-    // but no -p / --print and no initial prompt string.
-    let cmd = start_payload_no_msg["command"].as_str().unwrap();
-    assert!(
-        cmd.contains("--append-system-prompt 'You are an interactive researcher persona.\n\n# Plexi worker contract"),
-        "must append system prompt with persona and worker contract: {cmd}"
-    );
-    assert!(
-        !cmd.contains(" -p"),
-        "interactive start must not contain -p flag: {cmd}"
-    );
-    assert!(
-        !cmd.contains(" --print"),
-        "interactive start must not contain --print flag: {cmd}"
-    );
-    assert_eq!(start_payload_no_msg["task"], "");
+    assert!(start_payload_no_msg.get("command").is_none());
+    assert!(start_payload_no_msg["task"].is_null());
     assert_eq!(start_payload_no_msg["ephemeral"], false);
     assert_eq!(start_payload_no_msg["role"], "researcher");
 
     // Spawn the start-without-message pane.
     let spawn_reply_1 = temp_response(fake_home.path(), "start-no-msg-spawn");
     let mut req_1 = start_payload_no_msg.clone();
+    req_1["harness"] = serde_json::json!("pi");
     req_1["command"] = serde_json::Value::String("sleep 30".to_string());
     req_1["response_file"] = serde_json::Value::String(spawn_reply_1.clone());
     h.inject_in_process(serde_json::from_value(req_1).unwrap());
@@ -21140,7 +21124,7 @@ allow = ["pane.send"]
         command: "sleep 30".into(),
         task: Some("Coordinate security audit".into()),
         subcontext: None,
-        ephemeral: false,
+        ephemeral: Some(false),
         name: None,
         cwd: Some(proj_dir.to_string_lossy().into_owned()),
         worktree: None,
@@ -21156,9 +21140,8 @@ allow = ["pane.send"]
     assert_eq!(claude_resp["spawned_by"], format!("pane:{human_shell}"));
 
     // Task-seeded interactive spawn from Claude parent:
-    let spawn_payload = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+    let spawn_payload = crate::cli::agent::agent_spawn_payload(
         "researcher",
-        &profile_dir,
         &proj_dir,
         Some("Audit token lifetimes"),
         None,
@@ -21167,17 +21150,12 @@ allow = ["pane.send"]
     )
     .expect("resolve agent spawn with task");
 
-    let spawn_cmd = spawn_payload["command"].as_str().unwrap();
-    assert!(
-        spawn_cmd.contains("--append-system-prompt 'You are an interactive researcher persona.\n\n# Plexi worker contract"),
-        "spawn must append system prompt with persona and worker contract: {spawn_cmd}"
-    );
-    assert!(spawn_cmd.contains("'Audit token lifetimes'"));
-    assert!(!spawn_cmd.contains(" -p"));
+    assert!(spawn_payload.get("command").is_none());
     assert_eq!(spawn_payload["task"], "Audit token lifetimes");
 
     let spawn_reply_2 = temp_response(fake_home.path(), "spawn-claude-child");
     let mut req_2 = spawn_payload.clone();
+    req_2["harness"] = serde_json::json!("pi");
     req_2["command"] = serde_json::Value::String("sleep 30".to_string());
     req_2["response_file"] = serde_json::Value::String(spawn_reply_2.clone());
     h.inject_from_pane(claude_pane, serde_json::from_value(req_2).unwrap());
@@ -21328,9 +21306,8 @@ allow = ["pane.send"]
 
     // 10. A task-seeded interactive child whose harness reports a nonzero exit
     // persists `failed` and resolves the same bounded wait with the failure.
-    let failed_spawn_payload = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+    let failed_spawn_payload = crate::cli::agent::agent_spawn_payload(
         "researcher",
-        &profile_dir,
         &proj_dir,
         Some("Exercise nonzero lifecycle"),
         None,
@@ -21340,6 +21317,7 @@ allow = ["pane.send"]
     .expect("resolve task-seeded spawn for failed lifecycle");
     let failed_spawn_reply = temp_response(fake_home.path(), "spawn-failed-child");
     let mut failed_request = failed_spawn_payload;
+    failed_request["harness"] = serde_json::json!("pi");
     failed_request["command"] = serde_json::Value::String("sleep 30".to_string());
     failed_request["response_file"] = serde_json::Value::String(failed_spawn_reply.clone());
     h.inject_in_process(serde_json::from_value(failed_request).unwrap());
@@ -21468,7 +21446,7 @@ ask = ["pane.send"]
                         last_interaction_at: 0,
                         harness: "claude".to_string(),
                         config_name: Some("lead".to_string()),
-                        claude_memory_dir: None,
+                        claude_memory: None,
                         permission_posture: None,
                         session_id: Some("sess-lead-10".to_string()),
                         last_state: crate::protocol::AgentState::Idle,
@@ -21998,7 +21976,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             command: "sleep 30".into(),
             task: None,
             subcontext: None,
-            ephemeral: false,
+            ephemeral: Some(false),
             name: None,
             cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
             worktree: None,
@@ -22020,7 +21998,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             command: "sleep 30".into(),
             task: Some("assist lead".into()),
             subcontext: None,
-            ephemeral: false,
+            ephemeral: Some(false),
             name: None,
             cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
             worktree: None,
@@ -22126,7 +22104,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         command: "sleep 30".into(),
         task: None,
         subcontext: None,
-        ephemeral: false,
+        ephemeral: Some(false),
         name: None,
         cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
         worktree: None,
@@ -22286,7 +22264,7 @@ mod restore_followups_0983b {
                         last_interaction_at: 0,
                         harness: "script".to_string(),
                         config_name: None,
-                        claude_memory_dir: None,
+                        claude_memory: None,
                         permission_posture: None,
                         session_id: None,
                         last_state: AgentState::Completed,
@@ -22401,7 +22379,7 @@ mod restore_followups_0983b {
                 command: "sleep 30".into(),
                 task: None,
                 subcontext: None,
-                ephemeral: false,
+                ephemeral: Some(false),
                 name: None,
                 cwd: Some(ws_dir.path().to_string_lossy().into_owned()),
                 worktree: None,
@@ -25035,7 +25013,7 @@ pub(super) fn researcher_history_record(
         pane_name: Some("researcher".into()),
         harness: harness.into(),
         config_name: Some("researcher".into()),
-        claude_memory_dir: None,
+        claude_memory: None,
         permission_posture: None,
         authority: None,
         session_id: Some(session_id.into()),
@@ -25527,7 +25505,7 @@ fn named_agent_focuses_standby_pane_without_waking_it() {
         last_interaction_at: 0,
         harness: "pi".to_string(),
         config_name: Some("researcher".to_string()),
-        claude_memory_dir: None,
+        claude_memory: None,
         permission_posture: None,
         session_id: Some("sess-standby".to_string()),
         last_state: crate::protocol::AgentState::Idle,

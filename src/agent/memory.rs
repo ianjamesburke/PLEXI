@@ -4,17 +4,21 @@
 //! Memory is user data, not config: it lives in the channel-neutral
 //! `UserDataKind::AgentMemory` tier (`src/host/AGENTS.md`), so a beta or PR
 //! build reads the same memory. The tier follows the definition, never a
-//! launch: a workspace definition keeps it in its workspace
-//! (`<root>/.plexi/agent_memory/<id>/`), a global or built-in one in
-//! `~/.plexi/agent_memory/<id>/`. The host only ever creates the folder; what
+//! launch. For harnesses that read memory by prompt, a workspace definition
+//! keeps it in `<root>/.plexi/agent_memory/<id>/`. Named Claude launches
+//! bind workspace memory under `.workspaces/<key>/<id>/` in the global memory
+//! tier. Global and built-in definitions use `~/.plexi/agent_memory/<id>/`.
+//! The host only ever creates the folder; what
 //! is inside belongs to the agent and the person, and nothing here writes,
 //! moves or deletes it. The definition folder (`AGENT.md`, `settings.toml`) is
 //! never touched.
 
 use std::fs;
 use std::io;
-use std::path::{Component, Path, PathBuf};
-use std::sync::Once;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::{AgentDefinition, AgentSource};
 use crate::host::state_scope::{self, StateScope, UserDataKind};
@@ -52,16 +56,7 @@ fn memory_scope(definition: &AgentDefinition) -> Result<(StateScope, PathBuf), S
 
 /// Where `definition`'s memory folder is. Pure: creates nothing.
 pub fn memory_dir(definition: &AgentDefinition) -> Result<PathBuf, String> {
-    let mut parts = Path::new(&definition.id).components();
-    if !matches!(
-        (parts.next(), parts.next()),
-        (Some(Component::Normal(_)), None)
-    ) {
-        return Err(format!(
-            "agent id '{}' is not a single path name; its memory folder cannot be placed",
-            definition.id
-        ));
-    }
+    super::validate_agent_id(&definition.id)?;
     let (scope, root) = memory_scope(definition)?;
     Ok(state_scope::user_data_dir(scope, UserDataKind::AgentMemory, &root).join(&definition.id))
 }
@@ -76,31 +71,103 @@ pub fn ensure_memory_dir(definition: &AgentDefinition) -> Result<PathBuf, String
     ensure_canonical_memory_dir(&dir, &parent.join(&definition.id))
 }
 
-/// Recheck the exact address saved at admission before handing it to Claude.
-pub(crate) fn saved_memory_dir(dir: Option<&Path>) -> Result<Option<PathBuf>, String> {
-    let Some(dir) = dir else {
-        static LEGACY_NOTICE: Once = Once::new();
-        LEGACY_NOTICE.call_once(|| {
-            log::info!("agent_memory: saved Claude run has no recorded named memory directory");
-        });
-        return Ok(None);
-    };
-    if !dir.is_absolute()
-        || dir.ancestors().nth(3).is_none()
-        || dir.parent().and_then(Path::file_name) != Some(UserDataKind::AgentMemory.dir().as_ref())
+/// The named Claude memory selected by the host, independent of later definition changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ClaudeMemoryIdentity {
+    scope: ClaudeMemoryScope,
+    #[serde(deserialize_with = "decode_agent_id")]
+    agent_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ClaudeMemoryScope {
+    Global,
+    Workspace(#[serde(deserialize_with = "decode_workspace_key")] String),
+}
+
+fn decode_agent_id<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
+    let id = String::deserialize(decoder)?;
+    super::validate_agent_id(&id).map_err(serde::de::Error::custom)?;
+    Ok(id)
+}
+
+fn decode_workspace_key<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
+    let key = String::deserialize(decoder)?;
+    if key.len() != 64
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
-        return Err(format!(
-            "invalid saved agent memory folder {}",
-            dir.display()
+        return Err(serde::de::Error::custom(
+            "invalid Claude memory workspace key",
         ));
     }
-    ensure_canonical_memory_dir(dir, dir).map(Some)
+    Ok(key)
+}
+
+impl ClaudeMemoryIdentity {
+    pub(crate) fn new(
+        definition: &AgentDefinition,
+        workspace: Option<&Path>,
+    ) -> Result<Self, String> {
+        super::validate_agent_id(&definition.id)?;
+        let scope = match definition.source {
+            AgentSource::User | AgentSource::BuiltIn => ClaudeMemoryScope::Global,
+            AgentSource::Workspace => {
+                let root = workspace.ok_or_else(|| {
+                    format!(
+                        "agent '{}' has no resolved workspace for Claude memory",
+                        definition.id
+                    )
+                })?;
+                let canonical = root.canonicalize().map_err(|error| {
+                    format!(
+                        "resolve Claude memory workspace {}: {error}",
+                        root.display()
+                    )
+                })?;
+                ClaudeMemoryScope::Workspace(format!(
+                    "{:x}",
+                    Sha256::digest(canonical.as_os_str().as_encoded_bytes())
+                ))
+            }
+        };
+        Ok(Self {
+            scope,
+            agent_id: definition.id.clone(),
+        })
+    }
+
+    pub(crate) fn matches_role(&self, role: Option<&str>) -> bool {
+        role == Some(self.agent_id.as_str())
+    }
+
+    pub(crate) fn ensure_dir(&self) -> Result<PathBuf, String> {
+        let root = Path::new("");
+        let kind = UserDataKind::AgentMemory;
+        let base = state_scope::user_data_dir(StateScope::Global, kind, root);
+        let mut expected = state_scope::assert_within_scope(
+            &base.join(&self.agent_id),
+            StateScope::Global,
+            kind,
+            root,
+        )?;
+        if let ClaudeMemoryScope::Workspace(key) = &self.scope {
+            for part in [".workspaces", key.as_str()] {
+                expected.push(part);
+                ensure_canonical_memory_dir(&expected, &expected)?;
+            }
+        }
+        let dir = expected.join(&self.agent_id);
+        ensure_canonical_memory_dir(&dir, &dir)
+    }
 }
 
 fn ensure_canonical_memory_dir(dir: &Path, expected: &Path) -> Result<PathBuf, String> {
     let metadata = match fs::symlink_metadata(dir) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            create_directory_tree(expected)
+            fs::create_dir_all(dir)
                 .map_err(|error| format!("create memory folder {}: {error}", dir.display()))?;
             log::info!(
                 "agent_memory: prepared memory folder path={}",
@@ -134,85 +201,6 @@ fn ensure_canonical_memory_dir(dir: &Path, expected: &Path) -> Result<PathBuf, S
         ));
     }
     Ok(actual)
-}
-
-/// Open each canonical ancestor without following links, then create only the
-/// scope's three new components relative to the open parent descriptors.
-#[cfg(unix)]
-fn create_directory_tree(dir: &Path) -> io::Result<()> {
-    use std::ffi::CString;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::ffi::OsStrExt;
-
-    #[cfg(target_vendor = "apple")]
-    let access = libc::O_SEARCH;
-    #[cfg(target_os = "linux")]
-    let access = libc::O_PATH;
-    #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-    let access = libc::O_RDONLY;
-
-    let base = dir.ancestors().nth(3).ok_or(io::ErrorKind::InvalidInput)?;
-    let mut parent = OwnedFd::from(fs::File::open("/")?);
-    let mut path = PathBuf::from("/");
-    for component in dir.components() {
-        let Component::Normal(name) = component else {
-            if component == Component::RootDir {
-                continue;
-            }
-            return Err(io::ErrorKind::InvalidInput.into());
-        };
-        path.push(name);
-        let name = CString::new(name.as_bytes())?;
-        // SAFETY: parent is an open directory and name is one C string component.
-        if path != base
-            && path.starts_with(base)
-            && unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o777) } == -1
-        {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::AlreadyExists {
-                return Err(error);
-            }
-        }
-        // SAFETY: parent and name remain valid for the syscall.
-        let fd = unsafe {
-            libc::openat(
-                parent.as_raw_fd(),
-                name.as_ptr(),
-                access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: openat returned a new owned descriptor.
-        parent = unsafe { OwnedFd::from_raw_fd(fd) };
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn create_directory_tree(dir: &Path) -> io::Result<()> {
-    let scope = dir.ancestors().take(4).collect::<Vec<_>>();
-    let mut directories = scope.into_iter().rev();
-    let base = directories.next().ok_or(io::ErrorKind::InvalidInput)?;
-    if base.canonicalize()? != base {
-        return Err(io::Error::other("redirected memory scope"));
-    }
-    for component in directories {
-        match fs::create_dir(component) {
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            result => result?,
-        }
-        if fs::symlink_metadata(component)?.file_type().is_symlink()
-            || component.canonicalize()? != component
-        {
-            return Err(io::Error::other(format!(
-                "redirected directory {}",
-                component.display()
-            )));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -332,23 +320,18 @@ mod tests {
         assert!(error.contains(dir.to_str().unwrap()), "{error}");
     }
 
-    #[cfg(unix)]
     #[test]
-    fn saved_memory_refuses_a_redirected_scope() {
-        let ws = tempfile::tempdir().unwrap();
-        let elsewhere = tempfile::tempdir().unwrap();
-        let root = ws
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join(".plexi/agent_memory");
-        let dir = root.join("writer");
-        fs::create_dir_all(root.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(elsewhere.path(), &root).unwrap();
-
-        let error = saved_memory_dir(Some(&dir)).unwrap_err();
-        assert!(error.contains(dir.to_str().unwrap()), "{error}");
-        assert!(!elsewhere.path().join("writer").exists());
+    fn saved_memory_identity_rejects_aliases_and_invalid_workspace_keys() {
+        for value in [
+            serde_json::json!({"scope": "global", "agent_id": "writer/"}),
+            serde_json::json!({"scope": {"workspace": "../other"}, "agent_id": "writer"}),
+        ] {
+            assert!(serde_json::from_value::<ClaudeMemoryIdentity>(value).is_err());
+        }
+        let identity: ClaudeMemoryIdentity =
+            serde_json::from_value(serde_json::json!({"scope": "global", "agent_id": "default"}))
+                .unwrap();
+        assert_eq!(identity.agent_id, "default");
     }
 
     #[test]
