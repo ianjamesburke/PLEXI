@@ -23,6 +23,12 @@ fn unsaved_editor() -> (
 }
 
 fn open_unsaved_editor(h: &mut HostHarness, path: &Path) -> PaneId {
+    let pane = open_editor(h, path);
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    pane
+}
+
+fn open_editor(h: &mut HostHarness, path: &Path) -> PaneId {
     std::fs::write(path, b"original bytes\n").unwrap();
     let existing_panes = h.state().open_panes;
     h.app.open_builtin_view_pane(
@@ -43,8 +49,128 @@ fn open_unsaved_editor(h: &mut HostHarness, path: &Path) -> PaneId {
         .expect("the editor opens a new pane");
     h.focus_pane(pane);
     h.run_frames(2);
-    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
     pane
+}
+
+fn inject_host_stop(h: &HostHarness, reply: &Path) {
+    h.inject_ipc(crate::protocol::HostRequest::Shutdown {
+        response_file: Some(reply.to_str().unwrap().to_owned()),
+    });
+}
+
+fn read_stop_reply(path: &Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+#[test]
+fn host_stop_preserves_unsaved_editor_text() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = root.path().join("profile");
+    let document = root.path().join("document.txt");
+    let reply_path = root.path().join("host-stop.json");
+    let duplicate_reply = root.path().join("host-stop-duplicate.json");
+    let mut h = HostHarness::from_profile_dir(&profile);
+    let pane = open_unsaved_editor(&mut h, &document);
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
+
+    inject_host_stop(&h, &reply_path);
+    inject_host_stop(&h, &duplicate_reply);
+    h.hidden_frame();
+
+    assert_eq!(
+        std::fs::read_to_string(&document).unwrap(),
+        "original bytes\n"
+    );
+    if h.app.quit_coordinator.is_active() {
+        // The first hidden pass saves the snapshot. The real exit skips Drop,
+        // so suppress the editor's drop-time save before reloading the snapshot.
+        h.text_editor_mut(pane).test_discard_unsaved();
+        drop(h);
+        let mut restarted = HostHarness::from_profile_dir(&profile);
+        let restored = restarted.text_editor_mut(pane).open_buffer();
+        assert_eq!(restored.text, "unsaved edits", "host stop lost the edit");
+        assert!(restored.dirty);
+    } else {
+        let reply = read_stop_reply(&reply_path);
+        assert_eq!(reply["ok"], false);
+        assert_eq!(reply["error_code"], "unsaved_editor_changes");
+        assert!(reply["error"].as_str().unwrap().contains("document.txt"));
+        assert_eq!(
+            read_stop_reply(&duplicate_reply)["error_code"],
+            "host_stop_in_progress"
+        );
+        let editor = h.text_editor_mut(pane);
+        let buffer = editor.open_buffer();
+        assert_eq!(buffer.text, "unsaved edits");
+        assert!(buffer.dirty);
+        assert!(crate::app::view_trait::View::unsaved_changes_dialog(editor).is_none());
+        assert!(!h.app.pending_close);
+
+        h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+        assert_eq!(std::fs::read_to_string(document).unwrap(), "unsaved edits");
+        inject_host_stop(&h, &root.path().join("host-stop-after-save.json"));
+        h.hidden_frame();
+        assert_eq!(h.app.quit_coordinator.reason, Some(ExitReason::HostStop));
+        assert!(h.app.quit_coordinator.is_active());
+    }
+}
+
+#[test]
+fn restart_shutdown_refusal_names_every_unsaved_editor() {
+    let (root, document, mut h, first) = unsaved_editor();
+    let notes = root.path().join("notes.txt");
+    let second = open_unsaved_editor(&mut h, &notes);
+    let reply_path = root.path().join("restart-stop.json");
+    h.inject_ipc(crate::protocol::HostRequest::ShutdownForRestart {
+        response_file: reply_path.to_str().unwrap().to_owned(),
+    });
+    h.hidden_frame();
+
+    let reply = read_stop_reply(&reply_path);
+    assert_eq!(reply["error_code"], "unsaved_editor_changes");
+    let message = reply["error"].as_str().unwrap();
+    assert!(message.contains("Save or discard"), "{message}");
+    for (path, pane) in [(document, first), (notes, second)] {
+        assert!(message.contains(path.to_str().unwrap()), "{message}");
+        assert!(h.text_editor_mut(pane).open_buffer().dirty);
+    }
+    assert!(!h.app.quit_coordinator.is_active());
+}
+
+#[test]
+fn host_stop_refuses_an_edit_made_during_workspace_save_retry() {
+    let mut h = HostHarness::new();
+    let document = h.profile_dir().join("document.txt");
+    let pane = open_editor(&mut h, &document);
+    let workspace = crate::workspace::workspace_path_in(h.profile_dir());
+    std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+    std::fs::write(&workspace, b"invalid workspace").unwrap();
+    let reply_path = h.profile_dir().join("host-stop.json");
+    inject_host_stop(&h, &reply_path);
+    h.hidden_frame();
+    assert!(h.app.quit_coordinator.retry_pending());
+
+    h.text_editor_mut(pane)
+        .test_set_unsaved("edit during retry");
+    assert!(!h.app.prepare_user_quit());
+    assert!(h.app.quit_coordinator.retry_pending());
+    std::fs::remove_file(workspace).unwrap();
+    h.app.quit_coordinator.make_retry_due();
+    h.hidden_frame();
+
+    assert!(!h.app.quit_coordinator.is_active());
+    assert!(!h.app.pending_close);
+    assert_eq!(
+        read_stop_reply(&reply_path)["error_code"],
+        "unsaved_editor_changes"
+    );
+    let buffer = h.text_editor_mut(pane).open_buffer();
+    assert_eq!(buffer.text, "edit during retry");
+    assert!(buffer.dirty);
+    assert_eq!(
+        std::fs::read_to_string(document).unwrap(),
+        "original bytes\n"
+    );
 }
 
 fn tap_cmd_q(h: &mut HostHarness) {

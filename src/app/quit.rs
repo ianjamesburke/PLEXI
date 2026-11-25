@@ -15,8 +15,10 @@
 //! finishes in [`exit_host`], and it is the only place in the host that calls
 //! `std::process::exit`.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -98,6 +100,9 @@ pub(crate) struct QuitCoordinator {
     /// `plexi host stop`'s reply token: answered by `exit_host` with the
     /// process's real exit outcome (stint 1430).
     pub(crate) stop_reply: Option<String>,
+    restart_requested: bool,
+    /// Stop is accepted. Hold pane cleanup until the CLI detaches its relaunch.
+    restart_handoff: Option<Receiver<std::io::Result<()>>>,
 }
 
 /// Failed final saves tolerated (one per second) before asking the user, or,
@@ -224,19 +229,123 @@ fn quit_summary(
     )
 }
 
+fn await_restart_coordinator(mut stream: crate::platform::ipc::IpcStream) -> std::io::Result<()> {
+    let timeout = Some(crate::rpc::DEFAULT_TIMEOUT);
+    stream.set_write_timeout(timeout)?;
+    stream.set_read_timeout(timeout)?;
+    let accepted = serde_json::json!({"ok": true, "pid": std::process::id()});
+    writeln!(stream, "{accepted}")?;
+    stream.flush()?;
+    let mut ready = [0];
+    stream.read_exact(&mut ready)?;
+    if ready != crate::rpc::RESTART_READY {
+        return Err(std::io::Error::other("invalid restart coordinator acknowledgement"));
+    }
+    Ok(())
+}
+
 impl super::PlexiApp {
+    pub(super) fn queue_restart_shutdown(&mut self, response_file: &str) {
+        if self.quit_coordinator.stop_reply.is_some()
+            || self.quit_coordinator.is_active()
+            || self.shutdown_requested
+        {
+            crate::rpc::write_json_response(
+                response_file,
+                serde_json::json!({
+                    "ok": false,
+                    "error_code": "host_stop_in_progress",
+                    "error": "The host is already handling a quit request",
+                }),
+            );
+            return;
+        }
+        self.quit_coordinator.stop_reply = Some(response_file.to_owned());
+        self.quit_coordinator.restart_requested = true;
+        self.shutdown_requested = true;
+    }
+
+    fn start_restart_handoff(&mut self) {
+        let result = self
+            .quit_coordinator
+            .stop_reply
+            .take()
+            .and_then(|token| crate::rpc::ReplyRegistry::take(&token))
+            .ok_or_else(|| std::io::Error::other("missing reply connection"))
+            .and_then(|stream| {
+                let (tx, rx) = mpsc::channel();
+                let wake = self.ui_wake.clone();
+                std::thread::Builder::new()
+                    .name("restart-handoff".into())
+                    .spawn(move || {
+                        let result = await_restart_coordinator(stream);
+                        if tx.send(result).is_ok() {
+                            wake.wake("restart_handoff");
+                        }
+                    })?;
+                Ok(rx)
+            });
+        match result {
+            Ok(handoff) => self.quit_coordinator.restart_handoff = Some(handoff),
+            Err(error) => self.cancel_restart_shutdown(&error),
+        }
+    }
+
+    fn cancel_restart_shutdown(&mut self, error: &impl std::fmt::Display) {
+        log::warn!("quit: restart cancelled during coordinator handoff: {error}");
+        self.quit_coordinator = QuitCoordinator::default();
+        self.quitting = false;
+    }
+
     /// Acceptance freezes further UI/IPC mutation. The next logic pass takes
     /// the final snapshot, after the accepting UI pass has finished.
     pub(crate) fn request_quit(&mut self, reason: ExitReason) {
         if !self.quit_coordinator.is_active() {
+            let restart = reason == ExitReason::HostStop
+                && std::mem::take(&mut self.quit_coordinator.restart_requested);
+            if reason == ExitReason::HostStop && self.refuse_host_stop_for_unsaved_editor() {
+                return;
+            }
             trace("quit_accepted");
             log::info!("quit: coordinator accepted reason={}", reason.label());
             self.quit_coordinator.enter(QuitPhase::Accepted, reason);
             self.quitting = true;
+            if restart {
+                self.start_restart_handoff();
+            }
         }
         self.ctx
             .send_viewport_cmd(egui::ViewportCommand::CancelClose);
         self.ui_wake.wake("quit_coordinator");
+    }
+
+    /// Workspace snapshots only remember the editor's file and view state.
+    /// Host stop has no one to answer a save prompt, so keep dirty buffers live.
+    fn refuse_host_stop_for_unsaved_editor(&mut self) -> bool {
+        let dirty_files: Vec<_> = self
+            .windows
+            .iter()
+            .flat_map(|window| window.panes.values())
+            .filter_map(|pane| pane.as_view()?.runtime.editor_buffer())
+            .filter(|buffer| buffer.dirty)
+            .map(|buffer| format!("{:?}", buffer.path))
+            .collect();
+        if dirty_files.is_empty() {
+            return false;
+        }
+        let files = dirty_files.join(", ");
+        log::info!("quit: host stop refused for unsaved editors: {files}");
+        if let Some(reply) = self.quit_coordinator.stop_reply.take() {
+            crate::rpc::write_json_response(
+                &reply,
+                serde_json::json!({
+                    "ok": false,
+                    "error_code": "unsaved_editor_changes",
+                    "error": format!("Save or discard the editor changes in {files} before stopping the host"),
+                }),
+            );
+        }
+        true
     }
 
     pub(crate) fn persist_quit_state(&mut self) -> bool {
@@ -391,6 +500,23 @@ impl super::PlexiApp {
         let Some(reason) = self.quit_coordinator.accepted_reason() else {
             return false;
         };
+        if let Some(handoff) = &self.quit_coordinator.restart_handoff {
+            match handoff.try_recv() {
+                Ok(Ok(())) => {
+                    log::info!("quit: restart coordinator detached; proceeding with stop");
+                    self.quit_coordinator.restart_handoff = None;
+                }
+                Err(TryRecvError::Empty) => return true,
+                Ok(Err(error)) => {
+                    self.cancel_restart_shutdown(&error);
+                    return false;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.cancel_restart_shutdown(&"handoff worker exited without confirmation");
+                    return false;
+                }
+            }
+        }
         self.ctx
             .send_viewport_cmd(egui::ViewportCommand::CancelClose);
         if self.quit_coordinator.save_failure.is_some() {
@@ -403,14 +529,17 @@ impl super::PlexiApp {
         {
             return false;
         }
-        // A failed save leaves the UI usable. Recheck unsaved-document vetoes
-        // before retrying a quit the person started (a desktop quit or
-        // "Restart to update", stint 1538), since they may have edited again.
-        if self.quit_coordinator.retry_at.is_some()
-            && matches!(reason, ExitReason::WindowClosed | ExitReason::UpdateRestart)
-            && !self.prepare_user_quit_for(reason)
-        {
-            return false;
+        // A failed save leaves the UI usable, so the editor may now be dirty.
+        if self.quit_coordinator.retry_at.is_some() {
+            if reason == ExitReason::HostStop {
+                if self.refuse_host_stop_for_unsaved_editor() {
+                    self.quit_coordinator = QuitCoordinator::default();
+                    self.quitting = false;
+                    return false;
+                }
+            } else if !self.prepare_user_quit_for(reason) {
+                return false;
+            }
         }
         if !self.persist_quit_state() {
             if let Some(cause) = self.quit_coordinator.save_failure() {
@@ -663,6 +792,9 @@ impl super::PlexiApp {
         reason: ExitReason,
         confirmation: UserQuitConfirmation,
     ) -> bool {
+        if self.quit_coordinator.accepted_reason() == Some(ExitReason::HostStop) {
+            return false;
+        }
         if let Some(pane) = self.quit_coordinator.pending_editor() {
             if self.focused_pane_id() != Some(pane) {
                 self.pane_navigate(pane);
@@ -2270,6 +2402,52 @@ mod tests {
             "the debounce must not create an extra generation before final save"
         );
         assert!(h.app.quit_coordinator.hide_requested);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_waits_for_the_detached_coordinator_before_hiding() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::net::UnixStream;
+
+        for coordinator_ready in [true, false] {
+            let mut h = crate::testing::HostHarness::new();
+            h.add_test_pane();
+            let token = crate::rpc::response_file_in(h.profile_dir(), "restart-handoff", "json");
+            let (client, server) = UnixStream::pair().unwrap();
+            let timeout = crate::testing::load_aware_timeout(Duration::from_secs(2));
+            client.set_read_timeout(Some(timeout)).unwrap();
+            assert!(crate::rpc::ReplyRegistry::register(token.clone(), server));
+            h.inject_ipc(crate::protocol::HostRequest::ShutdownForRestart {
+                response_file: token,
+            });
+            h.hidden_frame();
+            assert!(h.app.quit_coordinator.is_active());
+            assert!(!h.app.quit_coordinator.hide_requested);
+
+            let mut client = BufReader::new(client);
+            let mut line = String::new();
+            client.read_line(&mut line).unwrap();
+            let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["pid"], std::process::id());
+            if coordinator_ready {
+                client
+                    .get_mut()
+                    .write_all(&crate::rpc::RESTART_READY)
+                    .unwrap();
+            }
+            drop(client);
+
+            let deadline = Instant::now() + timeout;
+            while h.app.quit_coordinator.restart_handoff.is_some() {
+                assert!(Instant::now() < deadline, "restart handoff was not serviced");
+                h.hidden_frame();
+                std::thread::yield_now();
+            }
+            assert_eq!(h.app.quit_coordinator.hide_requested, coordinator_ready);
+            assert_eq!(h.app.quit_coordinator.is_active(), coordinator_ready);
+        }
     }
 
     fn bind_fake_socket(dir: &Path, name: &str) -> BoundSocket {

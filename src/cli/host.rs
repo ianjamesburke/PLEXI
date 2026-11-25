@@ -30,7 +30,8 @@ use crate::platform::ipc::IpcStream;
 use plexi_distribution::host_presence::{self, endpoint_in, Presence};
 use serde::Deserialize;
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -1208,6 +1209,7 @@ fn restart_coordinator_command(
     exe: &Path,
     parent_env: HostEnv,
     target: &HostTarget,
+    old_pid: u32,
 ) -> std::process::Command {
     #[expect(
         clippy::disallowed_methods,
@@ -1215,7 +1217,8 @@ fn restart_coordinator_command(
     )]
     let mut command = std::process::Command::new(exe);
     command
-        .args(["host", "restart"])
+        .args(["host", "restart", "--after-pid"])
+        .arg(old_pid.to_string())
         .args(target.profile_args())
         .env_clear()
         .envs(restart_coordinator_env(
@@ -1228,11 +1231,14 @@ fn restart_coordinator_command(
     command
 }
 
-pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
+pub fn host_restart_cli(yes: bool, json: bool, after_pid: Option<NonZeroU32>) -> i32 {
     let target = match cli_host_target() {
         Ok(target) => target,
         Err(code) => return code,
     };
+    if let Some(pid) = after_pid {
+        return restart_after_stop(&target, Some(pid.get()), json);
+    }
     let socket = target.socket();
     // Settled once at startup against this target's endpoint identity.
     let own_host = match super::caller_relation() {
@@ -1254,16 +1260,27 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
         );
         return 1;
     }
-    let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
-        Err(error) => {
-            eprintln!("error: locate restart executable: {error}");
-            return 1;
-        }
-    };
     if own_host {
-        let mut child = restart_coordinator_command(&exe, std::env::vars_os().collect(), &target);
-        match spawn_restart_coordinator(&mut child) {
+        match restart_from_pane(
+            || {
+                crate::rpc::open_request_stream(
+                    &target.dir,
+                    serde_json::json!({"type": "shutdown_for_restart"}),
+                    "host-restart",
+                    crate::rpc::DEFAULT_TIMEOUT,
+                )
+            },
+            |old_pid| {
+                let exe = std::env::current_exe()?;
+                let mut child = restart_coordinator_command(
+                    &exe,
+                    std::env::vars_os().collect(),
+                    &target,
+                    old_pid,
+                );
+                spawn_restart_coordinator(&mut child)
+            },
+        ) {
             Ok(coordinator_pid) => {
                 log::info!(
                     "host_restart: detached coordinator pid={} caller pane will close",
@@ -1280,62 +1297,64 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
                 return 0;
             }
             Err(error) => {
-                log::error!("host_restart: coordinator spawn failed: {error}");
+                log::error!("host_restart: restart handoff failed: {error}");
                 eprintln!("error: {error}");
                 return 1;
             }
         }
     }
-    let coordinator_started = Instant::now();
-    log::info!(
-        "host_restart: coordinator start pid={} channel={:?} profile={:?}",
-        std::process::id(),
-        target.channel,
-        target.profile
-    );
     let pid = running_build_info_in(&target.dir)
         .as_ref()
         .and_then(reported_pid)
         .or_else(|| detect_pid(&socket));
     if !shutdown_complete(pid, &socket) {
-        log::info!("host_restart: waiting old_pid={pid:?}");
-        let stopped = run_host_step(&exe, "stop", &target, HOST_STEP_LIMIT);
-        // `host stop` exits non-zero when the old host stopped unclean (an
-        // unsaved workspace, say) as well as when it did not stop. Restart
-        // only needs it gone: the wait below decides, and an unclean stop is
-        // reported as a warning (stint 1430).
-        match stopped {
-            Ok(exited) => {
-                if let Some(warning) = restart_stop_warning(exited.status, &exited.output.stderr) {
-                    log::warn!("host_restart: old host stop reported: {warning}");
-                    eprintln!("warning: {warning}");
-                }
+        let stopped = stop_host(&target.dir, target.channel.clone(), &socket, pid);
+        match restart_stop_step(&stopped) {
+            Ok(Some(warning)) => {
+                log::warn!("host_restart: old host stop reported: {warning}");
+                eprintln!("warning: {warning}");
             }
-            Err(error) => {
-                log::error!("host_restart: old host stop invocation failed: {error}");
-                eprintln!("error: host stop: {error}");
+            Ok(None) => {}
+            Err(refusal) => {
+                log::info!("host_restart: old host stop failed: {refusal}");
+                eprintln!("error: {refusal}");
                 return 1;
             }
         }
-        let deadline = Instant::now() + Duration::from_secs(35);
-        while !shutdown_complete(pid, &socket) {
-            if Instant::now() >= deadline {
-                log::error!("host_restart: old host did not exit before deadline old_pid={pid:?}");
-                eprintln!("error: previous host has not exited; restart aborted");
-                return 1;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        log::info!(
-            "host_restart: old host exited after {}ms old_pid={pid:?}",
-            coordinator_started.elapsed().as_millis()
-        );
-    } else if !json {
+        return restart_after_stop(&target, pid, json);
+    }
+    if !json {
         println!("not running; starting");
     }
+    start_restarted_host(&target, json)
+}
+
+fn restart_after_stop(target: &HostTarget, pid: Option<u32>, json: bool) -> i32 {
+    let started = Instant::now();
+    log::info!("host_restart: waiting old_pid={pid:?}");
+    if !wait_for_shutdown(pid, &target.socket(), Duration::from_secs(35)) {
+        log::error!("host_restart: old host did not exit before deadline old_pid={pid:?}");
+        eprintln!("error: previous host has not exited; restart aborted");
+        return 1;
+    }
+    log::info!(
+        "host_restart: old host exited after {}ms old_pid={pid:?}",
+        started.elapsed().as_millis()
+    );
+    start_restarted_host(target, json)
+}
+
+fn start_restarted_host(target: &HostTarget, json: bool) -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            eprintln!("error: locate restart executable: {error}");
+            return 1;
+        }
+    };
     // Reuse the public start handler without seed panes; capture its human output for JSON callers.
     log::info!("host_restart: starting");
-    match run_host_step(&exe, "start", &target, HOST_STEP_LIMIT) {
+    match run_host_step(&exe, "start", target, HOST_STEP_LIMIT) {
         Ok(exited) if exited.status.success() => {
             let new_pid = running_build_info_in(&target.dir)
                 .as_ref()
@@ -1360,9 +1379,56 @@ pub fn host_restart_cli(yes: bool, json: bool) -> i32 {
     }
 }
 
-/// `host stop` and `host start` each finish within their own deadlines
-/// (reply, shutdown and readiness waits well under this); the limit only
-/// stops a hung step from holding the restart.
+fn restart_from_pane(
+    request_stop: impl FnOnce() -> std::io::Result<IpcStream>,
+    spawn: impl FnOnce(u32) -> std::io::Result<u32>,
+) -> std::io::Result<u32> {
+    let stream = request_stop()?;
+    // macOS can reject this on a peer that has already sent its refusal and closed.
+    if let Err(error) = stream.set_read_timeout(Some(crate::rpc::DEFAULT_TIMEOUT)) {
+        log::debug!("host_restart: could not set acceptance reply timeout: {error}");
+    }
+    let mut stream = BufReader::new(stream);
+    let mut reply = String::new();
+    stream.read_line(&mut reply)?;
+    let reply = match HostReply::decode(Ok(reply)) {
+        HostReply::Payload(reply) => reply,
+        HostReply::Refused(refusal) => {
+            return Err(std::io::Error::other(format!(
+                "the host refused to stop: {}", refusal.coded_reason()
+            )));
+        }
+        HostReply::Transport(error) => {
+            return Err(std::io::Error::other(format!(
+                "could not get restart acceptance: {error}. Run host restart from outside this pane"
+            )));
+        }
+    };
+    let old_pid = serde_json::from_str::<serde_json::Value>(&reply)
+        .ok()
+        .filter(super::reply::acknowledged)
+        .and_then(|reply| reported_pid(&reply))
+        .ok_or_else(|| std::io::Error::other("the host did not acknowledge the restart stop"))?;
+    let coordinator_pid = spawn(old_pid)?;
+    stream.get_mut().write_all(&crate::rpc::RESTART_READY)?;
+    stream.get_mut().flush()?;
+    Ok(coordinator_pid)
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn pane_restart_returns_stop_refusal_before_detaching() {
+    let (client, mut host) = IpcStream::pair().unwrap();
+    host.write_all(br#"{"ok":false,"error_code":"unsaved_editor_changes","error":"Save or discard the changes in the editor for draft.md before stopping the host"}"#)
+        .unwrap();
+    drop(host);
+    let error = restart_from_pane(|| Ok(client), |_| Ok(123))
+        .expect_err("dirty editor must prevent a detached restart");
+    assert!(error.to_string().contains("Save or discard"), "{error}");
+    assert!(error.to_string().contains("draft.md"), "{error}");
+}
+
+/// Outer deadline for the start helper, beyond its readiness wait.
 const HOST_STEP_LIMIT: Duration = Duration::from_secs(60);
 
 /// Run `exe host <step>` against `target` as a restart step, bounded by
@@ -1379,35 +1445,23 @@ fn run_host_step(
         .run_any_exit(&format!("host {step}"), limit)
 }
 
-/// What a non-zero `host stop` child said, as a restart warning.
-fn restart_stop_warning(status: std::process::ExitStatus, stderr: &[u8]) -> Option<String> {
-    if status.success() {
-        return None;
+fn restart_stop_step(outcome: &StopOutcome) -> Result<Option<String>, &str> {
+    match outcome {
+        StopOutcome::Failed(why) => Err(why),
+        StopOutcome::StoppedUnclean(_)
+        | StopOutcome::TerminationRequested(_)
+        | StopOutcome::TerminationSent(_) => Ok(Some(outcome.message())),
+        StopOutcome::Clean | StopOutcome::StoppedUnknown | StopOutcome::NotRunning => Ok(None),
     }
-    let stderr = String::from_utf8_lossy(stderr);
-    let text = stderr.trim().trim_start_matches("error: ").trim();
-    Some(if text.is_empty() {
-        format!("the old host stop exited with {status}")
-    } else {
-        text.to_string()
-    })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[test]
 fn restart_reports_an_unclean_stop_as_a_warning() {
-    use std::os::unix::process::ExitStatusExt;
-    let warning = restart_stop_warning(
-        std::process::ExitStatus::from_raw(1 << 8),
-        b"error: Plexi host stopped, but the workspace was not saved; \
-the existing workspace file was left as it was.\n",
-    )
-    .expect("an unclean stop warns");
+    let outcome = StopOutcome::StoppedUnclean("the workspace was not saved".into());
+    let warning = restart_stop_step(&outcome).unwrap().expect("an unclean stop warns");
     assert!(warning.starts_with("Plexi host stopped, but"), "{warning}");
-    assert_eq!(
-        restart_stop_warning(std::process::ExitStatus::from_raw(0), b""),
-        None
-    );
+    assert_eq!(restart_stop_step(&StopOutcome::Clean), Ok(None));
 }
 
 /// Stint 1610: a restart step that hangs is stopped at its limit and reported
@@ -1422,7 +1476,7 @@ fn a_hung_restart_step_is_stopped_at_its_limit() {
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
     let started = Instant::now();
     let target = HostTarget::resolve(None, None, dir.path());
-    let error = run_host_step(&exe, "stop", &target, Duration::from_millis(300)).unwrap_err();
+    let error = run_host_step(&exe, "start", &target, Duration::from_millis(300)).unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(10), "{error}");
     assert!(
         matches!(
@@ -1520,6 +1574,15 @@ pub(crate) fn host_stop_in(profile: &Path, channel: Option<String>) -> StopOutco
         .as_ref()
         .and_then(reported_pid)
         .or_else(|| detect_pid(&socket_path));
+    stop_host(profile, channel, &socket_path, pid)
+}
+
+fn stop_host(
+    profile: &Path,
+    channel: Option<String>,
+    socket_path: &Path,
+    pid: Option<u32>,
+) -> StopOutcome {
     log::info!("host_stop: channel={channel:?} socket={socket_path:?} pid={pid:?}");
 
     // The host answers on this connection just before it exits, with its
@@ -1536,7 +1599,7 @@ pub(crate) fn host_stop_in(profile: &Path, channel: Option<String>) -> StopOutco
             match HostReply::decode(Ok(value.to_string())) {
                 HostReply::Payload(_) if super::reply::acknowledged(&value) => {
                     log::info!("host_stop: host replied {value}");
-                    wait_for_shutdown(pid, &socket_path, Duration::from_secs(5));
+                    wait_for_shutdown(pid, socket_path, Duration::from_secs(5));
                     return stop_outcome_from_reply(&value);
                 }
                 HostReply::Refused(refusal) => {
@@ -1556,7 +1619,7 @@ pub(crate) fn host_stop_in(profile: &Path, channel: Option<String>) -> StopOutco
             Duration::ZERO
         }
     };
-    if pid.is_some() && wait_for_shutdown(pid, &socket_path, grace) {
+    if pid.is_some() && wait_for_shutdown(pid, socket_path, grace) {
         log::info!("host_stop: original pid={pid:?} stopped without a reply");
         return StopOutcome::StoppedUnknown;
     }
@@ -1565,7 +1628,7 @@ pub(crate) fn host_stop_in(profile: &Path, channel: Option<String>) -> StopOutco
         log::error!("host_stop: no host running for this channel (no pid, socket {socket_path:?})");
         return StopOutcome::NotRunning;
     };
-    if shutdown_complete(Some(pid), &socket_path) {
+    if shutdown_complete(Some(pid), socket_path) {
         return StopOutcome::StoppedUnknown;
     }
     clean_panes_after_socket_failure(profile, pid);
@@ -3157,7 +3220,7 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
             ("PATH".into(), "/usr/bin".into()),
         ];
         let target = HostTarget::resolve(Some("alpha".into()), None, Path::new("/home"));
-        let command = restart_coordinator_command(Path::new("/bin/true"), parent, &target);
+        let command = restart_coordinator_command(Path::new("/bin/true"), parent, &target, 42);
         let env: std::collections::HashMap<_, _> = command
             .get_envs()
             .filter_map(|(key, value)| value.map(|value| (key, value)))
@@ -3299,9 +3362,9 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
             Some("t1655".to_string()),
             Path::new("/home"),
         );
-        let command = restart_coordinator_command(Path::new("/bin/true"), Vec::new(), &target);
+        let command = restart_coordinator_command(Path::new("/bin/true"), Vec::new(), &target, 42);
         let args: Vec<_> = command.get_args().collect();
-        assert_eq!(args, ["host", "restart", "--profile", "t1655"]);
+        assert_eq!(args, ["host", "restart", "--after-pid", "42", "--profile", "t1655"]);
     }
 
     // ── collect_pane_specs ordering ───────────────────────────────────────

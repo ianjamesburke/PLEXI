@@ -19,6 +19,9 @@ use crate::platform::ipc::IpcStream;
 /// Default client-side wait for a host response.
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A restart client sends this byte after its relaunch coordinator detaches.
+pub(crate) const RESTART_READY: [u8; 1] = [0x06];
+
 /// Fallback file-poll interval for unit tests that bypass `notify.sock`.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -563,25 +566,11 @@ pub(crate) enum StreamReply {
 /// `profile_dir`, so a request never carries another profile's token.
 pub(crate) fn request_on_stream(
     profile_dir: &Path,
-    mut payload: serde_json::Value,
+    payload: serde_json::Value,
     prefix: &str,
     timeout: Duration,
 ) -> Result<StreamReply, PollError> {
-    let socket_path = &plexi_distribution::host_presence::endpoint_in(profile_dir);
-    if let Some(obj) = payload.as_object_mut() {
-        obj.insert(
-            "response_file".to_string(),
-            serde_json::Value::String(response_file_in(profile_dir, prefix, "json")),
-        );
-    }
-    #[cfg(unix)]
-    let mut stream = IpcStream::connect(socket_path).map_err(PollError::Unreadable)?;
-    #[cfg(windows)]
-    let mut stream = crate::platform::ipc::connect_timeout(socket_path, timeout)
-        .map_err(PollError::Unreadable)?;
-    stream
-        .write_all(format!("{payload}\n").as_bytes())
-        .and_then(|()| stream.flush())
+    let stream = open_request_stream(profile_dir, payload, prefix, timeout)
         .map_err(PollError::Unreadable)?;
     match read_stream_to_end(stream, Some(timeout))? {
         None => Ok(StreamReply::Closed),
@@ -591,6 +580,29 @@ pub(crate) fn request_on_stream(
                 PollError::Unreadable(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
             }),
     }
+}
+
+/// Open the target profile's reply stream and send the request frame.
+pub(crate) fn open_request_stream(
+    profile_dir: &Path,
+    mut payload: serde_json::Value,
+    prefix: &str,
+    _timeout: Duration,
+) -> std::io::Result<IpcStream> {
+    let socket_path = &plexi_distribution::host_presence::endpoint_in(profile_dir);
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert(
+            "response_file".to_string(),
+            serde_json::Value::String(response_file_in(profile_dir, prefix, "json")),
+        );
+    }
+    #[cfg(unix)]
+    let mut stream = IpcStream::connect(socket_path)?;
+    #[cfg(windows)]
+    let mut stream = crate::platform::ipc::connect_timeout(socket_path, _timeout)?;
+    stream.write_all(format!("{payload}\n").as_bytes())?;
+    stream.flush()?;
+    Ok(stream)
 }
 
 /// Startup sweep: delete `rpc/` entries older than `SWEEP_MAX_AGE`. Catches
