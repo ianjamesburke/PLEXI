@@ -10227,6 +10227,7 @@ fn editor_gate_quit_requires_a_fresh_enter_for_each_dirty_editor() {
     h.app.config.confirm_quit = Some(false);
     let other_path = dir.path().join("other.txt");
     std::fs::write(&other_path, "original bytes\n").unwrap();
+    let existing_panes = h.state().open_panes;
     h.app.open_builtin_view_pane(
         Box::new(crate::app::text_editor_view::TextEditorView::new(
             other_path.clone(),
@@ -10237,7 +10238,12 @@ fn editor_gate_quit_requires_a_fresh_enter_for_each_dirty_editor() {
         Some("split_h"),
         None,
     );
-    let other_pane = *h.state().open_panes.last().unwrap();
+    let other_pane = h
+        .state()
+        .open_panes
+        .into_iter()
+        .find(|id| !existing_panes.contains(id))
+        .expect("the second editor opens a new pane");
     h.run_frames(2);
     h.text_editor_mut(pane).test_set_unsaved("edited");
     h.text_editor_mut(other_pane).test_set_unsaved("edited");
