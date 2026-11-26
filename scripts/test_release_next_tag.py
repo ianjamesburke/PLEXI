@@ -1,4 +1,4 @@
-"""release-next-tag.sh: the tag a push to alpha, beta or main publishes."""
+"""release-next-tag.sh: the tag the nightly beta run or a push to main publishes."""
 import os
 from pathlib import Path
 import subprocess
@@ -48,6 +48,14 @@ class ReleaseNextTag(unittest.TestCase):
         self.assertEqual(self.next_tag('alpha'), '')
         self.commit('fix')
         self.assertEqual(self.next_tag('alpha'), 'v0.5.3-alpha.10')
+
+    def test_nightly_beta_is_silent_without_new_alpha_commits(self):
+        self.git('tag', 'v0.5.3-beta.1')
+        self.assertEqual(self.next_tag('beta'), '')
+        tested = self.commit('fix')
+        self.commit('landed during the run')
+        result = self.run_script('beta', tested)
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, 'v0.5.3-beta.2'))
 
     def test_prereleases_move_to_next_patch_once_stable_is_released(self):
         # semver ranks 0.5.3-alpha.N below 0.5.3; the updater only offers newer.

@@ -571,14 +571,16 @@ changelog:
 bump bump="patch":
     bash scripts/release-version.sh "{{bump}}"
 
-# Fast-forward beta to origin/alpha, or main to origin/beta. The push is the
-# release: CI publishes the branch's next build. Refuses a non-fast-forward.
+# beta: start the nightly beta release now instead of waiting for the schedule
+# (CI builds origin/alpha's head and, if it passes, fast-forwards beta and
+# publishes). main: fast-forward main to origin/beta; that push publishes.
+# Refuses a non-fast-forward.
 #   just promote beta | just promote main
 promote to:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{to}}" in
-        beta) from=alpha ;;
+        beta) exec gh workflow run release.yml --ref alpha -f nightly=true ;;
         main) from=beta ;;
         *) echo "error: just promote beta|main (got '{{to}}')" >&2; exit 1 ;;
     esac

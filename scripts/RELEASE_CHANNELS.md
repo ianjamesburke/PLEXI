@@ -68,16 +68,24 @@ The contextual bare command and channel-scoped launchers are defined in
 The package requirements, unsigned policy and publication gates live in
 [Distribution contract](DISTRIBUTION.md).
 
-Every push to `alpha`, `beta` or `main` publishes that branch's next release
-when it has commits since its last one (`.github/workflows/release.yml`, tag
-chosen by `scripts/release-next-tag.sh`). Apple Silicon only. A newer push to
-the same branch cancels a build still running.
+Releases are cut by `.github/workflows/release.yml` (tag chosen by
+`scripts/release-next-tag.sh`). Apple Silicon only. A started release always
+finishes.
 
-| Branch | Tag |
-|---|---|
-| `alpha` | `vX.Y.Z-alpha.N` |
-| `beta` | `vX.Y.Z-beta.N` |
-| `main` | `vX.Y.Z` |
+| Branch | Publishes | Tag |
+|---|---|---|
+| `alpha` | nothing; install from source with `just channel-install alpha` | none |
+| `beta` | one scheduled nightly run (03:00 UTC-7) | `vX.Y.Z-beta.N` |
+| `main` | a push, made by `just promote main` | `vX.Y.Z` |
+
+The nightly run does nothing when alpha has no commits beta lacks. Otherwise it
+builds, tests and packages alpha's head commit; only if everything passes it
+fast-forwards `beta` to that exact commit (never to a newer alpha tip, never by
+force) and publishes the next beta tag. `just promote beta` starts the same run
+by hand.
+
+Per-push alpha releases cost about 55 hosted minutes each and served no one but
+the owner. The full suite now gates the nightly beta instead of each merge.
 
 `X.Y.Z` is `Cargo.toml`'s version. Once `vX.Y.Z` is released, alpha and beta
 count on the next patch, because SemVer ranks `X.Y.Z-alpha.N` below `X.Y.Z`
@@ -90,7 +98,7 @@ on stable tags only.
 ```sh
 just changelog       # preview unreleased commits
 just bump            # on alpha: version + CHANGELOG commit (minor|major optional); push it
-just promote beta    # fast-forward beta to origin/alpha; CI publishes vX.Y.Z-beta.N
+just promote beta    # optional: start the nightly beta release now; CI publishes vX.Y.Z-beta.N
 just promote main    # fast-forward main to origin/beta; CI publishes vX.Y.Z
 ```
 
