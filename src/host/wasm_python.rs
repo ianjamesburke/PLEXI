@@ -1625,7 +1625,9 @@ pub struct LivePythonPane {
     /// the renderer's host-owned edit buffers can tell a newly committed guest
     /// tree from a repaint of the same stale one (stint 0720).
     tree_seq: u64,
+    /// Trees staged for frame IDs still pending in `frame_scheduler`.
     pending_trees: HashMap<u64, Arc<PythonUiTree>>,
+    last_unexpected_tree_at: Option<std::time::Instant>,
     /// Launch epoch every node ref this pane mints is bound to
     /// (`crate::host::node_ref`). Renewed on relaunch, which clears `tree`,
     /// so no ref read before a hot reload resolves after it.
@@ -2361,8 +2363,10 @@ impl PythonFrameScheduler {
         }
     }
 
-    fn oldest_pending_frame_id(&self) -> Option<u64> {
-        self.pending.front().map(|(frame_id, _)| *frame_id)
+    fn is_pending(&self, frame_id: u64) -> bool {
+        self.pending
+            .iter()
+            .any(|(pending_id, _)| *pending_id == frame_id)
     }
 
     fn admission_deadline(&self) -> std::time::Instant {
@@ -3370,6 +3374,7 @@ impl LivePythonPane {
             epoch: uuid::Uuid::new_v4().as_u128(),
             focus_request: None,
             pending_trees: HashMap::new(),
+            last_unexpected_tree_at: None,
             initialized: false,
             ready: false,
             frame_scheduler: PythonFrameScheduler::new(std::time::Instant::now()),
@@ -3449,7 +3454,7 @@ impl LivePythonPane {
     /// Test hook: report this guest failed, as a fatal error would.
     #[cfg(test)]
     pub(crate) fn fail_for_test(&mut self, error: &str) {
-        self.error = Some(error.to_string());
+        self.set_error(error.to_string());
     }
 
     /// Test hook: whether the held intake's capacity wake has fired.
@@ -3667,7 +3672,7 @@ impl LivePythonPane {
                 .runtime
                 .send(&json!({"type": "resize", "width": size.x, "height": size.y}))
             {
-                self.error = Some(error.to_string());
+                self.set_error(error.to_string());
                 return;
             }
             self.frame_scheduler
@@ -3675,14 +3680,11 @@ impl LivePythonPane {
         }
         self.drain_runtime();
         if let Some(error) = &self.error {
-            // Fatal state: stop the frame scheduler so a dead guest no longer
-            // drives host repaints, and lead with the exception line.
-            self.frame_scheduler.stop();
             ui.colored_label(colors.danger, error);
             return;
         }
         if self.runtime.is_finished() {
-            self.frame_scheduler.stop();
+            self.stop_frame_scheduler();
             // No guest is left to service timers; firing them would send to a
             // dead runtime and misreport a clean exit as a failure.
             self.timers.clear();
@@ -3713,7 +3715,7 @@ impl LivePythonPane {
         if let Some(frame_id) = self.frame_scheduler.poll_render(now) {
             let timer_ids = std::mem::take(&mut self.pending_timer_events);
             if let Err(error) = self.runtime.send(&python_render_event(frame_id, timer_ids)) {
-                self.error = Some(error.to_string());
+                self.set_error(error.to_string());
                 if pending_click.is_some() {
                     log::error!(
                         "plugin::{}: dropping pending pane click — render request send failed: {error}",
@@ -3992,14 +3994,7 @@ impl LivePythonPane {
                     self.perf_json_decode += json_time;
                     self.perf_tree_decode += tree_time;
                     self.perf_stdout_bytes += bytes;
-                    let frame_id =
-                        frame_id.or_else(|| self.frame_scheduler.oldest_pending_frame_id());
-                    // A guest that reported a fatal error is finished: none
-                    // of its later frames are kept.
-                    if let Some(frame_id) = frame_id.filter(|_| self.dropped_after_fatal.is_none())
-                    {
-                        self.pending_trees.insert(frame_id, tree);
-                    }
+                    self.handle_decoded_tree(frame_id, tree);
                 }
                 Ok(DecodedOutput::Message {
                     value,
@@ -4022,7 +4017,7 @@ impl LivePythonPane {
                         "plugin::{}: decode CPython WASM message: {error}",
                         self.plugin_id
                     );
-                    self.error = Some(error);
+                    self.set_error(error);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -4096,6 +4091,55 @@ impl LivePythonPane {
         self.drain_runtime();
     }
 
+    fn stop_frame_scheduler(&mut self) {
+        self.frame_scheduler.stop();
+        self.pending_trees.clear();
+    }
+
+    fn set_error(&mut self, error: String) {
+        self.error = Some(error);
+        self.stop_frame_scheduler();
+    }
+
+    fn handle_decoded_tree(&mut self, frame_id: Option<u64>, tree: Arc<PythonUiTree>) {
+        if self.drop_after_fatal("tree") {
+            return;
+        }
+        if let Some(frame_id) = frame_id.filter(|&id| self.frame_scheduler.is_pending(id)) {
+            self.pending_trees.insert(frame_id, tree);
+            return;
+        }
+
+        // Report the first drop after a quiet minute so a sustained burst
+        // cannot fill the host log.
+        let now = std::time::Instant::now();
+        let after_quiet_minute = self
+            .last_unexpected_tree_at
+            .replace(now)
+            .is_none_or(|last| now.duration_since(last) >= std::time::Duration::from_secs(60));
+        if after_quiet_minute {
+            log::info!(
+                "plugin::{}: dropping CPython WASM tree for inactive frame {frame_id:?}",
+                self.plugin_id
+            );
+        }
+    }
+
+    fn drop_after_fatal(&mut self, message_type: &str) -> bool {
+        let Some(dropped) = self.dropped_after_fatal.as_mut() else {
+            return false;
+        };
+        if *dropped == 0 {
+            log::info!(
+                "plugin::{}: dropping guest messages sent after its fatal_error (first: {})",
+                self.plugin_id,
+                guest_text::shown(message_type)
+            );
+        }
+        *dropped = dropped.saturating_add(1);
+        true
+    }
+
     /// Handle one non-tree bridge message. Tree framing (`component_tree` /
     /// `tree_delta`) is resolved on the decoder thread and never reaches here.
     fn handle_message(&mut self, message: Value) {
@@ -4105,15 +4149,7 @@ impl LivePythonPane {
             self.plugin_id,
             guest_text::shown(message_type.unwrap_or("<missing>"))
         );
-        if let Some(dropped) = self.dropped_after_fatal.as_mut() {
-            if *dropped == 0 {
-                log::info!(
-                    "plugin::{}: dropping guest messages sent after its fatal_error (first: {})",
-                    self.plugin_id,
-                    guest_text::shown(message_type.unwrap_or("<missing>"))
-                );
-            }
-            *dropped += 1;
+        if self.drop_after_fatal(message_type.unwrap_or("<missing>")) {
             return;
         }
         // Permission polls arrive every second from the Permissions plugin.
@@ -4258,7 +4294,7 @@ impl LivePythonPane {
                     "plugin::{}: guest entered failed state: {error}",
                     self.plugin_id
                 );
-                self.error = Some(error);
+                self.set_error(error);
                 self.dropped_after_fatal = Some(0);
             }
             _ => match plugin_command_from_python_message(&self.plugin_id, &message) {
@@ -5500,7 +5536,7 @@ impl LivePythonPane {
                 "plugin::{}: Python init send failed: {error}",
                 self.plugin_id
             );
-            self.error = Some(error.to_string());
+            self.set_error(error.to_string());
         }
     }
 
@@ -5538,7 +5574,7 @@ impl LivePythonPane {
                     "plugin::{}: pane {pane_id} {kind} send failed: {error}",
                     self.plugin_id
                 );
-                self.error = Some(error.to_string());
+                self.set_error(error.to_string());
                 return;
             }
             log::info!(
@@ -5899,7 +5935,7 @@ impl LivePythonPane {
                     "plugin::{}: send key events to CPython WASM: {error}",
                     self.plugin_id
                 );
-                self.error = Some(error.to_string());
+                self.set_error(error.to_string());
             }
             crate::app::view_trait::KeyDisposition::Consumed
         }
@@ -5933,7 +5969,7 @@ impl LivePythonPane {
                             "plugin::{}: queue host event to Python runtime: {error}",
                             self.plugin_id
                         );
-                        self.error = Some(error.to_string());
+                        self.set_error(error.to_string());
                     }
                     return Err(OutboundEventError::Send(error.to_string()));
                 }
@@ -5943,7 +5979,7 @@ impl LivePythonPane {
                     "plugin::{}: serialize host event for Python runtime: {error}",
                     self.plugin_id
                 );
-                self.error = Some(error.to_string());
+                self.set_error(error.to_string());
                 return Err(OutboundEventError::Encode(error.to_string()));
             }
         }
@@ -5994,7 +6030,7 @@ impl LivePythonPane {
         self.drain_runtime();
         if self.error.is_none() {
             if self.runtime.is_finished() {
-                self.frame_scheduler.stop();
+                self.stop_frame_scheduler();
                 // No guest is left to service timers; firing them would
                 // send to a dead runtime and misreport a clean exit.
                 self.timers.clear();
@@ -6011,7 +6047,7 @@ impl LivePythonPane {
                                 "plugin::{}: background render send failed: {error}",
                                 self.plugin_id
                             );
-                            self.error = Some(error.to_string());
+                            self.set_error(error.to_string());
                         }
                     }
                 }
@@ -6181,7 +6217,7 @@ impl LivePythonPane {
                 "plugin::{}: guest entered failed state: {exception}",
                 self.plugin_id
             );
-            self.error = Some(exception);
+            self.set_error(exception);
         }
     }
 
@@ -6333,6 +6369,7 @@ impl LivePythonPane {
         self.tree = None;
         self.tree_seq += 1;
         self.pending_trees.clear();
+        self.last_unexpected_tree_at = None;
         self.initialized = false;
         self.presence = PanePresence::default();
         self.ready = false;

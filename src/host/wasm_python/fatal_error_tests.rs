@@ -34,6 +34,87 @@ fn launch_config(plugin_dir: &Path) -> PythonLaunchConfig {
     }
 }
 
+fn launch_test_pane(plugin_dir: &Path) -> LivePythonPane {
+    std::fs::write(
+        plugin_dir.join("main.py"),
+        format!("{PRELUDE}{GOOD_INIT}def view():\n    return Text(\"ok\")\n"),
+    )
+    .expect("write entry");
+    LivePythonPane::launch_for_test(launch_config(plugin_dir)).expect("launch CPython WASM")
+}
+
+fn test_tree() -> Arc<PythonUiTree> {
+    let tree = decode_python_ui_tree_value(&json!({
+        "root": 0,
+        "nodes": [{"id": 0, "key": "0", "data": {"type": "Text", "text": "ok"}}],
+    }))
+    .expect("decode test tree");
+    Arc::new(tree)
+}
+
+#[test]
+fn live_pane_drops_trees_for_unissued_frames() {
+    let app = tempfile::tempdir().expect("plugin dir");
+    let mut pane = launch_test_pane(app.path());
+    let tree = test_tree();
+    let logs = crate::testing::test_log::capture();
+
+    for frame_id in 1..=1_024 {
+        pane.handle_decoded_tree(Some(frame_id), Arc::clone(&tree));
+    }
+
+    assert_eq!(pane.pending_trees.len(), 0, "no frames have been issued");
+    pane.frame_scheduler
+        .poll_render(std::time::Instant::now())
+        .expect("host render frame");
+    pane.handle_decoded_tree(None, tree);
+    assert!(
+        pane.pending_trees.is_empty(),
+        "tree arrived without a frame ID"
+    );
+
+    let drops: Vec<_> = logs
+        .records()
+        .into_iter()
+        .filter(|(_, line)| line.contains("dropping CPython WASM tree"))
+        .collect();
+    assert_eq!(
+        drops,
+        vec![(
+            log::Level::Info,
+            "plugin::test.fatal-error: dropping CPython WASM tree for inactive frame Some(1)"
+                .to_string(),
+        )],
+        "one info trace per burst names the plugin"
+    );
+}
+
+#[test]
+fn live_pane_commits_a_pending_tree_on_frame_done() {
+    let app = tempfile::tempdir().expect("plugin dir");
+    let mut pane = launch_test_pane(app.path());
+    let frame_id = pane
+        .frame_scheduler
+        .poll_render(std::time::Instant::now())
+        .expect("host render frame");
+    let tree = test_tree();
+    pane.handle_decoded_tree(Some(frame_id), Arc::clone(&tree));
+
+    assert!(pane.pending_trees.contains_key(&frame_id));
+    assert!(pane.tree.is_none());
+    pane.handle_message(json!({"type": "frame_done", "frame_id": frame_id}));
+    assert!(pane.pending_trees.is_empty());
+    assert!(Arc::ptr_eq(
+        pane.tree.as_ref().expect("committed tree"),
+        &tree
+    ));
+    pane.handle_decoded_tree(Some(frame_id), tree);
+    assert!(
+        pane.pending_trees.is_empty(),
+        "the frame is already complete"
+    );
+}
+
 /// The text `plugin check` and `view render` print after their own label: the
 /// `Display` of the error one headless frame returns.
 fn headless_failure(main_py: &str, extra: &[(&str, &str)]) -> String {
@@ -212,13 +293,13 @@ fn live_pane_failure_leads_with_the_plugin_exception() {
 #[test]
 fn live_pane_ignores_everything_after_the_first_fatal_error() {
     let app = tempfile::tempdir().expect("plugin dir");
-    std::fs::write(
-        app.path().join("main.py"),
-        format!("{PRELUDE}{GOOD_INIT}def view():\n    return Text(\"ok\")\n"),
-    )
-    .expect("write entry");
-    let mut pane =
-        LivePythonPane::launch_for_test(launch_config(app.path())).expect("launch CPython WASM");
+    let mut pane = launch_test_pane(app.path());
+    let frame_id = pane
+        .frame_scheduler
+        .poll_render(std::time::Instant::now())
+        .expect("host render frame");
+    pane.handle_decoded_tree(Some(frame_id), test_tree());
+    assert!(pane.pending_trees.contains_key(&frame_id));
     let fatal = |message: &str| {
         json!({
             "type": "fatal_error",
@@ -234,6 +315,15 @@ fn live_pane_ignores_everything_after_the_first_fatal_error() {
     let expected = "plugin error in main.py:3 (view): RuntimeError: first";
     assert_eq!(pane.error(), Some(expected));
     assert_eq!(pane.dropped_after_fatal, Some(0));
+    assert!(pane.frame_scheduler.pending.is_empty());
+    assert!(
+        pane.pending_trees.is_empty(),
+        "fatal_error abandons the pending tree"
+    );
+
+    pane.handle_decoded_tree(Some(frame_id), test_tree());
+    assert!(pane.pending_trees.is_empty(), "tree sent after fatal_error");
+    assert_eq!(pane.dropped_after_fatal, Some(1));
 
     pane.handle_message(fatal("second"));
     pane.handle_message(json!({"type": "log", "level": "info", "message": "still here"}));
@@ -250,7 +340,7 @@ fn live_pane_ignores_everything_after_the_first_fatal_error() {
         "a message after fatal_error must not be handled"
     );
     assert_eq!(pane.display_name(), "test.fatal-error");
-    assert_eq!(pane.dropped_after_fatal, Some(4));
+    assert_eq!(pane.dropped_after_fatal, Some(5));
 }
 
 /// A hot reload starts a new guest, and the old guest's fatal report must not
