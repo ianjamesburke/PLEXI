@@ -119,7 +119,7 @@ impl SecretRequest {
             let _commit = monitor.commit(&approved)?;
             self.subject.current()?;
         }
-        let result = mutate_secret(scope.store(), monitor, &target, name, mutation);
+        let result = mutate_secret(scope.store(&self.host), monitor, &target, name, mutation);
         monitor
             .note_outcome(
                 None,

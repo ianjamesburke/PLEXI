@@ -83,10 +83,9 @@ the waiting command without reading or changing the secret.
 plexi secret list
 ```
 
-Lists global and current-workspace secret names, plus folder entries when
-`folder_secrets` is enabled. Values are not shown. Workspace names injected
-into human terminals are marked. `--global` excludes workspace and folder
-entries in both text and JSON output.
+The running host lists global and current-workspace secret names, plus
+folder entries when `folder_secrets` is enabled. It marks workspace names
+injected into human terminals. Use `--global` for global names only.
 
 From a pane whose current directory is outside its context root, the default
 list still shows global names. It skips workspace and folder entries and says
@@ -98,10 +97,10 @@ To inspect a specific live context by name, id, or root:
 plexi secret list --context my-project
 ```
 
-Run this from a human-owned Plexi pane. It requests names only, including for
-another context. An agent needs an exact `secret.list` grant for that context;
-a refusal points to the host's Needs you approval. This does not grant value
-access.
+From a Plexi pane, listing requires a `secret.list` grant. If approval is
+needed, approve the request in **Needs you** and rerun the command. From an
+outside terminal, the command waits for **Allow once** and receives the
+inventory on the same connection. The grant covers names and usage metadata.
 
 `plexi secret list --json` returns the plugin's names-only inventory, including
 `scope`, `last_used` (Unix seconds or `null` when unknown), and `grant`

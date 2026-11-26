@@ -235,23 +235,26 @@ fn probe_ollama() -> (bool, Vec<String>) {
     (true, models)
 }
 
-fn check_openrouter_configured() -> bool {
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        match crate::workspace::secrets::manager::global_secret_stored("OPENROUTER_API_KEY") {
-            Ok(configured) => {
-                log::info!("ai:doctor: OPENROUTER_API_KEY stored={configured}");
-                configured
-            }
-            Err(error) => {
-                log::warn!("ai:doctor: OPENROUTER_API_KEY name scan failed: {error}");
-                false
-            }
+pub(crate) fn check_openrouter_configured() -> bool {
+    let reply = crate::rpc::request_json(
+        &super::resolve_secret_socket(),
+        serde_json::json!({"type":"openrouter_secret_status"}),
+        std::time::Duration::from_secs(3),
+    );
+    match reply {
+        Ok(reply) if reply["configured"].is_boolean() => {
+            let configured = reply["configured"] == true;
+            log::info!("ai: OPENROUTER_API_KEY stored={configured}");
+            configured
         }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        false
+        Ok(reply) => {
+            log::warn!("ai: OpenRouter status unavailable: {}", reply["error"]);
+            false
+        }
+        Err(error) => {
+            log::warn!("ai: OpenRouter status unavailable: {error}");
+            false
+        }
     }
 }
 
@@ -512,34 +515,6 @@ pub fn ai_doctor_cli(json: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{ai_setup_cli, format_onboarding_guide, AI_SETUP_REFUSAL};
-
-    #[test]
-    fn ai_doctor_checks_the_global_name_without_reading_its_value() {
-        use crate::workspace::secrets::take_test_value_reads;
-        let profile = tempfile::tempdir().unwrap();
-        let _profile = crate::config::set_test_profile_dir(profile.path().into());
-        crate::cli::workspace::secret_set_tests::with_stored_openrouter_key(|| {
-            take_test_value_reads();
-            assert!(super::check_openrouter_configured());
-            assert_eq!(take_test_value_reads(), 0);
-        });
-    }
-
-    #[test]
-    fn ai_doctor_sees_the_legacy_spelling_without_migrating_it() {
-        use crate::workspace::secrets::{keychain_user_name, system_store, take_test_value_reads};
-        let profile = tempfile::tempdir().unwrap();
-        let _profile = crate::config::set_test_profile_dir(profile.path().into());
-        crate::cli::workspace::secret_set_tests::with_stored_account("openrouter-api-key", || {
-            take_test_value_reads();
-            assert!(super::check_openrouter_configured());
-            assert_eq!(take_test_value_reads(), 0);
-            assert!(system_store()
-                .scan_accounts()
-                .unwrap()
-                .contains(&keychain_user_name("openrouter-api-key")));
-        });
-    }
 
     #[test]
     fn onboarding_guides_fresh_profile_without_hidden_prerequisites() {

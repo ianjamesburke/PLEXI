@@ -333,6 +333,8 @@ pub(crate) fn socket_policy(request: &HostRequest) -> Result<VerbPolicy, Refusal
         | HostRequest::PushPaneToSubcontext { .. } => Operator,
 
         HostRequest::PaneSecretList { .. }
+        | HostRequest::SecretList { .. }
+        | HostRequest::OpenrouterSecretStatus { .. }
         | HostRequest::SecretGet { .. }
         | HostRequest::SecretSet { .. }
         | HostRequest::SecretDelete { .. }
@@ -461,6 +463,7 @@ pub(crate) fn admit_request(
         && matches!(
             request,
             HostRequest::SecretGet { .. }
+                | HostRequest::SecretList { .. }
                 | HostRequest::SecretSet { .. }
                 | HostRequest::SecretDelete { .. }
                 | HostRequest::FolderSecretExec { .. }

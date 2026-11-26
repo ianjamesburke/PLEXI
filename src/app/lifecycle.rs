@@ -1511,6 +1511,16 @@ impl PlexiApp {
             } => {
                 self.serve_secret_list(context, &origin, response_file);
             }
+            crate::protocol::HostRequest::SecretList {
+                cwd,
+                global,
+                response_file,
+            } => {
+                self.serve_cwd_secret_list(cwd, *global, &origin, response_file);
+            }
+            crate::protocol::HostRequest::OpenrouterSecretStatus { response_file } => {
+                self.serve_openrouter_secret_status(&origin, response_file);
+            }
             crate::protocol::HostRequest::SecretGet {
                 name,
                 global,

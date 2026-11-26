@@ -260,8 +260,8 @@ pub(super) fn reconcile(
 /// Scan the store backend, reconcile `secrets-index.json` against it, and
 /// persist the result. Called when the Secrets plugin loads or is refreshed.
 #[cfg(all(target_os = "macos", not(test)))]
-pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
-    let store = system_store();
+pub fn reconcile_index_with_keychain(host: &crate::broker::custody::HostProcess) -> Result<ReconcileReport, SecretError> {
+    let store = system_store(host);
     let scanned = store.scan_accounts()?;
     let index = index_read();
     let report = reconcile(&scanned, &index, store);
@@ -286,8 +286,8 @@ pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
 /// enumerates the backend directly, so the scan is already authoritative and
 /// a sidecar could only go stale. Either way the scan is the whole truth.
 #[cfg(all(target_os = "linux", not(test)))]
-pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
-    let store = system_store();
+pub fn reconcile_index_with_keychain(host: &crate::broker::custody::HostProcess) -> Result<ReconcileReport, SecretError> {
+    let store = system_store(host);
     let scanned = store.scan_accounts()?;
     Ok(reconcile(&scanned, &scanned, store))
 }
@@ -296,8 +296,8 @@ pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     all(any(target_os = "macos", target_os = "linux"), test),
     all(windows, not(test))
 ))]
-pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
-    let store = system_store();
+pub fn reconcile_index_with_keychain(host: &crate::broker::custody::HostProcess) -> Result<ReconcileReport, SecretError> {
+    let store = system_store(host);
     let scanned = store.scan_accounts()?;
     Ok(reconcile(&scanned, &[], store))
 }

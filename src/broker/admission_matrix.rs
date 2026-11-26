@@ -375,7 +375,7 @@ pub(crate) const TABLE: &[Line] = &[
     na(R::Agent, F::FsRead, "the harness reads files natively; no brokered read tool exists"),
     line(R::Agent, F::FsWrite, &["host.files.edit"], EXACT),
     na(R::Agent, F::Network, "the harness makes network calls natively; no brokered network tool exists"),
-    line(R::Agent, F::Secrets, &["secret.get", "secret.read", "secret.set", "secret.delete"], EXACT),
+    line(R::Agent, F::Secrets, &["secret.get", "secret.read", "secret.set", "secret.delete", "secret.list"], EXACT),
     na(R::Agent, F::CliExec, "the harness executes in its own PTY; typed CLI operations are plugin-only (TargetType::CliOperation)"),
     na(R::Agent, F::Ai, "agents use their own provider; no brokered ai tool for agents"),
     na(R::Agent, F::Clipboard, "no brokered clipboard tool for agents"),
@@ -819,7 +819,12 @@ fn agent_adapter_admission_matrix() {
             } else {
                 crate::workspace::secrets::SecretScope::Folder { path: ws.into() }
             };
-            let secret_input = secret_scope.input(tool, "MATRIX", None).to_string();
+            let secret_input = if tool == "secret.list" {
+                serde_json::json!({"path":ws})
+            } else {
+                secret_scope.input(tool, "MATRIX", None)
+            }
+            .to_string();
             let (target_type, actor_scope, principal, package_id, input) = match family {
                 Family::Secrets => (
                     TargetType::Secret,
@@ -859,10 +864,10 @@ fn agent_adapter_admission_matrix() {
                         input_json: input,
                         principal: &principal,
                         actor_scope,
-                        trust_origin: if tool == "secret.read" {
-                            super::SECRET_SOCKET_ORIGIN
-                        } else {
-                            "host"
+                        trust_origin: match tool {
+                            "secret.read" => super::SECRET_SOCKET_ORIGIN,
+                            "secret.list" => "plexi-cli",
+                            _ => "host",
                         },
                         workspace_root: ws,
                         context_id: if family == Family::Secrets { 0 } else { 1 },
@@ -876,7 +881,71 @@ fn agent_adapter_admission_matrix() {
             (outcome, Mech::MonitorAdmit)
         },
     );
-    assert_eq!(checked, 70);
+    assert_eq!(checked, 80);
+}
+
+/// Stream-backed cells use the socket entry and actual host workers. A new
+/// connection must ask even when the preceding connection was denied.
+#[cfg(unix)]
+#[test]
+fn secret_socket_admission_matrix() {
+    use crate::broker::caller::PeerWitness;
+    use crate::testing::socket_policy_tests::{live_secret, read_client, send};
+    use crate::testing::HostHarness;
+    use serde_json::json;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    let pane_peer = PeerWitness::for_live_pids(&[h.terminal_backend(pane).child_pid()]);
+    let outside = PeerWitness::for_live_pids(&[std::process::id()]);
+    let detached = PeerWitness::for_live_pids(&[]);
+    let root = h.workspace_root().canonicalize().unwrap();
+    let _folders =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
+    crate::workspace::secrets::init_workspace(&root, &crate::config::workspace_channel_dir())
+        .unwrap();
+    let commands = crate::cli::ensure_commands_file(Some(&root));
+    std::fs::write(
+        commands,
+        "[commands]\nmatrix = { run = 'true', secrets = ['MATRIX'] }",
+    )
+    .unwrap();
+    let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    let rows = [
+        ("secret.get", json!({"type":"secret_get","name":"MATRIX","global":true})),
+        ("secret.set", json!({"type":"secret_set","name":"MATRIX","global":true,"value":"matrix-canary"})),
+        ("secret.delete", json!({"type":"secret_delete","name":"MATRIX","global":true})),
+        ("secret.read", json!({"type":"folder_secret_read","name":"MATRIX","folder":root,"cwd":root})),
+        ("secret.set", json!({"type":"folder_secret_set","name":"MATRIX","folder":root,"value":"matrix-canary"})),
+        ("secret.delete", json!({"type":"folder_secret_rm","name":"MATRIX","folder":root})),
+        ("secret.exec", json!({"type":"folder_secret_exec","cwd":root})),
+        ("secret.exec", json!({"type":"run_secrets","command":"matrix","workspace_root":root,"cwd":root})),
+        ("secret.list", json!({"type":"secret_list","cwd":root,"global":true})),
+    ];
+    for (tool, request) in rows {
+        for (peer, actor) in [
+            (&pane_peer, format!("pane:{pane}")),
+            (&outside, super::principal::EXTERNAL_ID.to_owned()),
+            (&detached, super::principal::EXTERNAL_ID.to_owned()),
+        ] {
+            if tool == "secret.list" && peer == &pane_peer {
+                let reply = send(&mut h, request.clone(), Some(peer.clone()));
+                assert_eq!(reply["error_code"], "permission_denied", "{reply}");
+                let pending = monitor.host_records().pending().into_iter()
+                    .find(|item| item.tool == tool && item.actor_id == actor).unwrap();
+                monitor.approve_pending(&pending.pending_request_id, ApprovalChoice::Deny).unwrap();
+                continue;
+            }
+            let (client, ask) = live_secret(&mut h, request.clone(), peer);
+            assert_eq!(ask.tool, tool, "{request}");
+            assert_eq!(ask.actor_id, actor, "{request}");
+            monitor.approve_pending(&ask.pending_request_id, ApprovalChoice::Deny).unwrap();
+            let reply = read_client(client, tool);
+            assert_eq!(reply["status"], "denied", "{reply}");
+            assert!(reply.get("value").is_none() && reply.get("entries").is_none());
+            assert!(monitor.host_records().open().is_empty());
+        }
+    }
 }
 
 // ── Event subscription driver (all runtimes) ─────────────────────────────────

@@ -853,6 +853,8 @@ const SOCKET_OPERATIONS: &[(Op, VerbPolicy)] = {
         (Request("zoom_out_of_context"), Operator),
         (Request("push_pane_to_subcontext"), Operator),
         (Request("pane_secret_list"), Protected),
+        (Request("secret_list"), Protected),
+        (Request("openrouter_secret_status"), Protected),
         (Request("secret_get"), Protected),
         (Request("secret_set"), Protected),
         (Request("secret_delete"), Protected),
@@ -1330,6 +1332,7 @@ fn socket_operations_admit_by_caller_class() {
                     op,
                     Op::Request(
                         "secret_get"
+                            | "secret_list"
                             | "secret_set"
                             | "secret_delete"
                             | "folder_secret_exec"
@@ -1573,13 +1576,13 @@ fn external_secret_set_and_delete_ask_then_apply_once() {
             ask.input_summary,
             format!("Allow a terminal outside Plexi to use secret.{op} once on {name}@global")
         );
-        assert_eq!(system_store().get(&account).is_some(), op == "delete");
+        assert_eq!(system_store(crate::broker::custody::TEST_HOST).get(&account).is_some(), op == "delete");
         monitor
             .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
             .unwrap();
         assert_eq!(read_client(client, op)["status"], "ok");
         assert_eq!(
-            system_store().get(&account).as_deref().map(String::as_str),
+            system_store(crate::broker::custody::TEST_HOST).get(&account).as_deref().map(String::as_str),
             (op == "set").then_some("mutation-canary-before-click")
         );
         assert!(monitor
@@ -1638,7 +1641,7 @@ fn pane_secret_mutations_ask_as_the_pane_within_its_root() {
             .unwrap();
         let reply = read_client(client, op);
         assert_eq!(reply["target"]["Workspace"]["id"], cfg.id, "{reply}");
-        let stored = system_store().get(&account);
+        let stored = system_store(crate::broker::custody::TEST_HOST).get(&account);
         assert_eq!(stored.as_deref().map(String::as_str), value);
         let router = WorkspaceSecrets::load(&root).unwrap().unwrap();
         let canonical = if value == Some("first") {
@@ -1768,7 +1771,7 @@ fn workspace_secret(h: &HostHarness, id: &str, name: &str, value: &str) -> std::
     let dir = root.join(crate::config::workspace_channel_dir());
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("workspace.toml"), format!("id = \"{id}\"\n")).unwrap();
-    crate::workspace::secrets::system_store()
+    crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
         .set(&format!("plexi:{id}:{name}"), value)
         .unwrap();
     root
@@ -1822,7 +1825,7 @@ fn a_covered_worker_deny_beats_an_exact_stored_allow() {
     let read = || {
         crate::workspace::secrets::read_pane_secret(
             &monitor,
-            crate::workspace::secrets::system_store(),
+            crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST),
             &actor,
             "KEY_1673",
             &scope,

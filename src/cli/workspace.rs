@@ -89,165 +89,6 @@ pub fn workspace_clean_cli(dry_run: bool, mode: OutputMode) -> i32 {
 
 // ── plexi secret subcommands (workspace-aware, issue #322) ───────────────────
 
-#[cfg(test)]
-thread_local! {
-    static TEST_PANE_CONTEXT_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> =
-        const { std::cell::RefCell::new(None) };
-    static TEST_SCOPE_REPLY: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-struct TestScopeReplyGuard(Option<Value>);
-
-#[cfg(test)]
-impl Drop for TestScopeReplyGuard {
-    fn drop(&mut self) {
-        TEST_SCOPE_REPLY.set(self.0.take());
-    }
-}
-
-#[cfg(test)]
-fn set_test_scope_reply(reply: Value) -> TestScopeReplyGuard {
-    TestScopeReplyGuard(TEST_SCOPE_REPLY.replace(Some(reply)))
-}
-
-#[cfg(test)]
-pub(crate) struct TestPaneContextGuard(Option<std::path::PathBuf>);
-
-#[cfg(test)]
-impl Drop for TestPaneContextGuard {
-    fn drop(&mut self) {
-        let prev = self.0.take();
-        TEST_PANE_CONTEXT_ROOT.with(|cell| *cell.borrow_mut() = prev);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn set_test_pane_context_root(path: &std::path::Path) -> TestPaneContextGuard {
-    let prev = TEST_PANE_CONTEXT_ROOT.with(|cell| cell.borrow_mut().replace(path.to_path_buf()));
-    TestPaneContextGuard(prev)
-}
-
-/// The calling pane's live context authority, asked of the host from the
-/// kernel-verified socket peer. Outer `None`: the host could not be asked.
-/// `Some(None)`: the caller is outside every pane (a human at a plain terminal).
-#[cfg(not(test))]
-fn host_caller_context() -> Option<Option<std::path::PathBuf>> {
-    static CACHE: std::sync::OnceLock<Option<Option<std::path::PathBuf>>> =
-        std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let socket = super::resolve_command_socket()?;
-            let reply = crate::rpc::request_json(
-                &socket,
-                serde_json::json!({"type": "caller_context"}),
-                std::time::Duration::from_secs(3),
-            )
-            .ok()?;
-            match super::reply::HostReply::decode(Ok(reply.to_string())) {
-                super::reply::HostReply::Payload(_) => {}
-                super::reply::HostReply::Refused(refusal) => {
-                    log::info!(
-                        "secret scope: host refused caller context: {}",
-                        refusal.coded_reason()
-                    );
-                    return None;
-                }
-                super::reply::HostReply::Transport(_) => return None,
-            }
-            if !super::reply::acknowledged(&reply) {
-                return None;
-            }
-            Some(
-                reply
-                    .get("context_root")
-                    .and_then(|v| v.as_str())
-                    .map(std::path::PathBuf::from),
-            )
-        })
-        .clone()
-}
-
-pub(crate) fn active_pane_context_root() -> Option<std::path::PathBuf> {
-    #[cfg(test)]
-    let raw = TEST_PANE_CONTEXT_ROOT.with(|cell| cell.borrow().clone())?;
-    // The host owns the live router and the verified peer identity. The
-    // environment is only a fallback when no host answers: it goes stale after
-    // `context set-root` and a child can unset it.
-    #[cfg(not(test))]
-    let raw = match host_caller_context() {
-        Some(root) => root?,
-        None => std::env::var("PLEXI_CONTEXT_ROOT")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(std::path::PathBuf::from)?,
-    };
-    let raw_canon = crate::platform::path::canonical_or_self(&raw);
-    let ws_root = crate::app::registry::resolve_workspace_root(&raw_canon)
-        .map(|p| crate::platform::path::canonical_or_self(&p));
-    Some(match ws_root {
-        Some(ws) if raw_canon.starts_with(&ws) && raw_canon != ws => raw_canon,
-        Some(ws) => ws,
-        None => raw_canon,
-    })
-}
-
-/// Enforce that `target_dir` falls within the calling pane's context root.
-///
-/// Subdirectory contexts are isolated units: a pane in context A has no
-/// authority over context B, including when B is nested inside A's directory.
-pub(crate) fn enforce_pane_context_scope(
-    target_dir: &std::path::Path,
-    op: &str,
-) -> Result<(), String> {
-    let Some(ctx_root) = active_pane_context_root() else {
-        return Ok(());
-    };
-    log::info!(
-        "secrets: {op} checking pane context scope for {}",
-        target_dir.display()
-    );
-    let socket = super::resolve_secret_socket();
-    let unconfirmed = |error: &str| {
-        log::warn!("secrets: {op} caller context at {socket:?}: {error}");
-        format!(
-            "permission_denied: host could not confirm this pane's context scope for {}",
-            target_dir.display()
-        )
-    };
-    #[cfg(not(test))]
-    let reply = request_workspace_scope(&socket, target_dir).map_err(|e| unconfirmed(&e))?;
-    #[cfg(test)]
-    let reply = TEST_SCOPE_REPLY
-        .with_borrow(Clone::clone)
-        .unwrap_or_else(|| {
-            let error =
-                crate::app::context_scope::check_context_scope(ctx_root.clone(), target_dir).err();
-            serde_json::json!({"ok":true, "workspace_error":error})
-        });
-    if !confirmed_workspace_scope(&reply) {
-        return Err(unconfirmed("missing or invalid scope confirmation"));
-    }
-    if let Some(reason) = reply["workspace_error"].as_str() {
-        let target_canon = crate::platform::path::canonical_or_self(target_dir);
-        let actor = std::env::var("PLEXI_PANE_ID")
-            .ok()
-            .filter(|id| !id.is_empty())
-            .map(|id| format!("pane:{id}"))
-            .unwrap_or_else(|| "pane:context".to_string());
-        let call_id = format!("{op}-{}", uuid::Uuid::new_v4());
-        let resource = target_canon.display().to_string();
-        audit_folder_denial(&actor, &resource, &call_id);
-        log::info!(
-            "secrets: {op} refused target={} outside pane context root {}",
-            target_canon.display(),
-            ctx_root.display()
-        );
-        return Err(reason.to_owned());
-    }
-    Ok(())
-}
-
 /// Keep secret lookup inside the pane's context while reusing the registry's
 /// channel and home-directory exclusions. Never reinterpret a parent profile
 /// as this pane's workspace (the H8 request walked from ~/temp into $HOME).
@@ -573,39 +414,41 @@ pub fn workspace_secret_list(
     mode: OutputMode,
 ) -> i32 {
     log::info!("secret_list:cli: global={global} json={}", mode.is_json());
-    if let Some(context) = context {
-        return explicit_context_secret_list(context, mode);
-    }
-    let result = std::env::current_dir()
-        .map_err(|error| format!("current directory: {error}"))
-        .and_then(|cwd| {
-            write_secret_list(&cwd, global, mode.is_json(), &mut std::io::stdout().lock())
-        });
-    match result {
-        Ok(()) => 0,
-        Err(error) => {
-            log::warn!("secret_list: failed: {error}");
-            eprintln!("error: {error}");
-            1
-        }
-    }
-}
-
-fn explicit_context_secret_list(context: &super::ContextTarget, mode: OutputMode) -> i32 {
-    let reply = match super::request(
-        serde_json::json!({"type": "pane_secret_list", "context": context.as_str()}),
-        "secret-list-context",
-        "context secret inventory",
-        mode,
-    ) {
+    let payload = if let Some(context) = context {
+        serde_json::json!({"type":"pane_secret_list", "context":context.as_str()})
+    } else {
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(error) => {
+                eprintln!("error: current directory: {error}");
+                return 1;
+            }
+        };
+        let Some(cwd) = cwd.to_str() else {
+            eprintln!("error: current directory is not a UTF-8 path");
+            return 1;
+        };
+        serde_json::json!({"type":"secret_list", "cwd":cwd, "global":global})
+    };
+    let reply = match receive_secret("secret list", payload, super::reply::HostReply::decode)
+        .and_then(|reply| reply.payload_or_report("secret list", mode))
+    {
         Ok(reply) => reply,
         Err(code) => return code,
     };
-    let result = serde_json::from_str::<serde_json::Value>(&reply)
-        .map_err(|e| e.to_string())
-        .and_then(|body| {
-            let inventory = serde_json::from_value(body).map_err(|e| e.to_string())?;
-            write_secret_inventory(&inventory, mode.is_json(), &mut std::io::stdout().lock())
+    let result = serde_json::from_str::<Value>(&reply)
+        .map_err(|error| error.to_string())
+        .and_then(|mut body| {
+            let backend = body
+                .as_object_mut()
+                .and_then(|fields| fields.remove("folder_backend"));
+            let inventory = serde_json::from_value(body).map_err(|error| error.to_string())?;
+            write_secret_inventory(
+                &inventory,
+                backend.as_ref().and_then(Value::as_str),
+                mode.is_json(),
+                &mut std::io::stdout().lock(),
+            )
         });
     match result {
         Ok(()) => 0,
@@ -617,18 +460,9 @@ fn explicit_context_secret_list(context: &super::ContextTarget, mode: OutputMode
     }
 }
 
-fn write_secret_list(
-    cwd: &std::path::Path,
-    global: bool,
-    json: bool,
-    output: &mut impl std::io::Write,
-) -> Result<(), String> {
-    let inventory = crate::workspace::secrets::manager::secret_inventory_report(cwd, global)?;
-    write_secret_inventory(&inventory, json, output)
-}
-
 fn write_secret_inventory(
     inventory: &crate::workspace::secrets::manager::SecretInventory,
+    folder_backend: Option<&str>,
     json: bool,
     output: &mut impl std::io::Write,
 ) -> Result<(), String> {
@@ -679,13 +513,13 @@ fn write_secret_inventory(
         })
         .peekable();
     if folders.peek().is_some() {
-        let backend = crate::workspace::secrets::backend_label();
-        eprintln!("folder secrets backend: {backend}");
+        if let Some(backend) = folder_backend {
+            eprintln!("folder secrets backend: {backend}");
+        }
         writeln!(output, "Folder scope:").map_err(|e| e.to_string())?;
         for (name, folder) in folders {
             writeln!(output, "  {name}  {}", folder.display()).map_err(|e| e.to_string())?;
         }
-        log::info!("folder_secrets: listed inventory backend={backend}");
     }
     if let Some(note) = &inventory.grant_details_unavailable {
         writeln!(output, "{note}").map_err(|e| e.to_string())?;
@@ -1024,7 +858,7 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
 // ── plexi plugin subcommands ─────────────────────────────────────────────────────
 
 #[cfg(test)]
-pub(super) mod secret_set_tests {
+pub(crate) mod secret_set_tests {
     use super::folder_secret_grant;
     use std::fs;
     use tempfile::TempDir;
@@ -1044,9 +878,9 @@ pub(super) mod secret_set_tests {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _lock = LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let account = keychain_user_name(name);
-        system_store().set(&account, "fixture").unwrap();
+        system_store(crate::broker::custody::TEST_HOST).set(&account, "fixture").unwrap();
         check();
-        system_store().delete(&account).unwrap();
+        system_store(crate::broker::custody::TEST_HOST).delete(&account).unwrap();
     }
 
     #[test]
@@ -1184,7 +1018,7 @@ pub(super) mod secret_set_tests {
         fs::create_dir(&folder).unwrap();
         // A stored binding gives folder discovery something to find.
         crate::workspace::secrets::set_folder_secret(
-            crate::workspace::secrets::folder_store(),
+            crate::workspace::secrets::folder_store(crate::broker::custody::TEST_HOST),
             "FOLDER_B_SECRET_1635",
             &folder,
             "test-only",
@@ -1216,7 +1050,7 @@ pub(super) mod secret_set_tests {
             "the cli must not write the sealed audit"
         );
         crate::workspace::secrets::remove_folder_secret(
-            crate::workspace::secrets::folder_store(),
+            crate::workspace::secrets::folder_store(crate::broker::custody::TEST_HOST),
             "FOLDER_B_SECRET_1635",
             &folder,
         )
@@ -1336,30 +1170,11 @@ mod workspace_init_tests {
 
 #[cfg(test)]
 mod secret_list_tests {
-    use super::write_secret_list;
+    use super::write_secret_inventory;
     use crate::workspace::secrets::{
         self,
         manager::{mutate_secret, Mutation, SecretTarget},
     };
-
-    /// Stint 1291: `secret list` from a CLI process still lists names, and says
-    /// in one line that grant and last-used details come from the host.
-    #[test]
-    fn secret_list_outside_the_host_omits_grant_details_and_says_so() {
-        let profile = tempfile::tempdir().unwrap();
-        let _profile = crate::config::set_test_profile_dir(profile.path().into());
-        let cwd = tempfile::tempdir().unwrap();
-        let mut output = Vec::new();
-        crate::broker::custody::as_cli_process(|| {
-            write_secret_list(cwd.path(), true, false, &mut output).unwrap()
-        });
-        let output = String::from_utf8(output).unwrap();
-        assert!(
-            output.contains(crate::workspace::secrets::manager::GRANT_DETAILS_FROM_HOST),
-            "{output}"
-        );
-        assert!(!profile.path().join("permission-audit.jsonl").exists());
-    }
 
     fn check_listing(global: bool, folders_enabled: bool, json: bool) {
         let profile = tempfile::tempdir().unwrap();
@@ -1387,9 +1202,9 @@ mod secret_list_tests {
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         for (name, target) in names.iter().zip(&targets) {
             let store = if matches!(target, SecretTarget::Folder(_)) {
-                secrets::folder_store()
+                secrets::folder_store(crate::broker::custody::TEST_HOST)
             } else {
-                secrets::system_store()
+                secrets::system_store(crate::broker::custody::TEST_HOST)
             };
             mutate_secret(
                 store,
@@ -1410,7 +1225,11 @@ mod secret_list_tests {
         let child = root.path().join("child");
         std::fs::create_dir(&child).unwrap();
         let mut output = Vec::new();
-        write_secret_list(&child, global, json, &mut output).unwrap();
+        let inventory = secrets::manager::inventory_for_caller(
+            &child, global, None, Vec::new(), &crate::broker::principal::Principal::External,
+        )
+        .unwrap();
+        write_secret_inventory(&inventory, Some("in-memory"), json, &mut output).unwrap();
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains(&names[0]), "global entry missing: {output}");
         assert_eq!(
@@ -1453,9 +1272,9 @@ mod secret_list_tests {
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         for (name, target) in names.iter().zip(&targets) {
             let store = if matches!(target, SecretTarget::Folder(_)) {
-                secrets::folder_store()
+                secrets::folder_store(crate::broker::custody::TEST_HOST)
             } else {
-                secrets::system_store()
+                secrets::system_store(crate::broker::custody::TEST_HOST)
             };
             mutate_secret(store, &monitor, target, name, Mutation::Delete).unwrap();
         }
@@ -1492,54 +1311,6 @@ mod secret_root_tests {
     use super::*;
 
     #[test]
-    fn pane_scope_obeys_the_host_without_opening_the_store() {
-        use crate::workspace::secrets::{
-            folder_store, remove_folder_secret, set_folder_secret, take_test_store_calls,
-        };
-        let root = tempfile::tempdir().unwrap();
-        let pane = set_test_pane_context_root(root.path());
-        let target = root.path().join("nested");
-        std::fs::create_dir(&target).unwrap();
-        set_folder_secret(folder_store(), "NESTED", &target, "fixture").unwrap();
-        let denied = "permission_denied: nested folder";
-        let unconfirmed = format!(
-            "permission_denied: host could not confirm this pane's context scope for {}",
-            target.display()
-        );
-        for (reply, expected) in [
-            (
-                serde_json::json!({"ok":true, "workspace_error":null}),
-                Ok(()),
-            ),
-            (
-                serde_json::json!({"ok":true, "workspace_error":denied}),
-                Err(denied.to_owned()),
-            ),
-            (serde_json::json!({"ok":true}), Err(unconfirmed.clone())),
-            (
-                serde_json::json!({"ok":false, "workspace_error":null}),
-                Err(unconfirmed.clone()),
-            ),
-            (
-                serde_json::json!({"ok":true, "workspace_error":false}),
-                Err(unconfirmed),
-            ),
-        ] {
-            let _reply = set_test_scope_reply(reply);
-            take_test_store_calls();
-            let outcome = enforce_pane_context_scope(&target, "secret.list");
-            assert_eq!(take_test_store_calls(), 0);
-            assert_eq!(outcome, expected);
-        }
-        remove_folder_secret(folder_store(), "NESTED", &target).unwrap();
-        drop(pane);
-        let _reply = set_test_scope_reply(serde_json::json!({"ok":false}));
-        take_test_store_calls();
-        assert_eq!(enforce_pane_context_scope(&target, "secret.list"), Ok(()));
-        assert_eq!(take_test_store_calls(), 0);
-    }
-
-    #[test]
     fn secret_workspace_walk_cannot_escape_pane_context() {
         let dir = tempfile::tempdir().unwrap();
         let context = dir.path().canonicalize().unwrap().join("context");
@@ -1555,8 +1326,6 @@ mod secret_root_tests {
             assert_eq!(request(op), Err(1));
         }
         assert_eq!(secret_workspace_root(&cwd, Some(&context)), None);
-        let _pane = set_test_pane_context_root(&context);
-        assert!(enforce_pane_context_scope(&cwd, "secret.workspace").is_ok());
         crate::workspace::secrets::init_workspace(&context, &channel).unwrap();
         for op in ["get", "set", "delete"] {
             assert_eq!(

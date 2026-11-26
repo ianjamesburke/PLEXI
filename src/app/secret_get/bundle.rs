@@ -25,6 +25,7 @@ impl Bundle {
         cwd: PathBuf,
         command: Option<(String, Option<PathBuf>)>,
         pane_root: Option<&Path>,
+        host: &HostProcess,
     ) -> Result<Self, TargetError> {
         let root = crate::cli::resolve_commands_workspace_root(&cwd);
         if let (Some(pane), Some(workspace)) = (pane_root, root.as_deref()) {
@@ -84,7 +85,7 @@ impl Bundle {
                         .map(|name| (name, None)),
                 );
             }
-            for (name, folder) in secrets::folders_for_cwd(&cwd, pane_root, secrets::folder_store())
+            for (name, folder) in secrets::folders_for_cwd(&cwd, pane_root, secrets::folder_store(host))
             {
                 names.insert(name, Some(folder));
             }
@@ -241,7 +242,7 @@ impl SecretRequest {
             bundle.names.keys().cloned().collect::<Vec<_>>().join(",")
         );
         monitor.note_use(&actor, &call, &grant_id, &fingerprint, &audit, "")?;
-        let result = bundle.fetch(secrets::folder_store(), secrets::system_store(), &|| {
+        let result = bundle.fetch(secrets::folder_store(&self.host), secrets::system_store(&self.host), &|| {
             self.client_connected()
         });
         let outcome = match &result {
@@ -322,13 +323,13 @@ mod tests {
         let config =
             secrets::init_workspace(&parent, &crate::config::workspace_channel_dir()).unwrap();
         let account = secrets::keychain_workspace_name(&config.id, "PARENT_ONLY");
-        secrets::system_store()
+        secrets::system_store(crate::broker::custody::TEST_HOST)
             .set(&account, "parent-canary")
             .unwrap();
         secrets::write_terminal_env_inject(&parent, "PARENT_ONLY", true).unwrap();
-        let outside = Bundle::discover(pane.clone(), None, None).unwrap();
+        let outside = Bundle::discover(pane.clone(), None, None, crate::broker::custody::TEST_HOST).unwrap();
         let SecretBundleReply::Values(approved) =
-            outside.fetch(secrets::folder_store(), secrets::system_store(), &|| true)
+            outside.fetch(secrets::folder_store(crate::broker::custody::TEST_HOST), secrets::system_store(crate::broker::custody::TEST_HOST), &|| true)
         else {
             panic!("outside caller lost its parent workspace bundle");
         };
@@ -348,6 +349,7 @@ mod tests {
             Some(&pane),
             &principal,
             &monitor,
+            crate::broker::custody::TEST_HOST,
         ) else {
             panic!("nested pane reached bundle admission");
         };
@@ -475,15 +477,15 @@ mod tests {
             ("SHARED", &ancestor, "a"),
             ("SHARED", &cwd, "nearest"),
         ] {
-            secrets::set_folder_secret(secrets::folder_store(), name, path, value).unwrap();
+            secrets::set_folder_secret(secrets::folder_store(crate::broker::custody::TEST_HOST), name, path, value).unwrap();
         }
-        let discover = |root| Bundle::discover(cwd.clone(), None, root).unwrap();
+        let discover = |root| Bundle::discover(cwd.clone(), None, root, crate::broker::custody::TEST_HOST).unwrap();
         let outside = discover(None);
         let pane = discover(Some(&cwd));
         assert_ne!(outside.digest, pane.digest);
         assert_eq!(pane.names.keys().collect::<Vec<_>>(), ["SHARED"]);
         let SecretBundleReply::Values(approved) =
-            outside.fetch(secrets::folder_store(), secrets::system_store(), &|| true)
+            outside.fetch(secrets::folder_store(crate::broker::custody::TEST_HOST), secrets::system_store(crate::broker::custody::TEST_HOST), &|| true)
         else {
             panic!("outside caller should receive both folder values");
         };
@@ -502,6 +504,7 @@ mod tests {
                 cwd.clone(),
                 Some(("build".into(), Some(cwd.clone()))),
                 Some(&cwd),
+                crate::broker::custody::TEST_HOST,
             )
             .unwrap()
         };

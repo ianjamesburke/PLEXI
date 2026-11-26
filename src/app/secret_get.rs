@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::PlexiApp;
 use crate::broker::caller::{PeerHop, RequestOrigin, SocketCaller};
+use crate::broker::custody::{host_process, HostProcess};
 use crate::broker::gate::{
     Admission, AdmitRequest, ApprovalChoice, PermissionMonitor, UseDecision,
 };
@@ -17,112 +18,12 @@ use std::sync::Arc;
 use zeroize::Zeroizing;
 
 mod bundle;
-#[path = "secret_mutation.rs"]
+mod inventory;
 mod mutation;
 use bundle::Bundle;
+use inventory::Inventory;
 
 impl PlexiApp {
-    pub(crate) fn serve_secret_list(
-        &mut self,
-        context: &str,
-        origin: &crate::broker::caller::RequestOrigin,
-        response_file: &str,
-    ) {
-        let result = self.context_secret_inventory(context, origin);
-        let body = match result {
-            Ok(inventory) => serde_json::to_value(inventory)
-                .unwrap_or_else(|error| serde_json::json!({"error": error.to_string()})),
-            Err(error) => {
-                log::info!("secret_list: refused context={context:?}: {error}");
-                serde_json::json!({"error": error, "error_code": "permission_denied"})
-            }
-        };
-        crate::rpc::write_json_response(response_file, body);
-    }
-
-    fn context_secret_inventory(
-        &self,
-        context: &str,
-        origin: &crate::broker::caller::RequestOrigin,
-    ) -> Result<crate::workspace::secrets::manager::SecretInventory, String> {
-        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
-        use crate::broker::{ActorScope, TargetType};
-        let candidates: Vec<_> = self
-            .router
-            .iter()
-            .filter(|ctx| {
-                context.parse::<u64>().ok() == Some(ctx.context_id)
-                    || ctx.name.displayed() == context
-                    || crate::platform::path::canonical_or_self(Path::new(context))
-                        == crate::platform::path::canonical_or_self(&ctx.root)
-            })
-            .collect();
-        let [ctx] = candidates.as_slice() else {
-            return Err(format!("Context '{context}' is missing or ambiguous. Use its id or root from `plexi context list`."));
-        };
-        let root = crate::platform::path::canonical_or_self(&ctx.root);
-        // An outside process is admitted as itself, per exact context.
-        if matches!(
-            origin,
-            crate::broker::caller::RequestOrigin::Socket(
-                crate::broker::caller::SocketCaller::External(_)
-            )
-        ) {
-            self.admit_outside_use(
-                origin,
-                "secret.list",
-                &serde_json::json!({"path": root}),
-                &root,
-                ctx.context_id,
-            )?;
-            let requester = origin
-                .socket_caller()
-                .and_then(crate::broker::caller::SocketCaller::principal)
-                .ok_or("permission_denied: an outside caller with no requester holds no secret inventory")?;
-            return crate::workspace::secrets::manager::inventory_for_context(&root, &requester);
-        }
-        // Every pane is admitted as its own principal; a pane the person
-        // opened has no inventory shortcut (stint 1285).
-        let Some(pane) = origin
-            .socket_caller()
-            .and_then(crate::broker::caller::SocketCaller::pane)
-        else {
-            return Err(format!(
-                "permission_denied: a {} caller holds no secret inventory; run --context from a Plexi pane.",
-                origin.class()
-            ));
-        };
-        let principal = pane.principal();
-        let pane = pane.terminal_pane;
-        log::info!(
-            "secret_list: explicit context={} pane={pane}",
-            ctx.context_id
-        );
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())
-            .map_err(|error| error.to_string())?;
-        let actor = principal.actor_id();
-        let call = format!("secret-list-{}", uuid::Uuid::new_v4());
-        let input = serde_json::json!({"path": root}).to_string();
-        let posture = self.pane_ceiling(pane)?;
-        match monitor.admit_with_posture(AdmitRequest {
-            call_id: &call, tool: "secret.list", input_json: &input,
-            principal: &principal, actor_scope: ActorScope::User,
-            trust_origin: "plexi-cli", workspace_root: &root, context_id: ctx.context_id,
-            package_id: "", instance_id: 0, target_type: TargetType::Secret,
-        }, posture.as_ref()) {
-            Admission::Proceed { grant_id, fingerprint, resource_id, .. } => {
-                let resource = resource_id.unwrap_or_default();
-                monitor.note_use(&crate::broker::principal::RecordOwner::requester(&principal), &call, &grant_id, &fingerprint, &resource, "")?;
-                let result = crate::workspace::secrets::manager::inventory_for_context(&root, &principal);
-                monitor.note_outcome(None, &crate::broker::principal::RecordOwner::requester(&principal), &call, &grant_id, &fingerprint, &resource, "", if result.is_ok() { "ok" } else { "failed" }, "", "")?;
-                monitor.consume_once(&grant_id, None);
-                result
-            }
-            Admission::Required { pending_request_id } => Err(format!("permission_denied: missing secret.list grant for {} (actor {actor}). Ask the human to approve request {pending_request_id} in Needs you, then rerun this command.", root.display())),
-            Admission::Denied { .. } => Err(format!("permission_denied: missing secret.list grant for {} (actor {actor}). Ask the human to review the denial in Permissions and approve a new request in Needs you.", root.display())),
-        }
-    }
-
     pub(crate) fn serve_secret_get(
         &mut self,
         name: &str,
@@ -159,7 +60,7 @@ impl PlexiApp {
             response_file,
             |request, monitor| {
                 if let SecretTarget::One { scope, .. } = &request.target {
-                    request.read_and_release(&monitor, scope.store());
+                    request.read_and_release(&monitor, scope.store(&request.host));
                 }
             },
         );
@@ -191,6 +92,14 @@ impl PlexiApp {
             );
             return;
         }
+        let host = match host_process() {
+            Ok(host) => host,
+            Err(error) => {
+                log::error!("{tool}: no host custody: {error}");
+                stream_reply(&reply_path, serde_json::json!({"status":"denied"}));
+                return;
+            }
+        };
         let monitor = match PermissionMonitor::for_profile(&profile) {
             Ok(monitor) => monitor,
             Err(error) => {
@@ -209,7 +118,7 @@ impl PlexiApp {
                     | SecretAsk::Workspace(Some(path))
                     | SecretAsk::Bundle { cwd: path, .. } => Some(path),
                     SecretAsk::DiscoverFolder(_) => authority.as_ref(),
-                    SecretAsk::Global | SecretAsk::Workspace(None) => None,
+                    SecretAsk::Global | SecretAsk::Inventory(_) | SecretAsk::Workspace(None) => None,
                 };
                 if target.is_some_and(|root| {
                     authority.as_ref() != Some(root) || !self.pane_may_access_context_root(id, root)
@@ -281,9 +190,11 @@ impl PlexiApp {
                     discovery_root.as_deref(),
                     &subject.principal(),
                     &monitor,
+                    &host,
                 ) {
                     Ok(target) => work(
                         SecretRequest {
+                            host,
                             subject,
                             peer,
                             repaint: repaint.clone(),
@@ -331,6 +242,7 @@ impl From<String> for TargetError {
 #[derive(Debug)]
 pub(super) enum SecretAsk {
     Global,
+    Inventory(Box<Inventory>),
     Workspace(Option<PathBuf>),
     Folder(PathBuf),
     DiscoverFolder(PathBuf),
@@ -395,8 +307,9 @@ impl SecretAsk {
         discovery_root: Option<&Path>,
         principal: &Principal,
         monitor: &PermissionMonitor,
+        host: &HostProcess,
     ) -> Result<SecretTarget, serde_json::Value> {
-        self.target_for(tool, name, discovery_root).map_err(|error| {
+        self.target_for(tool, name, discovery_root, host).map_err(|error| {
             log::info!("{tool}: scope unavailable: {error}");
             if let TargetError::OutsidePane { pane, .. } = &error {
                 monitor.note_denial(
@@ -420,12 +333,14 @@ impl SecretAsk {
         tool: &str,
         name: String,
         discovery_root: Option<&Path>,
+        host: &HostProcess,
     ) -> Result<SecretTarget, TargetError> {
         let scope: Result<SecretScope, String> = match self {
             Self::Bundle { cwd, command } => {
-                return Bundle::discover(cwd, command, discovery_root).map(|bundle| SecretTarget::Bundle(Box::new(bundle)));
+                return Bundle::discover(cwd, command, discovery_root, host).map(|bundle| SecretTarget::Bundle(Box::new(bundle)));
             }
             Self::Global => Ok(SecretScope::Global),
+            Self::Inventory(inventory) => return Ok(SecretTarget::Inventory(inventory)),
             Self::Workspace(root) => {
                 if let Some(root) = root {
                     if let Some(cfg) = crate::workspace::secrets::WorkspaceConfig::load(&root)? {
@@ -445,7 +360,7 @@ impl SecretAsk {
             Self::DiscoverFolder(cwd) => {
                 let cwd = crate::workspace::secrets::canonical_folder(&cwd)?;
                 let folders: Vec<_> = crate::workspace::secrets::list_folder_secrets(
-                    crate::workspace::secrets::folder_store(),
+                    crate::workspace::secrets::folder_store(host),
                 )
                 .into_iter()
                 .filter(|meta| {
@@ -487,6 +402,7 @@ impl SecretAsk {
 enum SecretTarget {
     One { name: String, scope: SecretScope },
     Bundle(Box<Bundle>),
+    Inventory(Box<Inventory>),
 }
 
 enum Subject {
@@ -519,6 +435,7 @@ impl Subject {
 
 /// Host-classified request carried into the secret worker.
 struct SecretRequest {
+    host: HostProcess,
     subject: Subject,
     peer: Option<PeerHop>,
     repaint: egui::Context,
@@ -914,6 +831,74 @@ mod list_tests {
     }
 
     #[test]
+    fn outside_secret_list_click_belongs_to_the_original_stream() {
+        let mut h = HostHarness::new();
+        let context = h.app.router.active().context_id.to_string();
+        let peer = PeerWitness::for_live_pids(&[std::process::id()]);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let frame = serde_json::json!({"type":"pane_secret_list","context":context});
+        let (first, ask) = live_secret(&mut h, frame.clone(), &peer);
+        let (second, other) = live_secret(&mut h, frame, &peer);
+        assert_ne!(ask.pending_request_id, other.pending_request_id);
+        monitor
+            .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        monitor
+            .approve_pending(&other.pending_request_id, ApprovalChoice::Deny)
+            .unwrap();
+        assert!(read_client(first, "list-first")["entries"].is_array());
+        assert_eq!(read_client(second, "list-second")["status"], "denied");
+        super::worker_test::join();
+        super::worker_test::join();
+        assert!(monitor.host_records().open().is_empty());
+    }
+
+    #[test]
+    fn openrouter_secret_status_scans_legacy_accounts_without_reading_values() {
+        let mut h = HostHarness::new();
+        let peer = PeerWitness::for_live_pids(&[std::process::id()]);
+        crate::cli::workspace::secret_set_tests::with_stored_account("openrouter-api-key", || {
+            secrets::take_test_value_reads();
+            let reply = send(
+                &mut h,
+                serde_json::json!({"type":"openrouter_secret_status"}),
+                Some(peer),
+            );
+            assert_eq!(reply, serde_json::json!({"configured":true}));
+            assert_eq!(secrets::take_test_value_reads(), 0);
+            assert!(secrets::system_store(crate::broker::custody::TEST_HOST)
+                .scan_accounts()
+                .unwrap()
+                .contains(&secrets::keychain_user_name("openrouter-api-key")));
+            let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+            assert!(monitor.host_records().open().is_empty());
+        });
+    }
+
+    #[test]
+    fn default_secret_list_refuses_a_pane_without_a_resolvable_root() {
+        use crate::broker::caller::{RequestOrigin, SocketCaller};
+
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let pid = h.terminal_backend(pane).child_pid();
+        let mut origin = h.app.socket_origin_for_pids(&[pid]);
+        let RequestOrigin::Socket(SocketCaller::Pane(pane)) = &mut origin else {
+            panic!("the fixture must be a classified pane");
+        };
+        pane.visible_pane = u64::MAX;
+        let token = crate::rpc::response_file("rootless-secret-list", "json");
+        secrets::take_test_store_calls();
+        h.app.serve_cwd_secret_list(&h.workspace_root(), false, &origin, &token);
+        assert_eq!(secrets::take_test_store_calls(), 0);
+        let reply: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(token).unwrap()).unwrap();
+        assert_eq!(reply["error_code"], "permission_denied");
+        assert!(reply["error"].as_str().unwrap().contains("no resolvable context root"));
+        assert!(reply.get("entries").is_none());
+    }
+
+    #[test]
     fn context_inventory_human_names_agent_requires_exact_grant() {
         let mut h = HostHarness::new();
         let pane = h.add_focused_terminal();
@@ -929,7 +914,7 @@ mod list_tests {
         let cfg = secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
         let name = format!("CONTEXT_{}", uuid::Uuid::new_v4().simple());
         let account = secrets::keychain_workspace_name(&cfg.id, &name);
-        secrets::system_store()
+        secrets::system_store(crate::broker::custody::TEST_HOST)
             .set(&account, "not-for-output")
             .unwrap();
         // A pane the person opened is brokered like any other (stint 1285).
@@ -985,7 +970,7 @@ mod list_tests {
             request(&mut h, &context, &[pid])["error_code"],
             "permission_denied"
         );
-        secrets::system_store().delete(&account).unwrap();
+        secrets::system_store(crate::broker::custody::TEST_HOST).delete(&account).unwrap();
     }
 
     #[test]
@@ -1047,7 +1032,7 @@ mod list_tests {
         let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let name = format!("PANE_{}", uuid::Uuid::new_v4().simple());
         let other = tempfile::tempdir().unwrap();
-        secrets::set_folder_secret(secrets::folder_store(), &name, other.path(), "outside-root")
+        secrets::set_folder_secret(secrets::folder_store(crate::broker::custody::TEST_HOST), &name, other.path(), "outside-root")
             .unwrap();
         for op in ["set", "read", "rm"] {
             let mut request = serde_json::json!({"type": format!("folder_secret_{op}"), "name":name, "folder":root});
@@ -1117,13 +1102,13 @@ mod list_tests {
             secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
         let ancestor = format!("ANCESTOR_{}", uuid::Uuid::new_v4().simple());
         secrets::set_folder_secret(
-            secrets::folder_store(),
+            secrets::folder_store(crate::broker::custody::TEST_HOST),
             &ancestor,
             root.parent().unwrap(),
             "ancestor-canary",
         )
         .unwrap();
-        secrets::set_folder_secret(secrets::folder_store(), "LOCAL", &root, "local-canary")
+        secrets::set_folder_secret(secrets::folder_store(crate::broker::custody::TEST_HOST), "LOCAL", &root, "local-canary")
             .unwrap();
         secrets::write_terminal_env_inject(&root, "REQUIRED", true).unwrap();
         let commands = crate::cli::ensure_commands_file(Some(&root));
@@ -1169,7 +1154,7 @@ mod list_tests {
             );
             super::worker_test::join();
             let account = secrets::keychain_workspace_name(&config.id, "REQUIRED");
-            secrets::system_store()
+            secrets::system_store(crate::broker::custody::TEST_HOST)
                 .set(&account, "terminal-canary")
                 .unwrap();
             let outside = PeerWitness::for_live_pids(&[std::process::id()]);
@@ -1218,7 +1203,7 @@ mod list_tests {
                         .contains(canary)
                 );
             }
-            secrets::system_store().delete(&account).unwrap();
+            secrets::system_store(crate::broker::custody::TEST_HOST).delete(&account).unwrap();
             let (cancel, next) = live_secret(&mut h, wire, &peer);
             drop(cancel);
             super::worker_test::join();
@@ -1227,7 +1212,7 @@ mod list_tests {
                 .approve_pending(&next.pending_request_id, ApprovalChoice::Once)
                 .is_err());
         }
-        secrets::remove_folder_secret(secrets::folder_store(), &ancestor, root.parent().unwrap())
+        secrets::remove_folder_secret(secrets::folder_store(crate::broker::custody::TEST_HOST), &ancestor, root.parent().unwrap())
             .unwrap();
         let retired_gate = h.profile_dir().join("folder-secret-gate.sock");
         assert_eq!(
@@ -1248,7 +1233,7 @@ mod list_tests {
         let name = format!("DISCOVERY_{}", uuid::Uuid::new_v4().simple());
         let discover = |cwd: &std::path::Path, authority: Option<&std::path::Path>| {
             super::SecretAsk::DiscoverFolder(cwd.into())
-                .target_for("secret.read", name.clone(), authority)
+                .target_for("secret.read", name.clone(), authority, crate::broker::custody::TEST_HOST)
                 .map_err(|error| error.to_string())
                 .map(|target| match target {
                     super::SecretTarget::One { scope, .. } => scope.label(),
@@ -1257,11 +1242,11 @@ mod list_tests {
         };
         let missing = format!("secret '{name}' not found");
         assert_eq!(discover(&root, None), Err(missing.clone()));
-        secrets::set_folder_secret(secrets::folder_store(), &name, &nested, "nested").unwrap();
+        secrets::set_folder_secret(secrets::folder_store(crate::broker::custody::TEST_HOST), &name, &nested, "nested").unwrap();
         let nested_label = format!("folder:{}", nested.display());
         assert_eq!(discover(other.path(), None), Ok(nested_label.clone()));
         assert_eq!(discover(&nested, Some(&root)), Err(missing));
-        secrets::set_folder_secret(secrets::folder_store(), &name, &root, "root").unwrap();
+        secrets::set_folder_secret(secrets::folder_store(crate::broker::custody::TEST_HOST), &name, &root, "root").unwrap();
         assert_eq!(discover(&nested, None), Ok(nested_label));
         assert_eq!(
             discover(&nested, Some(&root)),
@@ -1316,7 +1301,7 @@ mod list_tests {
         let secret_name = "STREAM_ONLY_SECRET";
         let secret_val = "plaintext-never-hits-disk-0970";
         let account = secrets::keychain_workspace_name(&cfg.id, secret_name);
-        secrets::system_store().set(&account, secret_val).unwrap();
+        secrets::system_store(crate::broker::custody::TEST_HOST).set(&account, secret_val).unwrap();
 
         write_agent_role(
             &ws,
@@ -1413,7 +1398,7 @@ mod list_tests {
             "value reply without a socket stream must never fall back to disk"
         );
 
-        secrets::system_store().delete(&account).unwrap();
+        secrets::system_store(crate::broker::custody::TEST_HOST).delete(&account).unwrap();
     }
 
     #[test]
@@ -1423,7 +1408,7 @@ mod list_tests {
         let ws = h.workspace_root();
         let cfg = secrets::init_workspace(&ws, &crate::config::workspace_channel_dir()).unwrap();
         let account = secrets::keychain_workspace_name(&cfg.id, "FOO");
-        secrets::system_store().set(&account, "top-secret").unwrap();
+        secrets::system_store(crate::broker::custody::TEST_HOST).set(&account, "top-secret").unwrap();
 
         write_agent_role(
             &ws,
@@ -1536,7 +1521,7 @@ mod list_tests {
             "audit records must retain resource identifier FOO: {audit_json}"
         );
 
-        secrets::system_store().delete(&account).unwrap();
+        secrets::system_store(crate::broker::custody::TEST_HOST).delete(&account).unwrap();
     }
 
     #[test]
@@ -1546,7 +1531,7 @@ mod list_tests {
         let ws = h.workspace_root();
         let cfg = secrets::init_workspace(&ws, &crate::config::workspace_channel_dir()).unwrap();
         let account = secrets::keychain_workspace_name(&cfg.id, "QUAL");
-        secrets::system_store()
+        secrets::system_store(crate::broker::custody::TEST_HOST)
             .set(&account, "qual-secret")
             .unwrap();
 
@@ -1623,7 +1608,7 @@ mod list_tests {
             "approved missing-snapshot send must deliver: {send_reply}"
         );
 
-        secrets::system_store().delete(&account).unwrap();
+        secrets::system_store(crate::broker::custody::TEST_HOST).delete(&account).unwrap();
     }
 
     #[test]
@@ -1667,7 +1652,7 @@ mod list_tests {
         let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let name = "PANE_CONCURRENT_1280";
         let account = secrets::keychain_user_name(name);
-        let stored = || secrets::system_store().get(&account).unwrap();
+        let stored = || secrets::system_store(crate::broker::custody::TEST_HOST).get(&account).unwrap();
         let (a, first) = pane_set(&mut h, &peer, name, "first-pane-canary");
         let (b, second) = pane_set(&mut h, &peer, name, "second-pane-canary");
         assert_ne!(first, second);
@@ -1739,7 +1724,7 @@ mod list_tests {
         assert_eq!(read_client(survivor, name)["status"], "ok");
         assert_eq!(super::worker_test::join().0, 1);
         assert_eq!(
-            secrets::system_store()
+            secrets::system_store(crate::broker::custody::TEST_HOST)
                 .get(&secrets::keychain_user_name(name))
                 .unwrap()
                 .as_str(),
@@ -1763,11 +1748,11 @@ mod list_tests {
             .unwrap();
         let (b, second) = pane_set(&mut h, &peer, name, "later-canary");
         assert_ne!(first, second);
-        assert!(secrets::system_store().get(&account).is_none());
+        assert!(secrets::system_store(crate::broker::custody::TEST_HOST).get(&account).is_none());
         resume.send(()).unwrap();
         assert_eq!(read_client(a, name)["status"], "ok");
         assert_eq!(
-            secrets::system_store().get(&account).unwrap().as_str(),
+            secrets::system_store(crate::broker::custody::TEST_HOST).get(&account).unwrap().as_str(),
             "original-canary"
         );
         monitor
@@ -1775,7 +1760,7 @@ mod list_tests {
             .unwrap();
         assert_eq!(read_client(b, name)["status"], "ok");
         assert_eq!(
-            secrets::system_store().get(&account).unwrap().as_str(),
+            secrets::system_store(crate::broker::custody::TEST_HOST).get(&account).unwrap().as_str(),
             "later-canary"
         );
         assert_eq!(super::worker_test::join().0, 1);
@@ -1925,7 +1910,7 @@ mod list_tests {
         };
         let cfg = secrets::init_workspace(&ws, &crate::config::workspace_channel_dir()).unwrap();
         let account = secrets::keychain_workspace_name(&cfg.id, "BAR");
-        secrets::system_store().set(&account, "bar-secret").unwrap();
+        secrets::system_store(crate::broker::custody::TEST_HOST).set(&account, "bar-secret").unwrap();
 
         write_agent_role(
             &ws,
@@ -2026,7 +2011,7 @@ mod list_tests {
         let req_b = pane_get(&mut h, "BAR", pid_b, Some(ApprovalChoice::Deny));
         assert_eq!(req_b["reason"], "denied", "{req_b}");
 
-        secrets::system_store().delete(&account).unwrap();
+        secrets::system_store(crate::broker::custody::TEST_HOST).delete(&account).unwrap();
     }
 }
 
@@ -2105,6 +2090,7 @@ mod release_tests {
 
     fn request(store: &ActsDuringRead, reply: &str) -> SecretRequest {
         SecretRequest {
+            host: *crate::broker::custody::TEST_HOST,
             subject: Subject::Pane(AdmittedScope::of(&store.pane)),
             peer: None,
             repaint: Default::default(),
@@ -2332,6 +2318,12 @@ mod cli_tests {
             ),
             "folder-rm" => crate::cli::workspace::folder_secret_rm(name, folder),
             "get" => crate::cli::workspace::workspace_secret_get(name, true),
+            "list" => crate::cli::workspace::workspace_secret_list(
+                true,
+                None,
+                crate::cli::OutputMode::Text,
+            ),
+            "status" => i32::from(!crate::cli::ai::check_openrouter_configured()),
             "set" => crate::cli::workspace::workspace_secret_set(
                 name,
                 std::env::var_os("SECRET_PROMPT").is_none(),
@@ -2418,6 +2410,24 @@ mod cli_tests {
     }
 
     #[test]
+    fn secret_list_fails_closed_without_a_host() {
+        let home = tempfile::tempdir().unwrap();
+        let endpoint = clean_shell_endpoint(home.path());
+        let output = cli("list", home.path())
+            .env("SECRET_TEST_SOCKET", &endpoint)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let attempted = format!("Plexi host did not answer at {}", endpoint.display());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&attempted));
+        let status = cli("status", home.path())
+            .env("SECRET_TEST_SOCKET", &endpoint)
+            .output()
+            .unwrap();
+        assert_eq!(status.status.code(), Some(1), "{status:?}");
+    }
+
+    #[test]
     fn bundle_cli_requires_a_host() {
         let dir = tempfile::tempdir().unwrap();
         let _profile = crate::config::set_test_profile_dir(dir.path().into());
@@ -2458,10 +2468,37 @@ mod cli_tests {
         drive_outside_get(None);
     }
 
+    #[test]
+    fn outside_cli_secret_set_get_delete_use_distinct_live_requests() {
+        let mut f = Fixture::new(None);
+        let account = secrets::keychain_user_name(&f.name);
+        let store = secrets::system_store(crate::broker::custody::TEST_HOST);
+        assert!(store.get(&account).is_none());
+        let (set, ask) = f.set("set", "outside-lifecycle-canary");
+        assert!(store.get(&account).is_none());
+        f.decide(&ask, ApprovalChoice::Once);
+        finish(set, 0);
+        assert_eq!(join().0, 1);
+        let get = f.command("get").spawn().unwrap();
+        let ask = f.accept(None);
+        f.decide(&ask, ApprovalChoice::Once);
+        let output = String::from_utf8(finish(get, 0).stdout).unwrap();
+        assert_eq!(output.lines().last(), Some("outside-lifecycle-canary"));
+        assert_eq!(join().0, 1);
+        let delete = f.command("delete").spawn().unwrap();
+        let ask = f.accept(None);
+        assert!(store.get(&account).is_some());
+        f.decide(&ask, ApprovalChoice::Once);
+        finish(delete, 0);
+        assert_eq!(join().0, 1);
+        assert!(store.get(&account).is_none());
+        assert!(f.monitor.host_records().open().is_empty());
+    }
+
     fn drive_outside_get(socket: Option<std::path::PathBuf>) {
         let mut f = Fixture::new(socket);
         let account = secrets::keychain_user_name(&f.name);
-        secrets::system_store()
+        secrets::system_store(crate::broker::custody::TEST_HOST)
             .set(&account, "fixture-value")
             .unwrap();
         let path = crate::config::config_dir().join("cli-stdout");
@@ -2538,7 +2575,7 @@ mod cli_tests {
         }
 
         fn stored(&self) -> zeroize::Zeroizing<String> {
-            secrets::system_store()
+            secrets::system_store(crate::broker::custody::TEST_HOST)
                 .get(&secrets::keychain_user_name(&self.name))
                 .unwrap()
         }
@@ -2676,7 +2713,7 @@ mod cli_tests {
                 );
             }
         }
-        assert!(!secrets::list_folder_secrets(secrets::folder_store())
+        assert!(!secrets::list_folder_secrets(secrets::folder_store(crate::broker::custody::TEST_HOST))
             .iter()
             .any(|m| m.name == f.name));
     }
@@ -2688,9 +2725,9 @@ mod cli_tests {
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let root = f.h.workspace_root().canonicalize().unwrap();
         let cfg = secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
-        secrets::set_folder_secret(secrets::folder_store(), "LOCAL", &root, "host-canary").unwrap();
+        secrets::set_folder_secret(secrets::folder_store(crate::broker::custody::TEST_HOST), "LOCAL", &root, "host-canary").unwrap();
         secrets::write_terminal_env_inject(&root, "EXTRA", true).unwrap();
-        secrets::system_store()
+        secrets::system_store(crate::broker::custody::TEST_HOST)
             .set(
                 &secrets::keychain_workspace_name(&cfg.id, "EXTRA"),
                 "terminal-canary",

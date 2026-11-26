@@ -2256,8 +2256,8 @@ mod tests {
             get(TEST_HOST, "probe-item").unwrap().unwrap().as_str(),
             "host-only-key"
         );
-        assert!(system_store().get("plexi:host:permission-mac").is_none());
-        assert!(system_store().get("permission-mac").is_none());
+        assert!(system_store(crate::broker::custody::TEST_HOST).get("plexi:host:permission-mac").is_none());
+        assert!(system_store(crate::broker::custody::TEST_HOST).get("permission-mac").is_none());
         assert!(!dir.path().join("secrets.json").exists());
         let label = keychain_item_label("plexi:host:permission-mac:abcd");
         assert!(
@@ -2279,7 +2279,7 @@ mod tests {
         assert_eq!(get(TEST_HOST, account).unwrap().unwrap().as_str(), "ef01");
         delete(account).unwrap();
         assert!(get(TEST_HOST, account).unwrap().is_none());
-        assert!(system_store().get(account).is_none());
+        assert!(system_store(crate::broker::custody::TEST_HOST).get(account).is_none());
     }
 
     /// A test that never took the host-key lock calls the keychain while

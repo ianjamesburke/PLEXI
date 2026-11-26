@@ -123,11 +123,12 @@ impl SecretsView {
         self.new_value.clear();
     }
 
-    fn store_for(target: &SecretTarget) -> &'static dyn crate::workspace::secrets::SecretStore {
-        match target {
-            SecretTarget::Folder(_) => crate::workspace::secrets::folder_store(),
-            _ => crate::workspace::secrets::system_store(),
-        }
+    fn store_for(target: &SecretTarget) -> Result<&'static dyn crate::workspace::secrets::SecretStore, String> {
+        let host = crate::broker::custody::host_process()?;
+        Ok(match target {
+            SecretTarget::Folder(_) => crate::workspace::secrets::folder_store(&host),
+            _ => crate::workspace::secrets::system_store(&host),
+        })
     }
 
     fn validate_name(&mut self, name: &str) -> bool {
@@ -154,13 +155,9 @@ impl SecretsView {
                     return;
                 }
             };
-        let result = manager::mutate_secret(
-            Self::store_for(&self.target),
-            &monitor,
-            &self.target,
-            &name,
-            Mutation::Set(&self.new_value),
-        );
+        let result = Self::store_for(&self.target).and_then(|store| {
+            manager::mutate_secret(store, &monitor, &self.target, &name, Mutation::Set(&self.new_value))
+        });
         match result {
             Ok(()) => {
                 self.close_form();
@@ -193,13 +190,9 @@ impl SecretsView {
                     return;
                 }
             };
-        match manager::mutate_secret(
-            Self::store_for(&entry.target),
-            &monitor,
-            &entry.target,
-            &entry.name,
-            Mutation::Delete,
-        ) {
+        match Self::store_for(&entry.target).and_then(|store| {
+            manager::mutate_secret(store, &monitor, &entry.target, &entry.name, Mutation::Delete)
+        }) {
             Ok(()) => {
                 self.refresh();
                 self.status_msg = format!("Deleted {}.", entry.name);
@@ -214,13 +207,20 @@ impl SecretsView {
             return;
         };
         use crate::workspace::secrets::{self, ReadResult};
+        let store = match Self::store_for(&entry.target) {
+            Ok(store) => store,
+            Err(error) => {
+                self.report_error(error);
+                return;
+            }
+        };
         // Preserve the existing explicit clipboard action for user/workspace
         // secrets. Folder reads retain their existing actor/click admission.
         let result = match &entry.target {
-            SecretTarget::Global => Ok(secrets::system_store()
+            SecretTarget::Global => Ok(store
                 .get(&secrets::keychain_user_name(&entry.name))
                 .map_or(ReadResult::NotFound, ReadResult::Value)),
-            SecretTarget::Workspace { id, .. } => Ok(secrets::system_store()
+            SecretTarget::Workspace { id, .. } => Ok(store
                 .get(&secrets::keychain_workspace_name(id, &entry.name))
                 .map_or(ReadResult::NotFound, ReadResult::Value)),
             SecretTarget::Folder(folder) => {
@@ -229,7 +229,7 @@ impl SecretsView {
                     .and_then(|monitor| {
                         secrets::read_folder_secret(
                             &monitor,
-                            secrets::folder_store(),
+                            store,
                             &secrets::SecretActor::app("secrets_manager"),
                             &entry.name,
                             folder,
@@ -269,7 +269,8 @@ impl SecretsView {
                     return;
                 }
             };
-        let result = manager::import_env(Self::store_for(target), &monitor, target, path);
+        let result = Self::store_for(target)
+            .and_then(|store| manager::import_env(store, &monitor, target, path));
         self.refresh();
         match result {
             Ok(count) => {
@@ -815,14 +816,14 @@ mod tests {
         app.commit_add();
         let account = crate::workspace::secrets::keychain_workspace_name(&cfg.id, "APP_TEST_TOKEN");
         assert_eq!(
-            crate::workspace::secrets::system_store()
+            crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
                 .get(&account)
                 .unwrap()
                 .as_str(),
             "canary-app-second"
         );
         app.delete_selected();
-        assert!(crate::workspace::secrets::system_store()
+        assert!(crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
             .get(&account)
             .is_none());
         let fixture = cwd.path().join("fixture.env");
@@ -880,7 +881,7 @@ mod tests {
         let account =
             crate::workspace::secrets::keychain_workspace_name(&cfg.id, "PICKER_0858_TOKEN");
         assert_eq!(
-            crate::workspace::secrets::system_store()
+            crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
                 .get(&account)
                 .unwrap()
                 .as_str(),
@@ -915,7 +916,7 @@ mod tests {
             ("DEPLOY_TOKEN", &folder),
         ] {
             manager::mutate_secret(
-                SecretsView::store_for(target),
+                SecretsView::store_for(target).unwrap(),
                 &monitor,
                 target,
                 name,
@@ -927,7 +928,7 @@ mod tests {
         let read = || {
             crate::workspace::secrets::read_pane_secret(
                 &monitor,
-                SecretsView::store_for(&global),
+                SecretsView::store_for(&global).unwrap(),
                 &actor,
                 "OPENAI_0858_SHOT_KEY",
                 &crate::workspace::secrets::SecretScope::Global,
@@ -1026,7 +1027,7 @@ mod tests {
             ("DEPLOY_TOKEN", &folder),
         ] {
             manager::mutate_secret(
-                SecretsView::store_for(target),
+                SecretsView::store_for(target).unwrap(),
                 &monitor,
                 target,
                 name,

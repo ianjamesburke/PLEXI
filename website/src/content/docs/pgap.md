@@ -615,11 +615,11 @@ Spawn a configured agent worker pane, optionally into a created or reused child 
 | Field | Type | Required |
 |-------|------|----------|
 | `anchor_pane` | `integer?` | no |
-| `command` | `string` | yes |
+| `command` | `string` | no |
 | `cwd` | `string?` | no |
-| `ephemeral` | `boolean` | no |
+| `ephemeral` | `boolean?` | no |
 | `focus` | `boolean` | no |
-| `harness` | `string` | yes |
+| `harness` | `string` | no |
 | `initial_slots` | `any[][]` | no |
 | `name` | `string?` | no |
 | `response_file` | `string` | yes |
@@ -966,6 +966,24 @@ Names-only explicit-context inventory, admitted for the host-stamped peer.
 | Field | Type | Required |
 |-------|------|----------|
 | `context` | `string` | yes |
+| `response_file` | `string` | yes |
+
+### `secret_list`
+
+Names-only inventory relative to the socket caller's scope.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `cwd` | `string` | yes |
+| `global` | `boolean` | no |
+| `response_file` | `string` | yes |
+
+### `openrouter_secret_status`
+
+A boolean OpenRouter configuration check, with no credential value.
+
+| Field | Type | Required |
+|-------|------|----------|
 | `response_file` | `string` | yes |
 
 ### `secret_get`

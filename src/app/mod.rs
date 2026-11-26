@@ -955,6 +955,9 @@ pub(crate) fn handle_socket_line_in(
             }
             let protected_reply = match &mut cmd {
                 crate::protocol::HostRequest::SecretGet { response_file, .. }
+                | crate::protocol::HostRequest::PaneSecretList { response_file, .. }
+                | crate::protocol::HostRequest::SecretList { response_file, .. }
+                | crate::protocol::HostRequest::OpenrouterSecretStatus { response_file, .. }
                 | crate::protocol::HostRequest::SecretSet { response_file, .. }
                 | crate::protocol::HostRequest::SecretDelete { response_file, .. }
                 | crate::protocol::HostRequest::FolderSecretExec { response_file, .. }
@@ -2656,8 +2659,15 @@ impl PlexiApp {
                     return false;
                 }
             }
+            let host = match crate::broker::custody::host_process() {
+                Ok(host) => host,
+                Err(error) => {
+                    log::warn!("context scope: {error}");
+                    return false;
+                }
+            };
             let nested_folder_secret = crate::workspace::secrets::list_folder_secrets(
-                crate::workspace::secrets::folder_store(),
+                crate::workspace::secrets::folder_store(&host),
             )
             .iter()
             .any(|meta| {

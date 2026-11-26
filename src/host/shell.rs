@@ -452,7 +452,21 @@ pub(crate) fn build_env_with_secrets(
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    if let Some(dir) = working_directory.filter(|_| secrets.terminal) {
+    let host = working_directory
+        .filter(|_| secrets.terminal || secrets.folder)
+        .and_then(|_| match crate::broker::custody::host_process() {
+            Ok(host) => Some(host),
+            Err(error) => {
+                log::warn!("shell::build_env: secret injection withheld: {error}");
+                None
+            }
+        });
+
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    if let Some((dir, host)) = working_directory
+        .filter(|_| secrets.terminal)
+        .zip(host.as_ref())
+    {
         // The spawn cwd is the only directory this environment is about: no
         // process directory, active workspace or login home stands in for it.
         log::info!("shell::build_env: spawn cwd {}", dir.display());
@@ -466,7 +480,7 @@ pub(crate) fn build_env_with_secrets(
         if let Some(root) = workspace_root {
             #[cfg(test)]
             secret_reads::record("terminal", &root);
-            let store = crate::workspace::secrets::system_store();
+            let store = crate::workspace::secrets::system_store(host);
             match crate::workspace::secrets::resolve_terminal_env(&root, store) {
                 Ok(resolved) => {
                     log::info!(
@@ -501,13 +515,16 @@ pub(crate) fn build_env_with_secrets(
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    if let Some(dir) = working_directory.filter(|_| {
-        secrets.folder
-            && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)
-    }) {
+    if let Some((dir, host)) = working_directory
+        .filter(|_| {
+            secrets.folder
+                && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets)
+        })
+        .zip(host.as_ref())
+    {
         #[cfg(test)]
         secret_reads::record("folder", dir);
-        match crate::workspace::secrets::env_for_cwd(dir, crate::workspace::secrets::folder_store())
+        match crate::workspace::secrets::env_for_cwd(dir, crate::workspace::secrets::folder_store(host))
         {
             Ok(resolved) => {
                 if !resolved.is_empty() {

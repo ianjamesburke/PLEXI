@@ -2,6 +2,7 @@
 //! Read admission and click-only approvals remain owned by the permission monitor.
 pub(crate) use super::folder::valid_env_name;
 use super::{SecretStore, WorkspaceConfig};
+use crate::broker::custody::host_process;
 use crate::broker::gate::PermissionMonitor;
 use std::path::{Path, PathBuf};
 
@@ -88,7 +89,7 @@ pub fn workspace_target(cwd: &Path) -> Result<Option<SecretTarget>, String> {
     Ok(WorkspaceConfig::load(&root)?.map(|cfg| SecretTarget::Workspace { id: cfg.id, root }))
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum SkippedSecrets {
     OutsidePaneContext {
@@ -123,7 +124,7 @@ pub const GRANT_DETAILS_FROM_HOST: &str =
 /// Scans account attributes only: no value is read and nothing is migrated.
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub fn global_secret_stored(name: &str) -> Result<bool, String> {
-    let accounts = super::system_store()
+    let accounts = super::system_store(&host_process()?)
         .scan_accounts()
         .map_err(|error| error.to_string())?;
     Ok(std::iter::once(name)
@@ -133,44 +134,21 @@ pub fn global_secret_stored(name: &str) -> Result<bool, String> {
 }
 
 pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry>, String> {
-    Ok(secret_inventory_report(cwd, global_only)?.entries)
+    Ok(inventory_for_scope(cwd, global_only, None, Vec::new(), None)?.entries)
 }
 
-pub fn secret_inventory_report(cwd: &Path, global_only: bool) -> Result<SecretInventory, String> {
-    let mut skipped = Vec::new();
-    let allowed = global_only
-        || crate::cli::workspace::enforce_pane_context_scope(cwd, "secret.list").is_ok();
-    let pane_root = crate::cli::workspace::active_pane_context_root();
-    if !allowed {
-        if let Some(root) = &pane_root {
-            skipped.push(SkippedSecrets::OutsidePaneContext {
-                scope: "workspace".into(),
-                path: cwd.to_path_buf(),
-                pane_context_root: root.clone(),
-                pane_context_name: std::env::var("PLEXI_CONTEXT_NAME").ok(),
-            });
-        }
-    }
-    inventory_for_scope(
-        cwd,
-        global_only || !allowed,
-        pane_root.as_deref(),
-        skipped,
-        None,
-    )
-}
-
-/// Only the host may use this after admitting an explicit context request.
-/// The grant column shows only `requester`'s own rows (stint 1743).
-pub(crate) fn inventory_for_context(
-    root: &Path,
+/// Inventory for an admitted socket caller. The grant column shows only its rows.
+pub(crate) fn inventory_for_caller(
+    cwd: &Path,
+    global_only: bool,
+    pane_root: Option<&Path>,
+    skipped: Vec<SkippedSecrets>,
     requester: &crate::broker::principal::Principal,
 ) -> Result<SecretInventory, String> {
-    inventory_for_scope(root, false, Some(root), Vec::new(), Some(requester))
+    inventory_for_scope(cwd, global_only, pane_root, skipped, Some(requester))
 }
 
-/// Reconcile first, list names without reading values, then attach the same
-/// permission metadata for both native UI and CLI.
+/// The desktop reconciles legacy entries. Socket inventory scans names only.
 fn inventory_for_scope(
     cwd: &Path,
     global_only: bool,
@@ -178,27 +156,39 @@ fn inventory_for_scope(
     mut skipped: Vec<SkippedSecrets>,
     requester: Option<&crate::broker::principal::Principal>,
 ) -> Result<SecretInventory, String> {
-    match super::reconcile_index_with_keychain() {
-        Ok(report) if !report.is_noop() => log::info!(
-            "secrets_manager: reconciled index adopted={} renamed={} stale={} conflicts={}",
-            report.adopted.len(),
-            report.renamed.len(),
-            report.stale.len(),
-            report.conflicts.len()
-        ),
-        Ok(_) => {}
-        Err(error) => {
-            log::warn!("secrets_manager: reconcile failed, listing indexed names: {error}")
+    let host = host_process()?;
+    let accounts = if requester.is_some() {
+        Some(
+            super::system_store(&host)
+                .scan_accounts()
+                .map_err(|error| error.to_string())?,
+        )
+    } else {
+        match super::reconcile_index_with_keychain(&host) {
+            Ok(report) if !report.is_noop() => log::info!(
+                "secrets_manager: reconciled index adopted={} renamed={} stale={} conflicts={}",
+                report.adopted.len(),
+                report.renamed.len(),
+                report.stale.len(),
+                report.conflicts.len()
+            ),
+            Ok(_) => {}
+            Err(error) => {
+                log::warn!("secrets_manager: reconcile failed, listing indexed names: {error}")
+            }
         }
-    }
+        None
+    };
     let mut targets = vec![SecretTarget::Global];
     if !global_only {
         if let Some(target) = workspace_target(cwd)? {
             if let (SecretTarget::Workspace { root, .. }, Some(pane_root)) = (&target, pane_root) {
                 if !crate::platform::path::canonical_or_self(root).starts_with(pane_root) {
                     skipped.push(SkippedSecrets::OutsidePaneContext {
-                        scope: "workspace".into(), path: root.clone(),
-                        pane_context_root: pane_root.to_path_buf(), pane_context_name: None,
+                        scope: "workspace".into(),
+                        path: root.clone(),
+                        pane_context_root: pane_root.to_path_buf(),
+                        pane_context_name: None,
                     });
                 } else {
                     targets.push(target);
@@ -254,7 +244,15 @@ fn inventory_for_scope(
             }
             _ => continue,
         };
-        for account in super::system_store().list_with_prefix(&prefix) {
+        let names;
+        let accounts = match &accounts {
+            Some(accounts) => accounts,
+            None => {
+                names = super::system_store(&host).list_with_prefix(&prefix);
+                &names
+            }
+        };
+        for account in accounts {
             if let Some(name) = account.strip_prefix(&prefix) {
                 add(name.into(), target.clone());
             }
@@ -265,7 +263,17 @@ fn inventory_for_scope(
         let enabled =
             crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
         let mut hidden = 0;
-        for meta in super::list_folder_secrets(super::folder_store()) {
+        let folders = if requester.is_some() {
+            super::folder_store(&host)
+                .scan_accounts()
+                .map_err(|error| error.to_string())?
+                .iter()
+                .filter_map(|account| super::folder::parse_account(account))
+                .collect()
+        } else {
+            super::list_folder_secrets(super::folder_store(&host))
+        };
+        for meta in folders {
             let folder = crate::platform::path::canonical_or_self(&meta.folder);
             if cwd.starts_with(&folder) && pane_root.is_none_or(|root| folder.starts_with(root)) {
                 if enabled {
@@ -475,26 +483,6 @@ mod tests {
     }
 
     #[test]
-    fn inventory_outside_pane_scope_still_lists_global_names() {
-        let profile = tempfile::tempdir().unwrap();
-        let _profile = crate::config::set_test_profile_dir(profile.path().into());
-        let own = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
-        let name = format!("PARTIAL_{}", uuid::Uuid::new_v4().simple());
-        let store = super::super::system_store();
-        let account = super::super::keychain_user_name(&name);
-        store.set(&account, "not-for-output").unwrap();
-        let _scope = crate::cli::workspace::set_test_pane_context_root(own.path());
-        let report = secret_inventory_report(other.path(), false).unwrap();
-        assert!(report.entries.iter().any(|entry| entry.name == name));
-        assert!(report.entries.iter().all(|entry| entry.scope == "global"));
-        let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["skipped"][0]["reason"], "outside_pane_context");
-        assert!(json["skipped"][0]["pane_context_root"].is_string());
-        store.delete(&account).unwrap();
-    }
-
-    #[test]
     fn audited_mutations_and_import_keep_values_out_of_audit() {
         let profile = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
@@ -650,7 +638,7 @@ mod inventory_tests {
         let path = crate::platform::path::canonical_or_self(root.path());
         let name = format!("FOLDER_INV_{}", uuid::Uuid::new_v4().simple());
         let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
-        let store = super::super::folder_store();
+        let store = super::super::folder_store(crate::broker::custody::TEST_HOST);
         mutate_secret(
             store,
             &monitor,
@@ -704,7 +692,7 @@ mod inventory_tests {
             super::super::init_workspace(root.path(), &crate::config::workspace_channel_dir())
                 .unwrap();
         let name = format!("INVENTORY_{}", uuid::Uuid::new_v4().simple());
-        let store = super::super::system_store();
+        let store = super::super::system_store(crate::broker::custody::TEST_HOST);
         let monitor = PermissionMonitor::for_profile(profile.path()).unwrap();
         let global = SecretTarget::Global;
         let workspace = SecretTarget::Workspace {
@@ -731,7 +719,7 @@ mod inventory_tests {
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
         let folder = SecretTarget::Folder(crate::platform::path::canonical_or_self(root.path()));
         mutate_secret(
-            super::super::folder_store(),
+            super::super::folder_store(crate::broker::custody::TEST_HOST),
             &monitor,
             &folder,
             &name,
@@ -779,7 +767,9 @@ mod inventory_tests {
             .any(|grant| grant.contains("inventory-reader") && grant.contains("allow")));
         // A requester's inventory shows its own grant rows only (stint 1743).
         let stranger = crate::broker::principal::Principal::agent("inventory-stranger").unwrap();
-        let theirs = inventory_for_context(root.path(), &stranger).unwrap();
+        let theirs =
+            inventory_for_caller(root.path(), false, Some(root.path()), Vec::new(), &stranger)
+                .unwrap();
         let seen = theirs
             .entries
             .iter()
@@ -797,7 +787,7 @@ mod inventory_tests {
             .iter()
             .any(|entry| matches!(entry.target, SecretTarget::Folder(_))));
         assert!(mutate_secret(
-            super::super::folder_store(),
+            super::super::folder_store(crate::broker::custody::TEST_HOST),
             &monitor,
             &folder,
             &name,
