@@ -102,7 +102,7 @@ pub(crate) fn children(data: &UiNodeData) -> &[u32] {
 // ─── Capability grants ─────────────────────────────────────────────────────
 //
 // host-log is always linked (logging is unconditionally safe). Every other
-// host interface is linked only when granted. An plugin whose component imports an
+// host interface is linked only when granted. A plugin whose component imports an
 // ungranted interface fails to instantiate — link-time gating, fail-fast.
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

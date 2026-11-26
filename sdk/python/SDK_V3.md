@@ -1,6 +1,6 @@
 # Plexi Python SDK v3 — Design Specification
 
-> **Not the authoring guide.** To *build* an plugin, read
+> **Not the authoring guide.** To *build* a plugin, read
 > [`AUTHORING.md`](AUTHORING.md). For the live effect/event/component surface
 > with signatures, read the generated
 > [`../../website/src/content/docs/sdk.md`](../../website/src/content/docs/sdk.md)

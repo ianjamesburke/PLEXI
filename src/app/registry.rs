@@ -2755,7 +2755,7 @@ default = true
             registry.on_launch_for("singleton-app"),
             OnLaunchPolicy::FocusExisting
         );
-        // An plugin that declares no policy defaults to always_new.
+        // A plugin that declares no policy defaults to always_new.
         assert_eq!(
             registry.on_launch_for("does-not-exist"),
             OnLaunchPolicy::AlwaysNew

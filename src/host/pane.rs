@@ -656,7 +656,7 @@ impl Pane {
         }
     }
 
-    /// An plugin's yellow health pip keeps its color without implying agent work.
+    /// A plugin's yellow health pip keeps its color without implying agent work.
     pub fn static_health_pip(&self) -> bool {
         self.pip_status() == Some(crate::protocol::PipStatus::Yellow)
             && !self

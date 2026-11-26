@@ -18,7 +18,7 @@ pub enum TurnRole {
     Assistant,
     Tool,
     Error,
-    /// An plugin event delivered through a granted subscription (Phase D3).
+    /// A plugin event delivered through a granted subscription (Phase D3).
     Event,
     /// Output of a slash command the user ran, shared with the model. It
     /// enters the next turn's history as clearly-labelled command output so

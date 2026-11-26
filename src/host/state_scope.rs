@@ -1,6 +1,6 @@
 //! User-data scope resolution — the addressing layer for files a user owns.
 //!
-//! One `StateScope` pair, applied per [`UserDataKind`]. An plugin declares which
+//! One `StateScope` pair, applied per [`UserDataKind`]. A plugin declares which
 //! scopes it uses in its manifest (`[state] scopes`); the host owns path
 //! construction. Two rules, both predictable from outside the process so an
 //! external agent can find and write the bytes without asking Plexi anything:

@@ -1293,7 +1293,7 @@ pub fn core_pack_ids() -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
-/// First-party plugins deliberately retired before the v3 SDK migration. An plugin
+/// First-party plugins deliberately retired before the v3 SDK migration. A plugin
 /// is a quarantine candidate only when its stable former-first-party id is in
 /// this set *and* its source still imports the removed v2 App/RenderContext
 /// surface. The intersection is intentional: a user or marketplace plugin with

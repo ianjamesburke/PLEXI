@@ -1948,7 +1948,7 @@ impl PlexiApp {
         self.adjust_active_or_remembered_pane_font_size(delta);
     }
 
-    /// Asks the focused plugin whether a user-initiated close may proceed. An plugin
+    /// Asks the focused plugin whether a user-initiated close may proceed. A plugin
     /// with unsaved work vetoes and shows its own prompt.
     pub(crate) fn focused_view_vetoes_close(&mut self) -> bool {
         let active = self.active_window;

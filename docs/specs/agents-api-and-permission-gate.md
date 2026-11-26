@@ -399,7 +399,7 @@ addressing with durable IDs and revokes superseded pane-only credentials.
 3. **AT-P1-03 — No constructor or host-tool bypass:** HostHarness test
    `all_dispatchers_require_monitor` covers Assistant, AgentHost, host MCP,
    plugin-call, native host tools, plugin launch and event subscription. Remove a grant
-   after discovery; invocation still refuses. An plugin claiming `read_only=true`
+   after discovery; invocation still refuses. A plugin claiming `read_only=true`
    cannot suppress a host-classified mutation prompt.
 4. **AT-P1-04 — Socket provenance:** Rust socket-ingress fixture
    `app_call_rejects_forged_or_missing_identity` submits another live pane ID,

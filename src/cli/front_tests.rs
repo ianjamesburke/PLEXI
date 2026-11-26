@@ -753,6 +753,13 @@ fn every_command_accepts_help() {
     }
 }
 
+#[test]
+fn needs_you_help_names_the_approve_flag() {
+    let (path, long, _) = help_of(&["needs-you", "--help"]);
+    let help = render_node_help(BIN, &path, long).to_string();
+    assert!(help.contains("resolve --approve"), "{help}");
+}
+
 /// Help renders identically to clap's own display of the public grammar.
 #[test]
 fn help_matches_clap_native_rendering() {
