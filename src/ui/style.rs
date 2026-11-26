@@ -250,7 +250,7 @@ pub const NOTES_PICKER_LIST_FRACTION: f32 = 0.5; // Share of the notes picker gi
 /// workspace. Its list and preview fill the remainder after search, status,
 /// and shortcut chrome.
 pub const NOTES_PICKER_MODAL_HEIGHT_FRACTION: f32 = 0.8;
-pub const NOTES_PICKER_BODY_CHROME_HEIGHT: f32 = 140.0;
+pub const NOTES_PICKER_BODY_CHROME_HEIGHT: f32 = 156.0;
 /// Fixed two-line caption slot between the notes picker's body and its hint bar
 /// so confirm prompts and errors never resize or shift the modal.
 pub const NOTES_PICKER_STATUS_HEIGHT: f32 = (TEXT_CAPTION + SPACE_XS) * 2.0;

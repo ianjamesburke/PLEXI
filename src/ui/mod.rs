@@ -27,6 +27,7 @@ mod radius_guard_tests;
 #[cfg(test)]
 mod state_matrix_tests;
 pub mod row;
+pub(crate) mod scope_switcher;
 pub mod search_bar;
 pub mod shortcuts;
 pub mod sidebar;
