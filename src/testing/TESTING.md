@@ -8,168 +8,11 @@ How Plexi is tested, which layer owns what, and how to add coverage.
 
 ## The Gate
 
-Select checks from the actual changed behavior and failure risk, not the stint's
-S/M/L size. A change can belong to several rows; apply every relevant row.
-Reassess the plan when the diff changes. The path selector proposes Rust filters,
-not a complete test plan. Record the exact head, changed paths, chosen checks,
-matched test counts, visual evidence and reasons for inapplicable checks. A
-zero-match Rust run is a gap, not a pass. A markdown workflow or policy change
-can change agent behavior even when it is not compiled; verify the affected
-workflow and escalation rules rather than treating its extension as a risk tier.
-
-| Change and example | Feature / batch checks | Scene and installed evidence |
-|---|---|---|
-| Unembedded documentation only, such as a prose correction | Review the text and run relevant documentation checks. `scripts/scoped-tests.sh --gate` identifies the path-specific local build/test/Clippy exemption; an embedded or test-synchronized markdown file is code. Aggregate evidence and installation requirements still apply. | No scene or screenshot unless behavior or appearance changes. Outside aggregate mode, follow the existing testing-skill install-skip rules. |
-| Internal logic, such as a pure calculation | Focused invariant and failure-path tests, plus release build, strict Clippy and checks for other affected surfaces. | No scene if no observable state changes. Test observable state with a relevant scene where applicable. Independent installed affected-behavior validation applies except for the existing non-aggregate install-skip rules. |
-| Visible UI, such as a spacing or overlay change | Relevant Rust/app tests, release build, strict Clippy and a scene exercising the affected state. Render realistic content and inspect its screenshot. | Run the relevant scene(s) individually; escalate to the suite when shared changes can affect it broadly. A headless image is not installed-host proof. Installed validation follows the existing rules below. |
-| Runtime, packaging, channel, PTY or installed interaction, even a one-line fix | Focused positive and failure-path tests, release build, strict Clippy and any affected script/SDK checks. | Independently install the exact head and exercise affected behavior at that boundary. Add a live scene or inspected host image when needed to prove the behavior or appearance. A small stint is not an exemption. |
-
-### Qualification through independent validation
-
-The task author records the planned risk and evidence. The implementer reassesses
-it against the actual diff and records exact-head checks, omissions and reasons;
-the independent tester verifies the affected behavior and Done-When. Examples
-below are feature-level; aggregate and final gates remain separate.
-
-| Example | Author and implementer | Independent validation and PR evidence |
-|---|---|---|
-| Unembedded prose correction | Plan text review and relevant docs checks; prove the local exemption with `--gate`. | Review the exact text at head; record no scene or screenshot and the install-skip reason. |
-| Pure non-UI calculation | Plan and run focused success and failure tests, build and lint. | Independently exercise the invariant at head; use the testing skill's skip decision if full behavior is covered and no installed boundary is affected. Record no visual evidence with reason. |
-| Visible overlay spacing | Plan and run relevant scene, inspect realistic rendered pixels, and publish the inspected screenshot after PR creation. | Check the image link, origin, head and affected behavior; install and drive when required. A headless image is not live-host proof. |
-| Small packaging or PTY guard | Plan failure and success cases, release build, lint and affected script tests, regardless of stint size. | Install the exact PR head and independently exercise the affected boundary; scene or screenshot only when needed to prove visible behavior. |
-
-A repository-only script whose behavior does not execute in an installed app
-may qualify for the testing skill's non-aggregate install skip if the entire
-changed behavior is covered and independently exercised at the exact source head.
-A script that changes an installed boundary is not repository-only for this
-purpose. State the boundary and any skip explicitly; do not describe source
-checks as installed behavior. Aggregate records still require installed heads.
-
-Before a feature or batch ready push (except the draft stage below), `just build` compiles the installable release
-binary with warnings denied, `scripts/scoped-tests.sh` proposes relevant Rust
-filters, and `just clippy` is the lint gate. Run
-relevant scene, script, SDK and specialized checks too. The sole local
-build/test/Clippy exemption is the selector's proven unembedded markdown-only
-case above; the aggregate record's requirements are separate. Bare `cargo build`
-does not enforce the release warning gate.
-
-Independent validation installs the exact head and exercises the affected behavior. A scoped worker pass alone is insufficient; preserve the installed-head match, independent vendor, PASS verdict, non-deferred checks, and truthful evidence. Apply the testing skill's existing install-skip rules outside aggregate mode. Aggregate batches still require an installed-head record.
-
-The final combined candidate requires a full `cargo test --bin plexi` with stdin closed and the Plexi environment scrubbed, plus release build, Clippy, independent combined installed validation, and the final manifest gate. Scoped-only evidence must fail that final gate. A subsequent change invalidates the candidate's evidence. Hosted Rust verification is deferred to the nightly beta release build (alpha pushes publish nothing); record it as deferred, never passed, and retain other PR check gates.
-
-Run the selector from the worktree against the actual PR base (`SCOPED_TEST_BASE=origin/feature/alpha-cleanup` for aggregate batches). It includes committed, staged, unstaged and untracked paths. Pass the filters together after libtest's `--`:
-
-```bash
-filters=()
-while IFS= read -r filter; do
-    if [[ "$filter" == :: ]]; then
-        echo "Select and document relevant filters for this batch; full suite is final-candidate only." >&2
-        exit 1
-    fi
-    filters+=("$filter")
-done < <(bash scripts/scoped-tests.sh)
-if (( ${#filters[@]} )); then
-    just test-host "${filters[@]}"
-fi
-```
-
-`just test-host <filter>...` and `just scene` share the justfile warning flags and test profile, avoiding rebuilds caused solely by mismatched warning flags; other changes or build-script invalidations can still trigger recompilation. The installer invokes its pretests under `just` with those same flags; raw Cargo can use different flags and trigger a rebuild.
-
-A filter that matches no test is an error, not a pass. Use `just test-for <path>` instead of composing filters by hand.
-
-When backgrounding a long gate, run it as `just run-logged <name> -- ...` and wait for its `RESULT` line or read the `.status` file beside the log it names. Cite the log path in hand-offs instead of pasting output.
-
-No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the path-specific `scripts/scoped-tests.sh --gate` decision. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff.
-
-For observable changes, name the affected scene files and run each with `just scene <file>`; a changed `tests/scenes/*.toml` is itself a required selection. If no scene covers the behavior, add one as required by the testing contract. The selector does not infer the relevant scenes from UI paths, so an empty scene selection must be justified rather than silently treated as coverage. Shared scene-runner changes select `scene_suite`; expand to the suite for other cross-cutting changes when individual scenes cannot establish coverage. Preserve screenshot steps and inspect images for visual changes; state-only runs are not visual proof. The final full host suite includes `scene_suite`.
-
-### Draft PR and candidate qualification
-
-After focused checks and source review, commit and push a clean feature head and
-open a **draft** PR to acquire its channel number. This is the sole exception to
-the release/Clippy-before-push rule; draft status is not qualification or `pr:done`.
-Run `just pr-candidate <PR>` at the final head. It resolves that exact source,
-runs installer pretests, builds the release with compiled `pr-<PR>` identity and
-warnings denied, runs strict Clippy, and records the artifact digest. Run all
-other applicable scoped, script, SDK, docs and visual checks before ready status.
-A changed head/base/configuration requires reassessment and fresh matching evidence.
-Only then mark the PR ready and hand it to the independent tester.
-Pull requests start no hosted Rust build. The nightly beta release build
-(alpha pushes publish nothing) runs `cargo test --bin plexi` and Clippy (`.github/workflows/release.yml`).
-
-`just pr-candidate` and `just pr-install` use `scripts/build-cache.py`: two
-persistent, exclusively locked Cargo slots per repository under
-`~/.cache/plexi-build`. The lock covers the entire candidate/install operation;
-the global Cargo memory lease remains active. Slots survive feature cleanup.
-Before reuse, an owned slot exceeding `PLEXI_BUILD_CACHE_MAX_BYTES` (default
-40 GiB) has its build output pruned. All slots together are then pruned to
-`PLEXI_BUILD_CACHE_TOTAL_MAX_BYTES` (default 64 GiB, sized for two concurrent
-lanes' warm slots plus headroom), least recently used first,
-skipping any slot another build holds and the slot about to be used until last.
-Pruning always keeps a slot's `release/plexi`, so a stamped candidate survives to
-its install. Finally the build refuses to start, before any compile, when the
-volume holding the pool has less than `PLEXI_BUILD_MIN_FREE_BYTES` (default
-12 GiB) free; the message names the free space, the floor and the cleanup
-recipes. These bound retained slots, not peak temporary build space.
-`PLEXI_BUILD_CACHE_ROOT` relocates the pool.
-A slot serves many worktrees, and Cargo judges a path package fresh by source
-mtime, so `scripts/cargo-with-lease.sh` registers its tree with the slot before
-every Cargo call (`build-cache.py sync-sources`): files whose content differs
-from what the slot last registered are stamped newer than its outputs, and
-unchanged files stay cache hits. Mtimes are only ever raised. A run that
-compiles without registering resets the slot's record, so the next build
-restamps every file.
-Never copy or share another lane's mutable target. For additional cache-backed
-checks use `python3 scripts/build-cache.py pr-<PR> just <check>`.
-Before a PR exists, use `python3 scripts/build-cache.py task-<stint> just
-<check>`. Set `PLEXI_BUILD_CACHE_OWNER=task-<stint>` for the later
-`just pr-candidate` and `just pr-install` to prefer that same slot. The task
-owner selects cache storage only; the candidate retains its compiled PR channel.
-Slots are bounded and may be reassigned when other owners use the pool.
-
-The tester owns installation. `build-evidence.py` permits pretest reuse only for
-successful matching clean-source execution, including exact head/base/selection,
-source path, toolchain, Cargo configuration, relevant environment and receipt
-schema, with an intact execution log. Missing, dirty or mismatched evidence runs
-the checks. A candidate's verified head/channel/configuration and binary digest
-permit installation without another host release compilation. SDK selection,
-installed SDK digest verification and independent affected-behavior checks remain
-separate. An artifact stamp alone never proves test success.
-
-Each slot retains queue/acquire/finish events and Cargo fresh/compiled artifact
-counts in `telemetry.jsonl`. These distinguish waiting from execution; a warm
-cache is not a promise that changed source paths or build scripts avoid rebuilding.
-
-### Aggregate evidence
-
-`local.head`, passing `build`/`test`/`clippy`, and `local.test_scope` identify the current validation. Use `"scoped"` for a batch selection, and `"full"` only when the full host suite actually passed at that head. Historical full batch evidence remains valid; it never creates a new batch requirement.
-
-For scoped evidence, provide:
-
-- `local.test_base`: the record's `base_head`.
-- `local.test_paths`: the exact changed paths from `git diff --name-only --no-renames -z <base_head>...<head>`. Policy checks this against Git during live gates, merge recovery, and prerequisite verification.
-- `local.test_evidence`: passing entries with `command`, `covers` (literal changed paths), and `passed: true`. Their coverage must equal `test_paths`. Rust commands include explicit libtest filters and a positive integer `matched`; unfiltered, broad, or zero-match Rust evidence is rejected. Non-Rust checks identify their actual command and covered paths without inventing Rust test counts.
-- `validation.affected_behavior`: what the independent tester verified at the matching installed head, alongside the existing head/install/vendor/PASS evidence.
-
-The final phase requires `local.test_scope = "full"` regardless of hosted CI policy. Preserved batch prerequisite records use batch scope rules, so a properly validated scoped integration can satisfy a later batch dependency without marking its task done.
-
-### Installer pretests
-
-`just pr-install <PR>` defaults to `scoped`; `just pr-install <PR> scoped` is the explicit batch path. It resolves the PR's head and base, selects source SDK smoke by affected boundary and runs selected host tests from that exact worktree, and records scope/base in installation provenance. It never falls back to the full suite for a batch.
-
-If automatic selection returns `::`, set `PLEXI_PR_TEST_FILTERS` to reviewed newline-separated relevant filters and record the choice in the batch evidence. Empty overrides and zero-match selections fail. Audited native toolbar-only changes can skip source SDK smoke; other shared UI/context paths remain conservative; SDK, protocol, Python runtime/app, build and unknown boundaries retain it. `PLEXI_PR_REQUIRE_SDK=1` forces it. Full candidates always run it. Selection and reasons are printed. The installed SDK digest guard always runs independently. Source SDK smoke uses uv; the separate native runtime download is unnecessary for these tests and the WASI package. The legacy fetch recipe remains available for explicit compatibility work. For a script/documentation-only diff, automatic selection runs no host Rust tests; the tester separately verifies the affected scripts at the installed source head.
-
-`just pr-install <PR> full` is supported only for the configured aggregate branch targeting its final base, when collecting final combined full-suite evidence. Do not use it for a feature or batch. Independent testing verifies the installed affected behavior rather than rerunning the worker's unrelated tests.
-
-Before candidate compilation, declare `PLEXI_PR_REQUIRED_PTY_FILTERS` and
-`PLEXI_PR_REQUIRED_SCENES` as newline-separated reviewed PTY filters and tracked
-scene paths. Set each inapplicable selection explicitly to `none`; missing or
-empty declarations fail before receipt lookup. This requirement also applies to
-existing `pr-install` callers, which must update their environment. Each PTY filter must match at least one
-ignored test; scenes run through `just scene`. A failure stops the candidate.
-These selections are part of the pretest receipt; provide the same values for
-installation to reuse it. This does not replace identifying the checks required
-by the actual change or inspecting images when visual review applies.
+- Run the tests that cover what you changed, and add one if nothing does. A filter that matches zero tests is a gap, not a pass.
+- Visible UI change: run the scene that shows it and look at the screenshot.
+- If a person needs to try it: open a PR and run `just pr-install <N>`.
+- On approval: `just merge-pr <N>`. Nothing is re-run after approval.
+- The nightly beta release runs the full suite, release build and packaging once (`scripts/RELEASE_CHANNELS.md`).
 
 ## Wall-clock budgets
 
@@ -335,13 +178,9 @@ and test the underlying mutation through its public CLI command.
 
 `open = { kind = "process", ... }` uses the production path: manifest load, launch through the CPython-in-WASM adapter (`src/host/wasm_python.rs`, stint 0285), and the L1 render pipeline. Outside an installed bundle the repo SDK is exported through `PLEXI_SDK_PATH=sdk/python` automatically. Python resolution comes from `src/app/python_env.rs`: per-app `.venv`, bundled python, then system `python3`, with Python 3.11 or newer required.
 
-## Pre-Push Evidence
+## Visual Review
 
-This file is the self-validation contract for every coding agent. The `/testing`
-skill (`.agents/skills/testing/SKILL.md`) is its executable workflow: classify the
-diff, run every touched layer, inspect every generated screenshot, and write the
-`**Test evidence:**` block into the issue Ship Log or PR body. validate-pr reads
-that block; `install skippable — full coverage` means diff-review-only validation.
+The `/testing` skill (`.agents/skills/testing/SKILL.md`) is the executable workflow: classify the diff, run every touched layer, inspect every generated screenshot.
 
 **Visual review is mandatory for any host UI change, not optional.** A change
 touching layout, alignment, spacing, color, or any `egui::Ui`/render code is not
@@ -359,16 +198,14 @@ Before calling a UI fix complete:
    artifact. Pass a suffix for several shots from one test, `evidence_png!("_ppp2")`.
 2. Run it and **open the PNG with the Read tool and look at it** — confirm the
    change looks right, not just that the test exited 0.
-3. Keep the inspected screenshot until it is published as review evidence.
-   After opening the PR, run the command below and add its output to the PR
+3. Keep the inspected screenshot until it is published. When the PR should show
+   it, run the command below after opening the PR and add its output to the PR
    body. Do not commit the PNG to the feature branch. The retained
    `evidence/pr-<number>` branch holds the image independently of feature-branch
    cleanup. Its immutable commit link remains usable while that branch is kept.
-4. For a nonvisual change, record `Visual evidence: not applicable` with a
-   reason. When a required screenshot or publication fails, record the failure
-   and do not claim visual evidence or complete the required gate. A headless
-   render is not live-host proof; capture real host pixels when that boundary is
-   required. Independent validation is separate from the implementer's image.
+4. When a required screenshot or publication fails, say so; do not claim a
+   visual review that did not happen. A headless render is not live-host proof;
+   capture real host pixels when that boundary matters.
 
 ```bash
 python3 scripts/publish-pr-image.py --pr <number> --head <full-pr-head-sha> \

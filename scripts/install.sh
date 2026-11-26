@@ -24,16 +24,7 @@ if [[ "$channel" == alpha && -z "${PLEXI_BUILD_TAG:-}" ]]; then
 fi
 metadata="$(cargo metadata --format-version=1 --no-deps)"
 target="$(printf '%s' "$metadata" | uv run --no-project --python 3.11 python -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
-if [[ "${PLEXI_REUSE_RELEASE_BUILD:-}" == 1 && -n "${PLEXI_BUILD_TEST_CHANNEL:-}" && -x "$target/release/plexi" ]]; then
-  if [[ -z "${PLEXI_BUILD_EVIDENCE:-}" || ! -f "$PLEXI_BUILD_EVIDENCE" ]]; then
-    echo "install: reuse requires the driver evidence checker" >&2
-    exit 1
-  fi
-  python3 "$PLEXI_BUILD_EVIDENCE" check "$repo" "$(git rev-parse HEAD)" "$channel" "$target/release/plexi"
-  echo "install: reusing provenance-checked release binary (PLEXI_REUSE_RELEASE_BUILD)"
-else
-  just build
-fi
+just build
 if [[ -z "${PLEXI_BUILD_TEST_CHANNEL:-}" ]]; then
   bash scripts/check-release-hook-names.sh "$target/release/plexi"
 fi

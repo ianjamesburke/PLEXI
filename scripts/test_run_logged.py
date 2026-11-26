@@ -284,7 +284,7 @@ class RecipeWiring(unittest.TestCase):
 
     def test_long_recipes_run_through_the_wrapper_in_tee_mode(self):
         lines = (ROOT / "justfile").read_text().splitlines()
-        for name in ("release-host-gate", "clippy", "test-host", "test-for", "pr-install", "pr-candidate"):
+        for name in ("release-host-gate", "clippy", "test-host", "test-for", "pr-install"):
             start = next(i for i, l in enumerate(lines) if l.startswith((name + ":", name + " ")))
             body = []
             for line in lines[start + 1:]:

@@ -328,32 +328,16 @@ sdk-dev:
 sdk-smoke:
     uv run --python 3.12 --project sdk/python --with pytest --with pytest-asyncio pytest sdk/python/tests/test_v3_adapter.py sdk/python/tests/test_v3_runtime_regression.py -q
 
-# Build and install a PR's actual head as a testable PR build (cwd-independent);
-# this does not boot it. Tester flows then run `plexi-pr-<N> host start --background`.
-# Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
-# Resolves the PR head via gh and builds THAT tree — run from anywhere inside
-# the repo: just pr-install 123 [scoped|full]. Scoped is the batch default; full
-# is reserved for the configured final combined candidate. Broad automatic
-# selection requires reviewed newline-separated PLEXI_PR_TEST_FILTERS.
-# Removes the previous managed PR installation and profile first.
-pr-install number test_scope="scoped":
-    python3 scripts/run_logged.py --tee pr-install-{{number}} -- python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} install
-
-# Build the final PR-channel candidate once, without installing it.
-pr-candidate number test_scope="scoped":
-    python3 scripts/run_logged.py --tee pr-candidate-{{number}} -- python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} candidate
-
-# Qualify an ordered batch of reviewed alpha PRs and land each by squash.
-[positional-arguments]
-merge-queue *PRS:
-    python3 -I scripts/merge_queue.py "$@"
+# Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/;
+# removes the previous managed PR installation and profile first. This does not
+# boot it: testers then run `plexi-pr-<N> host start --background`. Resolves the
+# PR head via gh and builds THAT tree, from anywhere inside the repo. Runs no tests.
+#   just pr-install 123 — build and install PR 123's head as plexi-pr-123
+pr-install number:
+    python3 scripts/run_logged.py --tee pr-install-{{number}} -- python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}}
 
 [private]
-_merge-queue-candidate number worktree base tip:
-    python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} scoped candidate {{quote(worktree)}} {{base}} {{tip}}
-
-[private]
-_pr-prepare number test_scope action queue_worktree="" queue_base="" queue_tip="":
+_pr-prepare number:
     #!/usr/bin/env bash
     set -euo pipefail
     # pr-install must never build whatever tree the caller happens to be
@@ -363,76 +347,53 @@ _pr-prepare number test_scope action queue_worktree="" queue_base="" queue_tip="
     _repo_root="$(git rev-parse --path-format=absolute --git-common-dir)"
     _repo_root="${_repo_root%/.git}"
     _driver_root="$(git rev-parse --show-toplevel)"
-    _wt={{quote(queue_worktree)}}
-    if [[ -n "$_wt" ]]; then
-      _head_oid={{quote(queue_tip)}}
-      _base_oid={{quote(queue_base)}}
-      _head_ref=merge-queue
-      _base_ref=alpha
-      if [[ "{{action}}" != candidate || ! "$_head_oid" =~ ^[0-9a-f]{40}$ || ! "$_base_oid" =~ ^[0-9a-f]{40}$ ]] ||
-         [[ "$(git -C "$_wt" rev-parse --show-toplevel)" != "$_wt" ||
-            "$(git -C "$_wt" rev-parse --path-format=absolute --git-common-dir)" != "$_repo_root/.git" ]] ||
-         git -C "$_wt" symbolic-ref --quiet HEAD ||
-         ! git -C "$_wt" merge-base --is-ancestor "$_base_oid" "$_head_oid"; then
-        echo "merge-queue: candidate requires a clean pinned source in this repository" >&2
-        exit 1
+    _head_json="$(gh pr view {{number}} --json headRefName,headRefOid 2>/dev/null || echo "")"
+    if [[ -z "$_head_json" ]]; then
+      echo "Error: could not resolve PR #{{number}} via gh (gh pr view failed)."
+      exit 1
+    fi
+    _head_ref="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefName"])' <<<"$_head_json")"
+    _head_oid="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefOid"])' <<<"$_head_json")"
+    if [[ -z "$_head_oid" ]]; then
+      echo "Error: PR #{{number}} has no resolvable head commit."
+      exit 1
+    fi
+    git -C "$_repo_root" fetch -q origin "refs/pull/{{number}}/head" 2>/dev/null \
+      || git -C "$_repo_root" fetch -q origin "$_head_ref" 2>/dev/null || true
+    if ! git -C "$_repo_root" cat-file -e "${_head_oid}^{commit}" 2>/dev/null; then
+      echo "Error: PR #{{number}} head ${_head_oid:0:8} not found locally after fetch."
+      exit 1
+    fi
+    # Fast path: the PR branch's own worktree, when it exists, is clean, and
+    # sits EXACTLY at the PR head — reuses its warm incremental target dir.
+    # Exact-match, not ancestor: a clean worktree ahead of the head (unpushed
+    # follow-up commits) would silently install unreviewed code.
+    _wt=""
+    _branch_wt="$(git -C "$_repo_root" worktree list --porcelain | awk -v ref="refs/heads/${_head_ref}" '/^worktree /{wt=substr($0,10)} /^branch /{if (substr($0,8)==ref) print wt}')"
+    if [[ -n "$_branch_wt" ]] && [[ "$(git -C "$_branch_wt" rev-parse HEAD 2>/dev/null)" == "$_head_oid" ]]; then
+      git -C "$_branch_wt" update-index -q --refresh 2>/dev/null || true
+      if [[ -z "$(git -C "$_branch_wt" status --porcelain)" ]]; then
+        _wt="$_branch_wt"
+      else
+        echo "note: worktree for $_head_ref is dirty — building the PR head in the canonical pr-install tree instead."
       fi
-      _queue_status="$(git -C "$_wt" status --porcelain)"
-      if [[ -n "$_queue_status" ]]; then
-        echo "merge-queue: candidate worktree has uncommitted content" >&2
-        exit 1
-      fi
-    else
-      _head_json="$(gh pr view {{number}} --json headRefName,headRefOid,baseRefName,baseRefOid 2>/dev/null || echo "")"
-      if [[ -z "$_head_json" ]]; then
-        echo "Error: could not resolve PR #{{number}} via gh (gh pr view failed)."
-        exit 1
-      fi
-      _head_ref="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefName"])' <<<"$_head_json")"
-      _head_oid="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefOid"])' <<<"$_head_json")"
-      _base_oid="$(uv run --no-project python -c 'import sys,json; print(json.load(sys.stdin)["baseRefOid"])' <<<"$_head_json")"
-      _base_ref="$(uv run --no-project python -c 'import sys,json; print(json.load(sys.stdin)["baseRefName"])' <<<"$_head_json")"
-      if [[ -z "$_head_oid" ]]; then
-        echo "Error: PR #{{number}} has no resolvable head commit."
-        exit 1
-      fi
-      git -C "$_repo_root" fetch -q origin "refs/pull/{{number}}/head" 2>/dev/null \
-        || git -C "$_repo_root" fetch -q origin "$_head_ref" 2>/dev/null || true
-      if ! git -C "$_repo_root" cat-file -e "${_head_oid}^{commit}" 2>/dev/null; then
-        echo "Error: PR #{{number}} head ${_head_oid:0:8} not found locally after fetch."
-        exit 1
-      fi
-      # Fast path: the PR branch's own worktree, when it exists, is clean, and
-      # sits EXACTLY at the PR head — reuses its warm incremental target dir.
-      # Exact-match, not ancestor: a clean worktree ahead of the head (unpushed
-      # follow-up commits) would silently validate unreviewed code.
-      _wt=""
-      _branch_wt="$(git -C "$_repo_root" worktree list --porcelain | awk -v ref="refs/heads/${_head_ref}" '/^worktree /{wt=substr($0,10)} /^branch /{if (substr($0,8)==ref) print wt}')"
-      if [[ -n "$_branch_wt" ]] && [[ "$(git -C "$_branch_wt" rev-parse HEAD 2>/dev/null)" == "$_head_oid" ]]; then
-        git -C "$_branch_wt" update-index -q --refresh 2>/dev/null || true
-        if [[ -z "$(git -C "$_branch_wt" status --porcelain)" ]]; then
-          _wt="$_branch_wt"
-        else
-          echo "note: worktree for $_head_ref is dirty — building the PR head in the canonical pr-install tree instead."
+    fi
+    if [[ -n "$_branch_wt" && -z "$_wt" && "$(git -C "$_branch_wt" rev-parse HEAD 2>/dev/null)" != "$_head_oid" ]]; then
+      echo "note: worktree for $_head_ref is not at the PR head — building the PR head in the canonical pr-install tree instead."
+    fi
+    # A separate detached source tree per PR; dependency warmth lives in the
+    # exclusive persistent slot, never in a shared mutable source checkout.
+    if [[ -z "$_wt" ]]; then
+      _wt="$_repo_root/worktrees/pr-install-{{number}}"
+      git -C "$_repo_root" worktree prune 2>/dev/null || true
+      if [[ -d "$_wt" ]]; then
+        if [[ -n "$(git -C "$_wt" status --porcelain)" ]]; then
+          echo "Error: detached PR source tree is dirty; preserving it: $_wt" >&2
+          exit 1
         fi
-      fi
-      if [[ -n "$_branch_wt" && -z "$_wt" && "$(git -C "$_branch_wt" rev-parse HEAD 2>/dev/null)" != "$_head_oid" ]]; then
-        echo "note: worktree for $_head_ref is not at the PR head — building the PR head in the canonical pr-install tree instead."
-      fi
-      # A separate detached source tree per PR; dependency warmth lives in the
-      # exclusive persistent slot, never in a shared mutable source checkout.
-      if [[ -z "$_wt" ]]; then
-        _wt="$_repo_root/worktrees/pr-install-{{number}}"
-        git -C "$_repo_root" worktree prune 2>/dev/null || true
-        if [[ -d "$_wt" ]]; then
-          if [[ -n "$(git -C "$_wt" status --porcelain)" ]]; then
-            echo "Error: detached PR source tree is dirty; preserving it: $_wt" >&2
-            exit 1
-          fi
-          git -C "$_wt" checkout -q --detach "$_head_oid"
-        else
-          git -C "$_repo_root" worktree add -q --detach "$_wt" "$_head_oid"
-        fi
+        git -C "$_wt" checkout -q --detach "$_head_oid"
+      else
+        git -C "$_repo_root" worktree add -q --detach "$_wt" "$_head_oid"
       fi
     fi
     # Backstop (PR #2463 guard, kept as defense in depth): the selected tree
@@ -442,73 +403,9 @@ _pr-prepare number test_scope action queue_worktree="" queue_base="" queue_tip="
       exit 1
     fi
     echo "pr-install: PR #{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt"
-    # Pre-install tests and the build both run inside the resolved worktree,
-    # never the caller's cwd.
-    export PLEXI_BUILD_TEST_CHANNEL="pr-{{number}}"
-    export PLEXI_BUILD_EVIDENCE="$_driver_root/scripts/build-evidence.py"
-    if [[ -n {{quote(queue_worktree)}} ]]; then
-      echo "merge-queue: candidate gates started"
-      _ui_changes="$(git -C "$_wt" diff --name-only --no-renames "$_base_oid" "$_head_oid" -- src/ui src/overlays)"
-      if [[ -n "$_ui_changes" ]]; then
-        ( cd "$_wt" && just check-ui-layout )
-      fi
-      _cargo_changes="$(git -C "$_wt" diff --name-only --no-renames "$_base_oid" "$_head_oid" -- Cargo.toml Cargo.lock ':(glob)**/Cargo.toml' ':(glob)**/Cargo.lock')"
-      if [[ -n "$_cargo_changes" ]]; then
-        ( cd "$_wt" && just test-build-inputs )
-      fi
-    fi
-    python3 "$_driver_root/scripts/build-evidence.py" pretests "$_wt" "$_base_oid" "{{test_scope}}" "$_head_ref" "$_base_ref"
-    if [[ "{{action}}" == candidate ]]; then
-      ( cd "$_wt" && just build clippy )
-      python3 "$_driver_root/scripts/build-evidence.py" stamp "$_wt" "$_head_oid" "pr-{{number}}" "$CARGO_TARGET_DIR/release/plexi"
-      echo "pr-candidate: release artifact ready; remaining qualification and independent validation still required"
-      exit 0
-    fi
     ( cd "$_wt" && bash scripts/pr-clean.sh {{number}} )
-    # Binary reuse (stint 0637): skip the release build only when the selected
-    # tree already holds a binary whose embedded sha equals the PR head, stamped
-    # by a previous install for this very channel. Any doubt means build as today.
-    # Only honoured by install.sh heads that know the flag, so the log never
-    # claims a reuse that did not happen.
-    _reuse_note="built release binary"
-    _reuse_env=""
-    if grep -q 'PLEXI_REUSE_RELEASE_BUILD' "$_wt/scripts/install.sh"; then
-      if _reuse_verdict="$(python3 "$_driver_root/scripts/build-evidence.py" check "$_wt" "$_head_oid" "pr-{{number}}" "$CARGO_TARGET_DIR/release/plexi")"; then
-        _reuse_env="1"
-        _reuse_note="reused existing artifact @ ${_head_oid:0:8}"
-      else
-        echo "pr-install: not reusing a prior binary ($_reuse_verdict)"
-      fi
-    fi
-    if rg -q 'cargo-with-lease\.sh|distribution-tool\.sh' "$_wt/scripts/install.sh"; then
-      ( cd "$_wt" && PLEXI_REUSE_RELEASE_BUILD="$_reuse_env" bash scripts/install.sh --from-source "pr-{{number}}" )
-    else
-      # Older PR heads predate the leaf wrapper. Treat their opaque install
-      # script as the compatibility leaf; newer heads acquire inside their
-      # build/helper invocation and must never lease the whole packaging step.
-      # Preserve verified reuse even for older supported installer leaves.
-      ( cd "$_wt" && PLEXI_REUSE_RELEASE_BUILD="$_reuse_env" "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh --from-source "pr-{{number}}" )
-    fi
+    ( cd "$_wt" && bash scripts/install.sh --from-source "pr-{{number}}" )
     bash "$_driver_root/scripts/pr-install-seed-profile.sh" seed "{{number}}"
-    # Record that this binary was built for pr-<N> at this head, so a later
-    # install of the same head can prove it may reuse it.
-    if grep -q 'PLEXI_REUSE_RELEASE_BUILD' "$_wt/scripts/install.sh"; then
-      python3 "$_driver_root/scripts/build-evidence.py" stamp "$_wt" "$_head_oid" "pr-{{number}}" "$CARGO_TARGET_DIR/release/plexi" \
-        || echo "pr-install: warning: could not stamp the release binary for reuse"
-    fi
-    # SDK guard (stint 0657): the binary's head sha says nothing about the
-    # Python SDK. Assert the installed SDK is byte-identical to the resolved
-    # worktree's sdk/python/plexi_sdk, or abort with SDK_MISMATCH.
-    if ! _sdk_prov="$(bash "$_driver_root/scripts/pr-install-verify-sdk.sh" verify "{{number}}" "$_wt" "$_head_oid")"; then
-      echo "Error: pr-install SDK_MISMATCH — the installed PR build does not carry PR #{{number}}'s Python SDK. Refusing to report a clean install."
-      exit 1
-    fi
-    # Provenance trace: which head this channel is actually running. Written
-    # after install.sh; path matches
-    # install.sh's profile_dir for channel pr-{{number}}.
-    _prov="[$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO pr-install] pr=#{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt test_scope={{test_scope}} test_base=$_base_oid build=\"$_reuse_note\" $_sdk_prov"
-    mkdir -p "$HOME/.plexi-pr-{{number}}"
-    echo "$_prov" | tee -a "$HOME/.plexi-pr-{{number}}/install.log"
 
 # Generic channel install. Auto-detects from branch if no channel given.
 # Errors if branch is not main/alpha/beta — pass channel name explicitly for dev builds.
@@ -611,10 +508,10 @@ check-roadmap roadmap_ref="" commits_ref="":
 uninstall channel="all":
     bash scripts/uninstall.sh {{channel}}
 
-# Squash-merge a validated PR to alpha: rebase, merge, sync, cleanup, close issue.
-# Intended for the merge-pr skill — run from repo root.
-#   just merge-pr 2155 --reviewed-head <SHA>
-#   just merge-pr 2202 --reviewed-head <SHA> no-issue   — standalone follow-up PR, skips issue/stint close
+# Squash-merge an approved PR to alpha: merge, sync, cleanup, close issue/stints.
+# Intended for the merge-pr skill — run from the alpha checkout.
+#   just merge-pr 2155
+#   just merge-pr 2202 no-issue   — standalone follow-up PR, skips issue/stint close
 merge-pr PR *FLAGS:
     bash scripts/merge-pr.sh {{PR}} {{FLAGS}}
 
@@ -628,8 +525,7 @@ test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_skill_check.py
     uv run --no-project python scripts/test_release_next_tag.py
     uv run --no-project python scripts/test_docs_gate_scope.py
-    uv run --no-project python scripts/test_babysitter_policy.py
-    uv run --no-project python scripts/test_pr_install_pretests.py
+    uv run --no-project python scripts/test_release_workflow.py
     uv run --no-project python scripts/test_filter_check.py
     uv run --no-project python scripts/test_run_logged.py
     uv run --no-project python scripts/test_build_lifecycle.py
@@ -643,24 +539,14 @@ test-infra-scripts: test-build-inputs
     bash scripts/merge-pr.sh test-resolve-both
     bash scripts/merge-pr.sh test-resolve-partial
     python3 scripts/test_landing_safety.py
-    python3 -I scripts/test_merge_queue.py
-    bash scripts/pr-install-verify-sdk.sh self-test
     bash scripts/pr-install-seed-profile.sh self-test
 
-# Sub-steps for conflict recovery. Call individually to resume a failed merge-pr.
-#   just merge-rebase feature/2155-foo   — rebase + force-push feature branch
-#   just merge-squash 2155 <SHA>         — squash-merge reviewed head only
-#   just merge-sync                      — reset local alpha to origin/alpha
+# Sub-steps for recovery. Call individually to resume a failed merge-pr.
+#   just merge-sync                      — fast-forward local alpha, keeping local work
 #   just merge-cleanup 2155 feature/2155-foo <SHA>
 #   just merge-close 2144 2155
 #   just merge-close-stints 2186 0015 0016
 #   just merge-close-stints 2186 0015 --partial 0016   — 0016 released, not closed
-merge-rebase BRANCH:
-    bash scripts/merge-pr.sh rebase {{BRANCH}}
-
-merge-squash PR SHA:
-    bash scripts/merge-pr.sh squash {{PR}} {{SHA}}
-
 merge-sync:
     bash scripts/merge-pr.sh sync
 
@@ -672,40 +558,6 @@ merge-close ISSUE PR:
 
 merge-close-stints PR +STINTS:
     bash scripts/merge-pr.sh close-stints {{PR}} {{STINTS}}
-
-# Babysitter pipeline mechanics (bs- namespace): deterministic lane operations
-# so agent transcripts carry judgment only. Each publishes a typed JSON slot
-# report via scripts/bs-slot.sh.
-
-# Start a stint lane: assert alpha clean+synced, mint the wtp worktree from
-# alpha HEAD, claim the stint(s). Multiple ids = one batch lane (one worktree,
-# multi-id branch, one PR). Last output line is the worktree path.
-bs-start +stints:
-    bash scripts/bs-start.sh {{stints}}
-
-# Start-over button: force-wipe the stint's worktree+branch, uninstall its
-# plexi-pr-* build, unclaim, then re-run bs-start. Idempotent.
-bs-reset stint:
-    bash scripts/bs-reset.sh {{stint}}
-
-# Validation setup: resolve branch/worktree from the PR, run `just pr-install`.
-# Prints BRANCH= / WORKTREE= / HEAD= lines for the calling skill.
-bs-validate-setup pr:
-    bash scripts/bs-validate-setup.sh {{pr}}
-
-# Merge + retire the lane: `just merge-pr`, uninstall plexi-pr-<N>, confirm
-# the worktree was reaped (hard error if it survived).
-#   just bs-merge 2542 --reviewed-head <SHA>
-#   just bs-merge 2542 --reviewed-head <SHA> no-issue
-bs-merge pr *flags:
-    bash scripts/bs-merge.sh {{pr}} {{flags}}
-
-# Aggregate batch integration: `integrate` then `channel-clean`, both run from
-# the aggregate worktree so the caller's cwd is irrelevant. The head's single
-# action once a batch's gate is green.
-#   just bs-integrate 2948 .stint/runs/<run>/record-1077-r1.json .stint/runs/<run>/aggregate.json
-bs-integrate pr record manifest:
-    bash scripts/bs-integrate.sh {{pr}} {{record}} {{manifest}}
 
 # Run one UI scene file headlessly. Writes screenshots + a SceneReport JSON to
 # the out dir. shots="0" skips screenshot steps (state-only, faster).

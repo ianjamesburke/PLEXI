@@ -8,14 +8,14 @@ Test infrastructure for the Plexi host. `HostHarness` (headless egui test harnes
 
 ## Reference
 
-- [TESTING.md](TESTING.md) — mandatory self-validation contract for every coding agent: layers, scene format, coverage map, evidence workflow, and profile isolation.
+- [TESTING.md](TESTING.md) — mandatory self-validation contract for every coding agent: layers, scene format, coverage map, visual review, and profile isolation.
 
 ## Rules
 
 - **If you'd assert on observable state** (pane tree, app UI, pixels) → write a TOML scene in `tests/scenes/`. If you'd assert on a return value or internal invariant → write a Rust `#[test]`.
 - **Test-first for host logic.** A new `HostRequest` or `HostEffect` gets a failing `HostHarness` test before implementation.
 - **New host UI component or overlay** → add a scene in `tests/scenes/` (open → act → assert → shot).
-- Follow [TESTING.md — The Gate](TESTING.md#the-gate) for PR pushes, direct-to-alpha pushes, and integration; do not substitute one path's test requirement for another.
+- Follow [TESTING.md — The Gate](TESTING.md#the-gate) before pushing.
 - Every `HostHarness::new()` creates a fresh tempdir for profile isolation. Tests never touch `$HOME`.
 - PTY-dependent tests are tagged `#[ignore = "requires-pty"]`.
 
@@ -32,11 +32,11 @@ Test infrastructure for the Plexi host. `HostHarness` (headless egui test harnes
 - **`cargo test --lib` silently misses host tests.** `--lib` only runs the `protocol` lib target. Host tests (HostHarness, wasm_python, workspace_secrets) live in the binary target. Always use `cargo test --bin plexi`.
 - **`HostHarness::add_test_pane()` inserts a builtin app pane, not a Terminal.** Terminal-count assertions must not assume the initial pane is a Terminal; offset accordingly.
 - **Harness context ids and launched pane ids are process-unique.** `GLOBAL_REGISTRY` is process-global, keyed by pane id and namespaced by `context_id`, and `cargo test` runs every `#[test]` in one process. `HostHarness` and `PlexiUiHarness` assign a fresh context via `reserve_test_context_id` and seed `HostModel`'s pane counter from `reserve_pane_id_block` (launches were still starting at 1). A second window that must share that workspace copies `windows[0].context_id`. Hardcoding context `1` or assuming the first launched pane is id 1 merges harnesses. `new_for_test` itself stays on context 1 and pane id 1 for tests that construct `PlexiApp` directly and assert those ids.
-- **Test constructor sync.** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Run the relevant scoped test on the base branch first to distinguish pre-existing failures from regressions; follow TESTING.md for phase requirements.
+- **Test constructor sync.** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Run the relevant scoped test on the base branch first to distinguish pre-existing failures from regressions; follow TESTING.md.
 - **Shared test context id leaks same-named tools across parallel tests.** Every harness window starts on the context id baked into `PlexiApp::new_for_test`, and `tool_dispatch`'s process-global registry shows a tool to every viewer in that same context. Disjoint pane ids stop one test's `ViewPane` drop from unregistering another's key; they do not stop a second live `chess.play` in another harness from withdrawing the bare name. A test that registers a tool name another concurrent test also registers must move the window `context_id` and the matching router context together before the app launches (`isolate_tool_context`). `PlexiApp::new_for_test` seeds `HostModel`'s pane counter from `reserve_pane_id_block` because launch paths allocate there, not on `HostHarness`'s direct-insert counter.
 - **Never root a harness app at a real machine directory.** A `FileBrowserApp` (or any scanning app) pointed at `std::env::temp_dir()` renders whatever the dev machine's temp dir holds — ~50k entries drove test binaries past 30 GB RSS while CI stayed green on its clean temp. Root harness panes in the harness's own workspace tempdir (`HostHarness::_workspace_dir`, `PlexiUiHarness::workspace`) or a scoped `tempfile::tempdir()`. The same rule holds in the write direction, and it bites harder off macOS: `set_context_root` auto-inits a workspace, so rooting a test at the shared temp dir leaves a `/tmp/.plexi` behind, and from then on every `tempfile::tempdir()` in the suite resolves a workspace root by walking up into it — five unrelated tests fail on a *later* run, on a machine where nothing changed. macOS hides this because `std::env::temp_dir()` is a private per-user dir there; on Linux it is `/tmp`, the shared parent of every test fixture.
 - **`#[cfg(unix)]` removal:** Grep for `set_mode`, `PermissionsExt`, and `0o755` across test files when removing unix blocks.
-- **`cargo test` vs `just build`:** Test builds don't enforce dead-code warnings or non-test cfg blocks. Run the installable release gate before ready/merge; TESTING.md permits a focused-check draft push to acquire the PR channel before its final candidate build.
+- **`cargo test` vs `just build`:** Test builds don't enforce dead-code warnings or non-test cfg blocks. Run `just build` before opening a PR.
 
 ## Style
 

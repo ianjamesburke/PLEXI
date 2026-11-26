@@ -20,10 +20,9 @@ GIB = 1024**3
 # Defaults; both overridable (stint 1495). Documented in src/testing/TESTING.md.
 DEFAULT_MIN_FREE_BYTES = 12 * GIB
 DEFAULT_TOTAL_MAX_BYTES = 64 * GIB  # two warm lanes plus headroom
-# The release binary a stamped candidate hands to its install (stints 1443,
-# 0637), and the stamp `build-evidence.py` writes beside it.
+# The release binary a slot keeps through pruning.
 ARTIFACT = Path("release") / "plexi"
-KEPT = {"plexi", ".plexi-candidate.json"}
+KEPT = {"plexi"}
 # Per-slot record of the sources last registered in the slot (stint 1630).
 SOURCES = "sources.json"
 SOURCES_SCHEMA = 1

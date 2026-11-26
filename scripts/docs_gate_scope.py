@@ -43,8 +43,7 @@ Usage:
 
 Prints a verdict and the reason for it, exits 0 only when the gate may be
 skipped; any other exit, including a crash, means it must run. `--proof`
-prints the JSON proof an aggregate batch record carries as
-`local.docs_proof`; `babysitter-policy.py` recomputes it.
+prints the verdict as JSON.
 """
 
 from __future__ import annotations

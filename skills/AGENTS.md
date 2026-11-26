@@ -4,7 +4,7 @@
 
 User-facing agent skills shipped with Plexi. Currently `plexi-cli/` — the CLI
 vocabulary an agent needs to drive a running Plexi host. Repo-internal workflow
-skills (ship pipeline, babysitter, and friends) live under `.claude/skills/` and
+skills (ship flow and friends) live under `.claude/skills/` and
 `.agents/skills/` and are **never** published from here.
 
 ## Generated Skill

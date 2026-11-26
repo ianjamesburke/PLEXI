@@ -72,7 +72,7 @@ class LandingSafety(unittest.TestCase):
         # dispatch boundary. No remote command or version mutation runs.
         self.env["ALPHA_LOCK_SCRIPT"] = str(SCRIPTS / "alpha_lock.py")
         self.stub("gh", 'python3 -I "$ALPHA_LOCK_SCRIPT" --verify; echo locked >&2; exit 32')
-        for args in (("squash", "1", "0" * 40), ("1", "--reviewed-head", "0" * 40)):
+        for args in (("1",),):
             with self.subTest(args=args):
                 result = self.script("merge-pr.sh", *args)
                 self.assertEqual(result.returncode, 32, result.stdout + result.stderr)
@@ -112,32 +112,16 @@ if [ "$1 $2" = 'pr view' ]; then
   if [[ "$*" == *closingIssuesReferences* ]]; then
     printf '\n'
   elif [[ "$*" == *'--jq'* ]]; then
-    printf '{"branch":"%s","state":"%s","base":"alpha","body":"Stint: 1234"}\n' "$TEST_BRANCH" "$state"
+    printf '{"branch":"%s","head":"%s","state":"%s","base":"alpha","body":"Stint: 1234"}\n' "$TEST_BRANCH" "$TEST_SHA" "$state"
   else
     printf '{"headRefName":"%s","headRefOid":"%s","state":"%s"}\n' "$TEST_BRANCH" "$TEST_SHA" "$state"
   fi
 elif [ "$1 $2" = 'pr merge' ]; then
   echo "$*" >> "$TEST_GH_MERGE_LOG"
-  test "$4 $5 ${6:-}" = "--squash --match-head-commit $TEST_SHA"
   tmp=$(mktemp -d)
   git clone -q -b alpha "$TEST_REMOTE" "$tmp"
   git -C "$tmp" config user.email fixture@example.invalid
   git -C "$tmp" config user.name Fixture
-  if [ -n "${TEST_MOVE_HEAD:-}" ]; then
-    # Someone pushes to the PR branch after merge-pr fetched it.
-    git -C "$tmp" fetch -q origin "$TEST_BRANCH"
-    git -C "$tmp" checkout -q -b moved FETCH_HEAD
-    echo moved > "$tmp/a"
-    git -C "$tmp" commit -qam moved
-    git -C "$tmp" push -q origin "moved:$TEST_BRANCH"
-    git -C "$tmp" checkout -q alpha
-  fi
-  # GitHub refuses --match-head-commit when the PR head differs.
-  head=$(git ls-remote "$TEST_REMOTE" "refs/heads/$TEST_BRANCH" | cut -f1)
-  if [ "$head" != "$6" ]; then
-    echo "Head branch was modified. Review and try the merge again." >&2
-    exit 1
-  fi
   git -C "$tmp" fetch -q origin "$TEST_BRANCH"
   git -C "$tmp" merge -q --squash FETCH_HEAD
   git -C "$tmp" commit -qm squash
@@ -148,126 +132,27 @@ fi
         self.env['TEST_GH_MERGE_LOG'] = str(self.base / 'gh-merge-calls')
         return branch, lane, sha
 
-    def test_full_merge_allows_behind_pr_with_disjoint_paths(self):
+    def test_full_merge_allows_behind_pr(self):
         branch, lane, sha = self.full_flow_lane('a')
         self.remote_commit('b')
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        result = self.script('merge-pr.sh', '1')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('PR is behind alpha', result.stdout)
-        self.assertRegex(result.stdout, r'PR paths:\n +a\n')
-        self.assertRegex(result.stdout, r'alpha paths since merge base:\n +b\n')
-        self.assertIn('Disjoint', result.stdout)
         self.assertEqual((self.root / 'a').read_text(), 'feature\n')
         self.assertEqual((self.root / 'b').read_text(), 'remote\n')
         self.assertFalse(lane.exists())
         self.assertEqual((self.base / 'gh-merge-calls').read_text(),
-                         f'pr merge 1 --squash --match-head-commit {sha}\n')
+                         'pr merge 1 --squash\n')
 
-    def test_full_merge_refuses_when_pr_head_moves_after_fetch(self):
+    def test_full_merge_stops_on_conflict_with_alpha_and_keeps_lane(self):
         branch, lane, sha = self.full_flow_lane('a')
-        self.env['TEST_MOVE_HEAD'] = '1'
+        self.remote_commit('a')
         alpha_before = self.run_cmd('git', 'ls-remote', 'origin', 'refs/heads/alpha').stdout
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        result = self.script('merge-pr.sh', '1')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Head branch was modified', result.stderr)
+        self.assertIn('could not squash-merge PR #1', result.stderr)
         self.assertFalse((self.base / 'merged').exists())
         self.assertEqual(self.run_cmd('git', 'ls-remote', 'origin', 'refs/heads/alpha').stdout, alpha_before)
         self.assertTrue(lane.exists())
-
-    def assert_global_path_refuses(self, path):
-        branch, lane, sha = self.full_flow_lane('a')
-        other = self.base / 'other'
-        self.run_cmd('git', 'clone', '-b', 'alpha', str(self.remote), str(other), cwd=self.base)
-        (other / path).parent.mkdir(parents=True, exist_ok=True)
-        (other / path).write_text('alpha change\n')
-        self.run_cmd('git', 'add', path, cwd=other)
-        self.run_cmd('git', '-c', 'user.email=f@example.invalid', '-c', 'user.name=F', 'commit', '-m', 'global', cwd=other)
-        self.run_cmd('git', 'push', cwd=other)
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('global paths', result.stderr)
-        self.assertIn('\n  ' + path + '\n', result.stderr)
-        self.assertFalse((self.base / 'merged').exists())
-
-    def test_full_merge_refuses_behind_pr_when_alpha_changed_cargo_toml(self):
-        self.assert_global_path_refuses('Cargo.toml')
-
-    def test_full_merge_refuses_behind_pr_when_alpha_changed_justfile_generated_output(self):
-        self.assert_global_path_refuses('gen/schema.json')
-
-    def test_full_merge_refuses_behind_pr_when_alpha_changed_sdk_lock_inputs(self):
-        self.assert_global_path_refuses('sdk/python/uv.lock')
-
-    def test_full_merge_refuses_behind_pr_when_alpha_changed_sdk_pyproject(self):
-        self.assert_global_path_refuses('sdk/python/pyproject.toml')
-
-    def assert_bad_justfile_refuses(self, justfile, message):
-        """Alpha replaces the justfile; the behind, disjoint PR must fail closed."""
-        branch, lane, sha = self.full_flow_lane('a')
-        other = self.base / 'other'
-        self.run_cmd('git', 'clone', '-b', 'alpha', str(self.remote), str(other), cwd=self.base)
-        (other / 'justfile').write_text(justfile)
-        self.run_cmd('git', '-c', 'user.email=f@example.invalid', '-c', 'user.name=F', 'commit', '-am', 'justfile', cwd=other)
-        self.run_cmd('git', 'push', cwd=other)
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unexpected 'just --dump' shape", result.stderr)
-        self.assertIn(message, result.stderr)
-        self.assertFalse((self.base / 'merged').exists())
-
-    def test_full_merge_refuses_when_generated_artifact_is_an_expression(self):
-        self.assert_bad_justfile_refuses(
-            'out := "gen/schema.json"\n'
-            'check-generated artifact generator regen ok:\n    true\n\n'
-            'check-schema: (check-generated out "cat src" "gen-schema" "ok")\n',
-            'not a string literal: ["variable","out"]')
-
-    def test_full_merge_refuses_when_no_recipe_declares_generated_artifacts(self):
-        self.assert_bad_justfile_refuses(
-            'check-generated artifact generator regen ok:\n    true\n',
-            'no recipe depends on check-generated')
-
-    def test_full_merge_refuses_criss_cross_history(self):
-        branch, lane, p1 = self.full_flow_lane('a')
-        other = self.base / 'other'
-        self.run_cmd('git', 'clone', '-b', 'alpha', str(self.remote), str(other), cwd=self.base)
-        ident = ('-c', 'user.email=f@example.invalid', '-c', 'user.name=F')
-        (other / 'b').write_text('alpha side\n')
-        self.run_cmd('git', *ident, 'commit', '-am', 'A1', cwd=other)
-        self.run_cmd('git', 'push', cwd=other)
-        self.run_cmd('git', 'fetch', 'origin', branch, cwd=other)
-        self.run_cmd('git', *ident, 'merge', '--no-ff', '-m', 'A2', 'FETCH_HEAD', cwd=other)
-        self.run_cmd('git', 'fetch', 'origin', 'alpha', cwd=lane)
-        self.run_cmd('git', 'merge', '--no-ff', '-m', 'P2', 'origin/alpha', cwd=lane)
-        self.run_cmd('git', 'push', 'origin', branch, cwd=lane)
-        self.run_cmd('git', 'push', cwd=other)
-        p2 = self.run_cmd('git', 'rev-parse', 'HEAD', cwd=lane).stdout.strip()
-        self.env['TEST_SHA'] = p2
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', p2)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('more than one merge base', result.stderr)
-        self.assertFalse((self.base / 'merged').exists())
-
-    def test_full_merge_refuses_behind_pr_with_overlapping_path(self):
-        branch, lane, sha = self.full_flow_lane('a')
-        self.remote_commit('a')
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertRegex(result.stderr, r'both changed these paths.*\n +a\n')
-        self.assertFalse((self.base / 'merged').exists())
-        self.assertTrue(lane.exists())
-
-    def test_full_merge_refuses_behind_pr_when_alpha_renamed_its_path(self):
-        branch, lane, sha = self.full_flow_lane('a')
-        other = self.base / 'other'
-        self.run_cmd('git', 'clone', '-b', 'alpha', str(self.remote), str(other), cwd=self.base)
-        self.run_cmd('git', '-c', 'user.email=f@example.invalid', '-c', 'user.name=F', 'mv', 'a', 'moved', cwd=other)
-        self.run_cmd('git', '-c', 'user.email=f@example.invalid', '-c', 'user.name=F', 'commit', '-m', 'rename', cwd=other)
-        self.run_cmd('git', 'push', cwd=other)
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertRegex(result.stderr, r'both changed these paths.*\n +a\n')
-        self.assertFalse((self.base / 'merged').exists())
 
     def test_cleanup_accepts_server_side_rebased_lane_only(self):
         branch = 'feature/stint-1234-fix'
@@ -388,18 +273,6 @@ fi
         self.assertIn('commits absent from origin', result.stderr)
         self.assertEqual(self.run_cmd('git', 'rev-parse', 'HEAD').stdout, old)
 
-    def test_lane_start_warns_and_excludes_dirty_alpha(self):
-        (self.root / '.stint/tasks').mkdir(parents=True)
-        (self.root / '.stint/tasks/1234-fix.md').write_text('status: todo\n')
-        (self.root / 'a').write_text('uncommitted\n')
-        self.stub('wtp', 'git worktree add -b "$3" "worktrees/$3" "$4"')
-        result = self.script('bs-start.sh', '1234')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('excludes these edits', result.stderr)
-        lane = self.root / 'worktrees/feature/stint-1234-fix'
-        self.assertEqual((lane / 'a').read_text(), 'base\n')
-        self.assertEqual((self.root / 'a').read_text(), 'uncommitted\n')
-
     def test_cleanup_refuses_dirty_and_preserves_unrelated_lane(self):
         branch = 'feature/stint-1234-fix'
         lane = self.root / 'worktrees' / branch
@@ -456,7 +329,7 @@ fi
         self.assertFalse(lane.exists())
         self.assertEqual((outside / 'data').read_text(), 'preserve')
 
-    def test_full_merge_requires_reviewed_head_and_preserves_unrelated_edits(self):
+    def test_full_merge_preserves_local_edits_and_resumes_after_sync_refusal(self):
         branch = 'feature/stint-1234-fix'
         lane = self.root / 'worktrees' / branch
         self.run_cmd('git', 'worktree', 'add', '-b', branch, str(lane))
@@ -471,14 +344,12 @@ fi
         self.env['TEST_SHA'] = sha
         self.env['TEST_REMOTE'] = str(self.remote)
         self.env['TEST_GH_STATE'] = str(self.base / 'merged')
-        self.env['TEST_SCRIPTS'] = str(SCRIPTS)
         self.env['TEST_STINT_LOG'] = str(self.base / 'stint-calls')
         self.stub('stint', 'echo \"$*\" >> \"$TEST_STINT_LOG\"')
         (lane / 'target').mkdir()
         (lane / 'target/build-output').write_text('compiled output\n')
         (lane / 'ignored-data').mkdir()
         (lane / 'ignored-data/important').write_text('preserve me\n')
-        self.stub('just', 'if [ \"$1\" = merge-pr ]; then shift; exec bash \"$TEST_SCRIPTS/merge-pr.sh\" \"$@\"; fi\necho \"$*\" >> \"$TEST_LOG\"')
         self.stub('gh', r"""
 if [ "$1 $2" = 'pr view' ]; then
   if [ -f "$TEST_GH_STATE" ]; then state=MERGED; else state=OPEN; fi
@@ -487,12 +358,11 @@ if [ "$1 $2" = 'pr view' ]; then
   elif [[ "$*" == *"--json headRefName --jq"* ]]; then
     printf '%s\n' "$TEST_BRANCH"
   elif [[ "$*" == *'--jq'* ]]; then
-    printf '{"branch":"%s","state":"%s","base":"alpha","body":"Stint: 1234"}\n' "$TEST_BRANCH" "$state"
+    printf '{"branch":"%s","head":"%s","state":"%s","base":"alpha","body":"Stint: 1234"}\n' "$TEST_BRANCH" "$TEST_SHA" "$state"
   else
     printf '{"headRefName":"%s","headRefOid":"%s","state":"%s"}\n' "$TEST_BRANCH" "$TEST_SHA" "$state"
   fi
 elif [ "$1 $2" = 'pr merge' ]; then
-  test "${6:-}" = "$TEST_SHA"
   tmp=$(mktemp -d)
   git clone -q -b alpha "$TEST_REMOTE" "$tmp"
   git -C "$tmp" config user.email fixture@example.invalid
@@ -504,26 +374,20 @@ elif [ "$1 $2" = 'pr merge' ]; then
   touch "$TEST_GH_STATE"
 fi
 """)
-        result = self.script('bs-merge.sh', '1')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((self.base / 'merged').exists())
-        result = self.script('bs-merge.sh', '1', '--reviewed-head', '0' * 40)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((self.base / 'merged').exists())
         (self.root / 'a').write_text('overlap\n')
-        result = self.script('bs-merge.sh', '1', '--reviewed-head', sha)
+        result = self.script('merge-pr.sh', '1')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((self.root / 'a').read_text(), 'overlap\n')
-        self.assertFalse((self.base / 'merged').exists())
+        self.assertTrue((self.base / 'merged').exists())
         self.run_cmd('git', 'restore', 'a')
-        result = self.script('bs-merge.sh', '1', '--reviewed-head', sha)
+        result = self.script('merge-pr.sh', '1')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.root / 'a').read_text(), 'feature\n')
         self.assertEqual((self.root / 'b').read_text(), 'local work\n')
         self.assertTrue(lane.exists())
         self.assertEqual((lane / 'target/build-output').read_text(), 'compiled output\n')
         self.assertEqual((lane / 'ignored-data/important').read_text(), 'preserve me\n')
-        self.assertIn('lane retained', result.stdout)
+        self.assertIn('retaining lane', result.stderr)
         self.assertIn('done 1234', (self.base / 'stint-calls').read_text())
         (lane / 'target/build-output').unlink()
         (lane / 'target').rmdir()
