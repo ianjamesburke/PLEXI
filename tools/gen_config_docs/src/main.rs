@@ -1,7 +1,8 @@
 //! Generates website/src/content/docs/config.md from serde config structs.
-//! Usage: cargo run -p gen_config_docs > website/src/content/docs/config.md
+//! From the workspace root: cargo run -p gen_config_docs > website/src/content/docs/config.md
 
 use std::collections::HashMap;
+use std::fs;
 use syn::{Fields, File, Item, ItemStruct, Type};
 
 #[path = "../../../src/host/command_registry.rs"]
@@ -36,18 +37,12 @@ struct StructInfo {
     fields: Vec<FieldInfo>,
 }
 
-fn main() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let config_src = std::path::Path::new(manifest_dir).join("../../src/config/mod.rs");
-    let default_config =
-        std::path::Path::new(manifest_dir).join("../../scripts/default-config.toml");
-
-    let source = std::fs::read_to_string(&config_src)
-        .unwrap_or_else(|e| panic!("read {}: {e}", config_src.display()));
-    let default_toml = std::fs::read_to_string(&default_config)
-        .unwrap_or_else(|e| panic!("read {}: {e}", default_config.display()));
-
-    let file: File = syn::parse_str(&source).expect("parse src/config/mod.rs");
+fn main() -> Result<(), String> {
+    let config_src = "src/config/mod.rs";
+    let source = read_input(config_src)?;
+    let default_toml = read_input("scripts/default-config.toml")?;
+    let file: File =
+        syn::parse_str(&source).map_err(|error| format!("parse {config_src}: {error}"))?;
 
     let mut structs: HashMap<String, StructInfo> = file
         .items
@@ -69,6 +64,13 @@ fn main() {
     expand_flattened(&mut structs);
 
     emit_doc(&structs, &default_toml);
+    Ok(())
+}
+
+fn read_input(path: &str) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|error| {
+        format!("read {path}: {error}. Run gen_config_docs from the Plexi workspace root.")
+    })
 }
 
 fn derives_deserialize(s: &ItemStruct) -> bool {
