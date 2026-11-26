@@ -75,13 +75,13 @@ finishes.
 | Branch | Publishes | Tag |
 |---|---|---|
 | `alpha` | nothing; install from source with `just channel-install alpha` | none |
-| `beta` | one scheduled nightly run (03:00 UTC-7) | `vX.Y.Z-beta.N` |
+| none (a tag on an alpha commit) | one scheduled nightly run (03:00 UTC-7) | `vX.Y.Z-beta.N` |
 | `main` | a push, made by `just promote main` | `vX.Y.Z` |
 
-The nightly run does nothing when alpha has no commits beta lacks. Otherwise it
-builds, tests and packages alpha's head commit; only if everything passes it
-fast-forwards `beta` to that exact commit (never to a newer alpha tip, never by
-force) and publishes the next beta tag. `just promote beta` starts the same run
+The nightly run does nothing when alpha has no commits since the last beta tag.
+Otherwise it builds, tests and packages alpha's head commit; only if everything
+passes it tags that exact commit (never a newer alpha tip) and publishes the
+next beta. There is no beta branch: a beta is a tag on an alpha commit. `just promote beta` starts the same run
 by hand.
 
 Per-push alpha releases cost about 55 hosted minutes each and served no one but
@@ -99,7 +99,7 @@ on stable tags only.
 just changelog       # preview unreleased commits
 just bump            # on alpha: version + CHANGELOG commit (minor|major optional); push it
 just promote beta    # optional: start the nightly beta release now; CI publishes vX.Y.Z-beta.N
-just promote main    # fast-forward main to origin/beta; CI publishes vX.Y.Z
+just promote main    # fast-forward main to the newest beta tag's commit; CI publishes vX.Y.Z
 ```
 
 The full host suite with PTY tests runs on demand via the `Rust host`

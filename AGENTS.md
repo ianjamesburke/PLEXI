@@ -58,12 +58,12 @@ Record current Alpha tag, Hand, Ian note, and Dogfood state in root `TRUTH.md`. 
 
 ## Branches
 
-`alpha` is the starting branch for all feature branches, worktrees, and PRs. Never branch from `main` or `beta`. Feature branch naming: `feature/<issue-number>-short-description`.
-`alpha` is the main checkout; `beta` and `main` are standing worktrees under `worktrees/`. Never remove them during cleanup.
+`alpha` is the starting branch for all feature branches, worktrees, and PRs. Never branch from `main`. Feature branch naming: `feature/<issue-number>-short-description`.
+`alpha` is the main checkout; `main` is a standing worktree under `worktrees/`. Never remove it during cleanup. There is no beta branch: a beta is a tag on an alpha commit.
 
 ## Git Rules
 
-Never add `Co-Authored-By: Claude ...` trailers. Never push directly to `main` or `beta`. Never pass `--delete-branch` to `gh pr merge`.
+Never add `Co-Authored-By: Claude ...` trailers. Never push directly to `main`. Never pass `--delete-branch` to `gh pr merge`.
 
 ## Tasks and Issues
 

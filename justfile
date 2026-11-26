@@ -572,8 +572,8 @@ bump bump="patch":
     bash scripts/release-version.sh "{{bump}}"
 
 # beta: start the nightly beta release now instead of waiting for the schedule
-# (CI builds origin/alpha's head and, if it passes, fast-forwards beta and
-# publishes). main: fast-forward main to origin/beta; that push publishes.
+# (CI builds origin/alpha's head and, if it passes, tags and publishes it).
+# main: fast-forward main to the newest beta tag's commit; that push publishes.
 # Refuses a non-fast-forward.
 #   just promote beta | just promote main
 promote to:
@@ -581,17 +581,20 @@ promote to:
     set -euo pipefail
     case "{{to}}" in
         beta) exec gh workflow run release.yml --ref alpha -f nightly=true ;;
-        main) from=beta ;;
+        main) ;;
         *) echo "error: just promote beta|main (got '{{to}}')" >&2; exit 1 ;;
     esac
-    git fetch -q origin "$from" "{{to}}"
-    git push origin "refs/remotes/origin/$from:refs/heads/{{to}}"
+    git fetch -q origin main --tags
+    tag=$(git tag -l 'v*-beta.*' --sort=-v:refname | head -1)
+    [[ -n "$tag" ]] || { echo "error: no beta release to promote" >&2; exit 1; }
+    echo "promoting $tag to main"
+    git push origin "$(git rev-list -n1 "$tag"):refs/heads/main"
 
 # Compare the public roadmap (website/src/lib/roadmap.json) with the stints
 # that deliver it; exit 1 on drift. Needs the `stint` CLI and the release
 # owner's .stint/. Not for CI.
 #   just check-roadmap                            working-tree roadmap, commits on HEAD
-#   just check-roadmap origin/alpha origin/beta   published roadmap, beta's commits
+#   just check-roadmap origin/alpha <beta-tag>    published roadmap, that beta's commits
 check-roadmap roadmap_ref="" commits_ref="":
     uv run --no-project python scripts/check_roadmap.py {{ if roadmap_ref == "" { "" } else { "--roadmap-ref " + roadmap_ref } }} {{ if commits_ref == "" { "" } else { "--commits-ref " + commits_ref } }}
 

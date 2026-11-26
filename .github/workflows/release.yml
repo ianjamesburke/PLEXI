@@ -1,14 +1,15 @@
 name: Build and publish Plexi release
 
 # Releases come from two triggers (scripts/release-next-tag.sh picks the tag).
-# Nightly (cron, or dispatch with nightly=true): when alpha has commits that
-# beta lacks, build and test alpha's head, and only if every package passes
-# fast-forward beta to that exact commit and publish vX.Y.Z-beta.N; no new
-# commits means no heavy jobs and no release. A push to main publishes vX.Y.Z
-# (promoted by hand with `just promote main`); main fails when it has commits
-# but no version bump. Pushes to alpha and beta publish nothing; alpha is
-# installed from source. A started release always finishes. Dispatch with a
-# tag republishes it or runs the verify/signing checks.
+# Nightly (cron, or dispatch with nightly=true): when alpha has commits since
+# the last beta tag, build and test alpha's head, and only if every package
+# passes tag that exact commit vX.Y.Z-beta.N and publish it; no new commits
+# means no heavy jobs and no release. There is no beta branch: a beta is a tag
+# on an alpha commit. A push to main publishes vX.Y.Z (promoted by hand with
+# `just promote main`); main fails when it has commits but no version bump.
+# Pushes to alpha publish nothing; alpha is installed from source. A started
+# release always finishes. Dispatch with a tag republishes it or runs the
+# verify/signing checks.
 on:
   push:
     branches: [main]
@@ -73,11 +74,6 @@ jobs:
             [[ -z "$INPUT_TAG" ]] || { echo "error: nightly takes no tag input" >&2; exit 1; }
             branch=beta
             sha=$(git rev-parse refs/remotes/origin/alpha)
-            # beta must stay a fast-forward of the tested commit; fail now, not after the build.
-            if git rev-parse -q --verify refs/remotes/origin/beta >/dev/null; then
-              git merge-base --is-ancestor refs/remotes/origin/beta "$sha" \
-                || { echo "error: origin/beta is not an ancestor of origin/alpha ($sha); reconcile beta by hand" >&2; exit 1; }
-            fi
           else
             branch=$BRANCH
             sha=$PUSH_SHA
@@ -145,7 +141,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.next-tag.outputs.sha || inputs.tag }}
-          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -157,17 +152,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.next-tag.outputs.tag || inputs.tag }}
           SHA: ${{ needs.next-tag.outputs.sha }}
-          NIGHTLY: ${{ github.event_name == 'schedule' || inputs.nightly }}
         run: |
           # Tag only after the packages passed, so a failed or cancelled build
-          # never burns a release number.
+          # never burns a release number. The tag goes on the tested commit,
+          # never on a newer alpha tip.
           if [[ -n "$SHA" ]]; then
-            if [[ "$NIGHTLY" == true ]]; then
-              # Beta moves to the tested commit, never to a newer alpha tip; no
-              # force, so a diverged beta fails here. A GITHUB_TOKEN push starts
-              # no workflow run.
-              git push origin "$SHA:refs/heads/beta"
-            fi
             git tag "$TAG" "$SHA"
             git push origin "refs/tags/$TAG"
           fi
