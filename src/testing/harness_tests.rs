@@ -26123,19 +26123,17 @@ fn start_researcher_running(
 /// through `queue_user_command`, queued for `App::logic`. The open runs
 /// on the next frame.
 fn palette_queue_open_researcher(h: &mut HostHarness, fx: &AgentFocusFixture) {
-    h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
-        name: "open-researcher".into(),
-        scope: crate::cli::UserCommandScope::Workspace,
-        description: None,
-        run: None,
-        steps: vec![format!(
-            "agent open researcher --cwd '{}'",
-            fx.proj_dir.display()
-        )],
-        on_load: Vec::new(),
-        secrets: Vec::new(),
-        split: false,
-    }];
+    h.write_saved_command_fixture(
+        "open-researcher",
+        toml::Table::from_iter([(
+            "steps".into(),
+            vec![format!(
+                "agent open researcher --cwd '{}'",
+                fx.proj_dir.display()
+            )]
+            .into(),
+        )]),
+    );
     h.app.queue_user_command(
         "open-researcher",
         Some(crate::cli::UserCommandScope::Workspace),
@@ -26595,16 +26593,13 @@ fn agent_mesh_gate_palette_launch_routes() {
         "agent open researcher",
     ] {
         h.app.pending_notifications.clear();
-        h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
-            name: "gate-test".into(),
-            scope: crate::cli::UserCommandScope::Workspace,
-            description: None,
-            run: None,
-            steps: vec![format!("{step} --cwd '{}'", fx.proj_dir.display())],
-            on_load: Vec::new(),
-            secrets: Vec::new(),
-            split: false,
-        }];
+        h.write_saved_command_fixture(
+            "gate-test",
+            toml::Table::from_iter([(
+                "steps".into(),
+                vec![format!("{step} --cwd '{}'", fx.proj_dir.display())].into(),
+            )]),
+        );
         h.app.queue_user_command("gate-test", None);
         h.hidden_frame();
         assert!(
@@ -26732,16 +26727,10 @@ fn agent_mesh_gate_queued_palette_open_shows_denial() {
     let mut h = HostHarness::new();
     let _experiments = crate::release::set_test_experiments(&[]);
     h.app.notifications_enabled = true;
-    h.app.palette_commands = vec![crate::cli::ResolvedUserCommand {
-        name: "open-researcher".into(),
-        scope: crate::cli::UserCommandScope::Workspace,
-        description: None,
-        run: None,
-        steps: vec!["agent open researcher".into()],
-        on_load: Vec::new(),
-        secrets: Vec::new(),
-        split: false,
-    }];
+    h.write_saved_command_fixture(
+        "open-researcher",
+        toml::Table::from_iter([("steps".into(), vec!["agent open researcher"].into())]),
+    );
     h.app.queue_user_command(
         "open-researcher",
         Some(crate::cli::UserCommandScope::Workspace),

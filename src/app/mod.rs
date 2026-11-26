@@ -4627,7 +4627,7 @@ impl PlexiApp {
         let context_id = invocation.focus.context_id;
         let window_id = invocation.focus.window_id;
         let pane_id = invocation.focus.pane_id;
-        let command_id = action.command_id();
+        let command_id = crate::host::guest_text::shown(&action.command_id());
         if let Some(reason) = self.command_unavailability(
             &action,
             invocation.config_workspace.as_deref(),
@@ -5074,9 +5074,11 @@ impl PlexiApp {
             | Action::CheckForUpdates
             | Action::RestartToUpdate
             | Action::CloseSelectedPanes => self.run_registered_command_ui(action, invocation),
-            Action::RunUserCommand(ref name) => {
-                log::info!("keys: executing user command binding 'run:{name}'");
-                self.queue_user_command(name, None);
+            Action::LaunchApp(id, source) => {
+                self.run_registered_app(&id, source, invocation);
+            }
+            Action::RunUserCommand(name, scope) => {
+                self.queue_registered_user_command(name, scope, invocation);
             }
         }
     }
