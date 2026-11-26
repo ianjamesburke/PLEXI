@@ -477,7 +477,21 @@ promote to:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{to}}" in
-        beta) git fetch -q origin alpha; exec git push origin "$(git rev-parse origin/alpha):refs/heads/beta" ;;
+        beta)
+            git fetch -q origin alpha beta
+            if git rev-parse -q --verify refs/heads/alpha >/dev/null; then
+                ahead=$(git rev-list --count origin/alpha..refs/heads/alpha)
+                [[ "$ahead" == 0 ]] || { echo "error: local alpha has $ahead commit(s) that are not on GitHub, so beta would not get them. Run 'git push origin alpha', then 'just promote beta' again." >&2; exit 1; }
+            fi
+            sha=$(git rev-parse origin/alpha)
+            if [[ "$sha" == "$(git rev-parse origin/beta)" ]]; then
+                echo "beta is already at alpha: $(git log -1 --format='%h %s' "$sha")"
+                exit 0
+            fi
+            git push origin "$sha:refs/heads/beta"
+            echo "beta -> $(git log -1 --format='%h %s' "$sha"). The nightly run publishes it."
+            exit 0
+            ;;
         main) ;;
         *) echo "error: just promote beta|main (got '{{to}}')" >&2; exit 1 ;;
     esac
