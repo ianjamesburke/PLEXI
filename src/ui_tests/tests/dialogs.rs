@@ -528,11 +528,20 @@ fn action_inactive(h: &PlexiUiHarness, label: &str) -> bool {
     })
 }
 
+/// Keep input time fixed across the kittest frames that deliver a key tap.
+fn freeze_arm_delay_clock(h: &mut PlexiUiHarness) {
+    let time = h.with_app(|app| {
+        crate::ui::dialog::use_destructive_frame_clock_for_test(&app.ctx);
+        app.ctx.input(|i| i.time)
+    });
+    h.harness().input_mut().time = Some(time);
+}
+
 /// Stint 1513, ruling 109: Close is greyed when the dialog first draws, and
 /// an Enter typed ahead into it does nothing. Cancel is available at once.
 #[test]
 fn close_pane_is_disabled_during_the_arm_delay() {
-    let (mut h, a, _b) = open_close_dialog();
+    let (mut h, a, _b) = open_close_dialog_after(freeze_arm_delay_clock);
     assert!(action_inactive(&h, "Close"), "Close is greyed at first");
     assert!(!action_inactive(&h, "Cancel"), "Cancel is never delayed");
     h.save_screenshot(&evidence_png!()).unwrap();
@@ -551,6 +560,7 @@ fn context_close_is_disabled_during_the_arm_delay() {
     let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
     add_focused_pane(&mut h);
     h.step();
+    freeze_arm_delay_clock(&mut h);
     seed_context_close_confirm(&mut h, true);
     h.run_steps(2);
     assert!(action_inactive(&h, "Close all"));
@@ -565,12 +575,21 @@ fn context_close_is_disabled_during_the_arm_delay() {
             "{key:?} during the delay decided the dialog"
         );
     }
+
+    let before = h.with_app(|app| app.ctx.input(|i| i.time));
+    h.harness().input_mut().time = Some(before + crate::broker::consent::ARM_DELAY.as_secs_f64());
+    h.harness().key_press(egui::Key::D);
+    h.run_steps(3);
+    assert!(
+        h.with_app(|app| app.pending_context_close.is_none()),
+        "D after the delay did not decide the dialog"
+    );
 }
 
 /// Stint 1513, ruling 109: Discard is greyed at first; Save and Cancel are not.
 #[test]
 fn unsaved_changes_discard_is_disabled_during_the_arm_delay() {
-    let (mut h, _dir) = open_unsaved_prompt();
+    let (mut h, _dir) = open_unsaved_prompt_after(freeze_arm_delay_clock);
     assert!(action_inactive(&h, "Discard"));
     assert!(!action_inactive(&h, "Save"), "Save is never delayed");
     assert!(!action_inactive(&h, "Cancel"), "Cancel is never delayed");
@@ -583,7 +602,7 @@ fn unsaved_changes_discard_is_disabled_during_the_arm_delay() {
     );
 }
 
-/// One frame of a dialog on a bare context, with one key tapped when `tap`.
+/// One frame of a dialog at fixed input time, with one key tapped when `tap`.
 fn dialog_frame<T>(
     ctx: &egui::Context,
     tap: Option<(egui::Key, egui::Modifiers)>,
@@ -592,7 +611,11 @@ fn dialog_frame<T>(
     let colors = crate::ui::theme::Colors::from_config(
         &crate::ui::theme::preset_colors("plexi-dusk").unwrap(),
     );
-    let mut input = egui::RawInput::default();
+    crate::ui::dialog::use_destructive_frame_clock_for_test(ctx);
+    let mut input = egui::RawInput {
+        time: Some(0.0),
+        ..Default::default()
+    };
     if let Some((key, modifiers)) = tap {
         input.modifiers = modifiers;
         input.events = [true, false]
