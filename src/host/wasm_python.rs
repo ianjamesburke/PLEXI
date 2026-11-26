@@ -3871,17 +3871,32 @@ impl LivePythonPane {
     /// forces paints — made the identical setup succeed in 3 s.
     pub fn service_external_io(&mut self, ctx: &egui::Context) {
         self.bind_repaint(ctx);
+        // Logic services this even for an occluded window, an inactive
+        // context, or a pane whose guest can no longer drain.
+        self.launch_admissions.summarize_due(Instant::now());
         if self.error.is_some() {
             // A fatal pane never drains again (`ui` early-returns the same
             // way); draining here would spam the decoder-disconnected error
             // every pass.
+            self.schedule_admission_summary();
             return;
         }
         self.drain_runtime();
-        // Runs in `App::logic` for every pane, occluded window or inactive
-        // context, so a plugin that stops polling still has its count written.
-        self.launch_admissions
-            .summarize_due(std::time::Instant::now());
+    }
+
+    fn schedule_admission_summary(&self) {
+        let Some(deadline) = self.launch_admissions.next_summary_deadline() else {
+            return;
+        };
+        let repaint = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((ctx, viewport)) = repaint.as_ref() {
+            let predicted_frame =
+                Duration::from_secs_f32(ctx.input_for(*viewport, |input| input.predicted_dt));
+            ctx.request_repaint_after_for(
+                repaint_delay_until(deadline, Instant::now(), predicted_frame),
+                *viewport,
+            );
+        }
     }
 
     /// Write every pending launch-set admission count now. The quit path
@@ -4048,6 +4063,9 @@ impl LivePythonPane {
             // finalizes a trailing partial line.
             self.refresh_guest_error();
         }
+        // Paint and background drains can admit requests after the logic
+        // pass. Arm the deadline where the requests were consumed.
+        self.schedule_admission_summary();
     }
 
     /// One host record per guest stderr line, each carrying the `plugin::<id>`
@@ -7025,6 +7043,15 @@ impl AdmissionRun {
 struct LaunchAdmissionMemo(std::cell::RefCell<HashMap<(String, String), AdmissionRun>>);
 
 impl LaunchAdmissionMemo {
+    fn next_summary_deadline(&self) -> Option<Instant> {
+        self.0
+            .borrow()
+            .values()
+            .filter(|run| run.suppressed > 0)
+            .map(|run| run.last_info + ADMISSION_REPEAT_SUMMARY_EVERY)
+            .min()
+    }
+
     /// Write the count of every run whose minute is up. Called from the
     /// runtime's servicing tick, so a plugin that stops polling still has its
     /// repeats counted.
@@ -8879,22 +8906,90 @@ mod tests {
         );
     }
 
-    /// A run whose plugin stops polling still reports its count once the
-    /// minute is up, from the runtime's own servicing tick.
     #[test]
-    fn a_due_summary_is_written_without_another_request() {
-        use crate::broker::principal::Principal;
-        let logs = crate::testing::test_log::capture();
-        let memo = LaunchAdmissionMemo::default();
-        let pane = Principal::plugin_in_pane("logs", 913_007);
-        let granted = vec!["logs.read".to_string()];
-        let t0 = std::time::Instant::now();
+    fn admission_summary_wakes_an_idle_pane() {
+        assert_admission_summary_wake(false);
+    }
+
+    #[test]
+    fn admission_summary_wakes_a_fatal_pane() {
+        assert_admission_summary_wake(true);
+    }
+
+    fn admission_test_pane(dir: &Path) -> LivePythonPane {
+        std::fs::create_dir_all(dir).expect("create fixture app directory");
+        std::fs::write(dir.join("main.py"), "def init(size, args): return []\n")
+            .expect("write fixture app");
+        let mut config = state_test_config(dir, "test.admission-summary");
+        config.capabilities = vec!["logs.read".to_string()];
+        LivePythonPane::launch_for_test(config).expect("launch fixture pane")
+    }
+
+    fn record_admission_repeats(pane: &LivePythonPane, at: Instant) {
         for _ in 0..3 {
-            launch_set_admits(&pane, &granted, "logs.read", &memo, t0);
+            assert!(launch_set_admits(
+                &pane.principal(),
+                &pane.config.capabilities,
+                "logs.read",
+                &pane.launch_admissions,
+                at,
+            ));
         }
-        memo.summarize_due(t0 + std::time::Duration::from_secs(30));
-        assert!(!summary_lines(&logs).iter().any(|l| l.contains("repeated")));
-        memo.summarize_due(t0 + std::time::Duration::from_secs(61));
+    }
+
+    fn assert_admission_summary_wake(fatal: bool) {
+        let dir = tempdir().expect("profile directory");
+        let _profile = crate::config::set_test_profile_dir(dir.path().join("profile"));
+        let _shared = crate::config::set_test_shared_dir(dir.path().join("shared"));
+        let mut pane = admission_test_pane(&dir.path().join("app"));
+        // Finish startup before observing the idle wake so decoder activity
+        // cannot supply the pass that should come from the admission deadline.
+        pane.ensure_initialized(HEADLESS_INIT_VIEWPORT);
+        let startup_deadline =
+            Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(30));
+        while !pane.ready {
+            pane.drain_runtime();
+            assert!(
+                pane.error.is_none(),
+                "guest startup failed: {:?}",
+                pane.error
+            );
+            assert!(
+                Instant::now() < startup_deadline,
+                "guest never became ready"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if fatal {
+            pane.fail_for_test("fatal admission test guest");
+        }
+
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            predicted_dt: 0.0,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            let _ = ctx.run_ui(input.clone(), |_| {});
+        }
+
+        let logs = crate::testing::test_log::capture();
+        let remaining = Duration::from_secs(1);
+        let deadline = Instant::now() + remaining;
+        record_admission_repeats(&pane, deadline - ADMISSION_REPEAT_SUMMARY_EVERY);
+        let service = |pane: &mut LivePythonPane| {
+            ctx.run_ui(input.clone(), |ui| pane.service_external_io(ui.ctx()))
+                .viewport_output[&egui::ViewportId::ROOT]
+                .repaint_delay
+        };
+        let delay = service(&mut pane);
+        assert!(summary_lines(&logs).is_empty(), "summary written early");
+        assert!(
+            !delay.is_zero() && delay <= remaining,
+            "expected a delayed wake within {remaining:?}, got {delay:?}"
+        );
+        std::thread::sleep(delay);
+        let next_delay = service(&mut pane);
         assert_eq!(
             summary_lines(&logs),
             [format!(
@@ -8902,30 +8997,89 @@ mod tests {
                 admission_lines(&logs)[0].1
             )]
         );
+        assert_eq!(next_delay, Duration::MAX, "an empty memo needs no wake");
     }
 
-    /// The quit path cannot rely on Drop (exit_host ends in _exit):
-    /// an explicit flush writes the pending count and leaves nothing pending.
     #[test]
-    fn flush_writes_pending_counts_and_leaves_nothing_pending() {
-        use crate::broker::principal::Principal;
-        let logs = crate::testing::test_log::capture();
-        let memo = LaunchAdmissionMemo::default();
-        let pane = Principal::plugin_in_pane("logs", 913_008);
-        let granted = vec!["logs.read".to_string()];
-        let t0 = std::time::Instant::now();
-        for _ in 0..4 {
-            launch_set_admits(&pane, &granted, "logs.read", &memo, t0);
+    fn admission_summary_flushes_on_host_stop() {
+        assert_admission_summary_flushes_on_quit(
+            "host::wasm_python::tests::admission_summary_flushes_on_host_stop",
+            false,
+        );
+    }
+
+    #[test]
+    fn admission_summary_flushes_on_backend_exit() {
+        assert_admission_summary_flushes_on_quit(
+            "host::wasm_python::tests::admission_summary_flushes_on_backend_exit",
+            true,
+        );
+    }
+
+    /// Both quit routes end the child without dropping the pane. Inspect
+    /// the actual log file after exit to require each route to flush it.
+    fn assert_admission_summary_flushes_on_quit(test: &str, backend_exit: bool) {
+        const CHILD_PROFILE: &str = "PLEXI_TEST_ADMISSION_QUIT_PROFILE";
+        use crate::app::quit::ExitReason;
+        use crate::host::pane::ViewRuntime;
+
+        if let Some(profile) = std::env::var_os(CHILD_PROFILE).map(PathBuf::from) {
+            {
+                let _profile = crate::config::set_test_profile_dir(profile.clone());
+                crate::platform::logging::init(log::LevelFilter::Info, 7, true);
+            }
+            let mut h = crate::testing::HostHarness::from_profile_dir(&profile);
+            let pane_id = h.add_test_pane();
+            let mut pane = admission_test_pane(&profile.join("app"));
+            pane.set_pipe_owner(crate::host::scope::Scope::Pane {
+                pane_id,
+                context_id: h.app.windows[0].context_id,
+            });
+            record_admission_repeats(&pane, Instant::now());
+            h.app.windows[0]
+                .panes
+                .get_mut(&pane_id)
+                .unwrap()
+                .as_view_mut()
+                .unwrap()
+                .runtime = ViewRuntime::Python(Box::new(pane));
+
+            if backend_exit {
+                eframe::App::on_exit(&mut h.app);
+            } else {
+                h.app.request_quit(ExitReason::HostStop);
+                for _ in 0..2 {
+                    h.app.service_quit(&eframe::Frame::_new_kittest());
+                }
+            }
+            panic!("quit returned without exiting");
         }
-        memo.flush(t0);
-        assert_eq!(summary_lines(&logs).len(), 1);
-        assert!(summary_lines(&logs)[0].starts_with("admission: repeated 3 times"));
-        memo.flush(t0);
-        drop(memo);
+
+        let dir = tempdir().expect("child profile");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test])
+            .env(CHILD_PROFILE, dir.path())
+            .spawn()
+            .expect("start child test");
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("read child status") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().expect("kill hung child");
+                child.wait().expect("reap hung child");
+                panic!("quit timed out");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        let log = std::fs::read_to_string(dir.path().join("plexi.log")).expect("read child log");
+        assert!(status.success(), "quit exited with {status}\n{log}");
         assert_eq!(
-            summary_lines(&logs).len(),
+            log.matches("admission: repeated 2 times since the last trace:")
+                .count(),
             1,
-            "nothing left pending after a flush"
+            "quit must flush the pending count exactly once\n{log}",
         );
     }
 
