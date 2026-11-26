@@ -21,6 +21,7 @@ use crate::app::registry::{PluginManifest, MANIFEST_SCHEMA_VERSION};
 use plexi_distribution::bounded::Helper;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 /// Pack file embedded into the binary. Auto-applied on every launch (core) or
@@ -1117,6 +1118,36 @@ pub(crate) fn is_bundled_plugin_id(id: &str) -> bool {
         && EMBEDDED_APPS
             .get_file(format!("{id}/manifest.toml"))
             .is_some()
+}
+
+/// The owner of a contributed view declared by a top-level embedded plugin.
+pub(crate) fn bundled_view_owner(id: &str) -> Option<&'static str> {
+    static OWNERS: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
+        let mut owners = HashMap::new();
+        for dir in EMBEDDED_APPS.dirs() {
+            let path = dir.path().join("manifest.toml");
+            let Some(file) = dir.get_file(&path) else {
+                continue;
+            };
+            let Some(owner) = dir.path().to_str() else {
+                continue;
+            };
+            let Some(text) = file.contents_utf8() else {
+                log::error!("bundled views: {} is not UTF-8", path.display());
+                continue;
+            };
+            match PluginManifest::parse(text) {
+                Ok(manifest) => {
+                    for view in manifest.contributes.views {
+                        owners.insert(view.id, owner);
+                    }
+                }
+                Err(error) => log::error!("bundled views: {}: {error}", path.display()),
+            }
+        }
+        owners
+    });
+    OWNERS.get(id).copied()
 }
 
 /// The embedded plugin id equal to `id` ignoring ASCII case, the exact match
