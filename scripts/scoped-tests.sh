@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
 # Print libtest filters, one per line; pass them AFTER cargo test --bin plexi --.
-# Taxonomy and scene selection: src/testing/TESTING.md — The Gate.
-# Unknown src/ module relationships report ::, never no tests. Batch callers
-# must replace that broad fallback with reviewed relevant filters; only the final
-# combined candidate runs the full host suite (src/testing/TESTING.md).
-# scripts/** selects no Rust filters: the table assigns no evidence block.
-# Run script-specific checks separately. Hosted Rust verification is deferred
-# until after Alpha landing; test selection does not change hosted CI rules.
+# Taxonomy and scene selection: src/testing/TESTING.md.
+# Unknown src/ module relationships report ::, never no tests; replace that
+# broad fallback with reviewed relevant filters.
+# scripts/** selects no Rust filters; run script-specific checks separately.
 # With no arguments, detect branch + staged + unstaged + untracked paths against
 # SCOPED_TEST_BASE (default origin/alpha), using the merge base. Set this to the
 # actual PR base for aggregate lanes. Detection failure conservatively selects ::.
 # The path table lives in scoped-tests.table (tested for drift by test_filter_check.py).
 # Selection always exits 0. --selftest is a diagnostic and exits 1 on failure.
-# --gate delegates to the sibling docs_gate_scope.py, which owns the rule for
-# when a markdown-only diff may skip the gate. Exits 0 for skip, 1 for
-# required, and prints the reason.
+# Markdown selects filters only when the sibling docs_gate_scope.py says it is
+# embedded in code.
 
 table_file="$(dirname "$0")/scoped-tests.table"
 
@@ -84,10 +80,6 @@ selftest() {
     printf 'PASS unknown src: ::; scripts/PGAP: <empty>\n'
 }
 
-if [[ "${1:-}" == --gate ]]; then
-    shift
-    exec python3 "$(dirname "$0")/docs_gate_scope.py" "$@"
-fi
 if [[ "${1:-}" == --selftest ]]; then
     selftest
     exit $?

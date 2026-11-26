@@ -1,7 +1,7 @@
 ## .agents
 
 This is the master skills directory for **repo-internal workflow skills** (ship
-pipeline, babysitter, and friends). All of them live in `.agents/skills/<name>/`
+flow and friends). All of them live in `.agents/skills/<name>/`
 and are the canonical source for any agent that needs them.
 
 If an agent runtime doesn't look here natively (e.g. Claude Code reads from

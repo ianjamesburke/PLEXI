@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Throttle cargo invocations across worktrees with plain kernel file locks, so
-# N concurrent builds (e.g. babysitter lanes) don't OOM the machine. This is a
+# N concurrent builds (e.g. parallel lanes) don't OOM the machine. This is a
 # throttle, not a correctness lock — it used to be host-arbitrated
 # (`plexi lock acquire/release`), but the host keyed ownership to the PANE,
 # not the process: a client that died (Ctrl-C, SIGKILL, timeout) left the

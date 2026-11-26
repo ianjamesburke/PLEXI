@@ -2,12 +2,10 @@
 # merge-pr.sh — PLEXI squash-merge pipeline
 #
 # Usage:
-#   scripts/merge-pr.sh <PR> --reviewed-head <SHA> full flow (verified squash→fast-forward→lane cleanup→close)
-#   scripts/merge-pr.sh <PR> --reviewed-head <SHA> no-issue full flow for a standalone PR — skips issue/stint close
-#   scripts/merge-pr.sh rebase <BRANCH>        rebase feature branch on origin/alpha + force-push
-#   scripts/merge-pr.sh squash <PR> <SHA>      squash-merge reviewed SHA only
+#   scripts/merge-pr.sh <PR>                   full flow (squash→fast-forward alpha→lane cleanup→close)
+#   scripts/merge-pr.sh <PR> no-issue          standalone PR — skips issue/stint close
 #   scripts/merge-pr.sh sync                   fast-forward alpha without discarding local work
-#   scripts/merge-pr.sh cleanup <PR> <BRANCH>  remove all local and remote branch artifacts
+#   scripts/merge-pr.sh cleanup <PR> <BRANCH> <HEAD>  remove pr-<PR> channel, clean lane worktree and branches
 #   scripts/merge-pr.sh close <ISSUE> <PR>     strip pipeline labels + close issue + append ship log
 #   scripts/merge-pr.sh close-stints <PR> [--partial <ID>]... [ID...]   done ID; release (unclaim) --partial ID
 #
@@ -18,65 +16,22 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
 
-# Acquire before entering full-flow landing or the standalone squash recovery.
+# Acquire before entering full-flow landing.
 case "${1:-}" in
     --alpha-lock-inner)
         shift
         python3 -I "$SCRIPT_DIR/alpha_lock.py" --verify
         ;;
-    squash|[0-9]*)
+    [0-9]*)
         exec python3 -I "$SCRIPT_DIR/alpha_lock.py" bash "$SCRIPT_DIR/merge-pr.sh" --alpha-lock-inner "$@"
         ;;
 esac
 
-do_rebase() {
-    local BRANCH="$1"
-    git fetch origin
-    local BEHIND
-    BEHIND=$(git -C "worktrees/$BRANCH" rev-list HEAD..origin/alpha --count 2>/dev/null || echo 0)
-    echo "==> Rebasing $BRANCH ($BEHIND commits behind origin/alpha)"
-    git -C "worktrees/$BRANCH" rebase origin/alpha
-    git -C "worktrees/$BRANCH" push --force-with-lease origin HEAD
-    # GitHub merge state lags after a force-push — wait before merging
-    echo "==> Waiting for GitHub to register push..."
-    sleep 10
-}
-
-do_squash() {
-    local PR="$1" REVIEWED_HEAD="$2"
-    if [[ -n "${PLEXI_QUEUE_EXPECTED_ALPHA:-}" ]]; then
-        if [[ ! "${PLEXI_QUEUE_EXPECTED_TREE:-}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "ERROR: merge-queue requires the tested squash tree." >&2
-            return 1
-        fi
-        git fetch --quiet origin +refs/heads/alpha:refs/remotes/origin/alpha
-        if [[ "$(git rev-parse refs/remotes/origin/alpha)" != "$PLEXI_QUEUE_EXPECTED_ALPHA" ]]; then
-            echo "ERROR: merge-queue pre-merge base mismatch; expected $PLEXI_QUEUE_EXPECTED_ALPHA" >&2
-            return 1
-        fi
-    fi
-    echo "==> Squash-merging PR #$PR at reviewed head $REVIEWED_HEAD"
-    if [[ -n "${PLEXI_QUEUE_EXPECTED_ALPHA:-}" ]]; then
-        # The synchronous API won't enroll a PR in GitHub's native merge queue.
-        gh api --method PUT "repos/{owner}/{repo}/pulls/$PR/merge" \
-            -f merge_method=squash -f "sha=$REVIEWED_HEAD" --jq '.merged' | grep -qx true
-    else
-        gh pr merge "$PR" --squash --match-head-commit "$REVIEWED_HEAD"
-    fi
-}
-
-verify_queue_squash() {
-    local PR="$1" STATE MERGE_COMMIT REMOTE
-    STATE=$(gh pr view "$PR" --json state,mergeCommit)
-    MERGE_COMMIT=$(jq -r '.mergeCommit.oid // ""' <<< "$STATE")
-    REMOTE=$(git rev-parse origin/alpha)
-    if [[ "$(jq -r .state <<< "$STATE")" != MERGED || ! "$MERGE_COMMIT" =~ ^[0-9a-f]{40}$ ]] ||
-       ! git merge-base --is-ancestor "$MERGE_COMMIT" "$REMOTE" ||
-       [[ "$(git rev-parse "$REMOTE^{tree}")" != "$PLEXI_QUEUE_EXPECTED_TREE" ||
-          "$(git rev-parse "$MERGE_COMMIT^{tree}")" != "$PLEXI_QUEUE_EXPECTED_TREE" ||
-          "$(git show -s --format=%P "$MERGE_COMMIT")" != "$PLEXI_QUEUE_EXPECTED_ALPHA" ||
-          "$REMOTE" != "$MERGE_COMMIT" ]]; then
-        echo "ERROR: merge-queue post-merge verification failed for #$PR at $REMOTE; retaining lane and closeout state." >&2
+do_merge() {
+    local PR="$1"
+    echo "==> Squash-merging PR #$PR"
+    if ! gh pr merge "$PR" --squash; then
+        echo "ERROR: GitHub could not squash-merge PR #$PR (conflict with alpha or a branch rule). Nothing local changed; resolve it on the PR branch, then rerun: just merge-pr $PR" >&2
         return 1
     fi
 }
@@ -112,93 +67,6 @@ assert_clean_lane() {
     fi
 }
 
-# Outputs of the justfile's check-generated gates: the first argument of every
-# recipe dependency on check-generated, read through just's own parser. just
-# dumps a literal argument as a string and an expression as an array; anything
-# but a non-empty string literal, or no such dependency at all, fails closed.
-generated_artifacts() {
-    local DUMP ARTIFACTS
-    DUMP=$(just --justfile "$ROOT/justfile" --working-directory "$ROOT" --dump --dump-format json) || {
-        echo "ERROR: could not read generated artifacts from $ROOT/justfile via 'just --dump'; refusing behind-alpha merge." >&2
-        return 1
-    }
-    ARTIFACTS=$(printf '%s' "$DUMP" | jq -r '
-        if (.recipes | type) != "object" then error("dump has no recipes object") else . end
-        | [.recipes[] | .dependencies
-           | if type != "array" then error("recipe dependencies are not an array") else .[] end
-           | select(.recipe == "check-generated")]
-        | if length == 0 then error("no recipe depends on check-generated") else .[] end
-        | .arguments
-        | if type != "array" or length != 4 then error("check-generated dependency does not have 4 arguments: \(tojson)")
-          elif (.[0] | type) != "string" or .[0] == "" then error("check-generated artifact is not a string literal: \(.[0] | tojson)")
-          else .[0] end') || {
-        echo "ERROR: unexpected 'just --dump' shape for check-generated in $ROOT/justfile; refusing behind-alpha merge." >&2
-        return 1
-    }
-    printf '%s\n' "$ARTIFACTS" | LC_ALL=C sort -u
-}
-
-# Lock inputs no check-generated recipe owns (check-sdk-lock verifies, not
-# generates): the SDK's dependency manifest and its lockfile.
-SDK_LOCK_PATHS='sdk/python/pyproject.toml
-sdk/python/uv.lock'
-
-
-# Paths whose change can invalidate unrelated changes (build inputs, CI,
-# generated outputs). Alpha's push run builds and lints but does not test, so a
-# behind PR touching or meeting one of these must rebase and re-validate.
-global_paths() {
-    local GENERATED="$1" PATH_NAME
-    while IFS= read -r PATH_NAME; do
-        [ -n "$PATH_NAME" ] || continue
-        case "$PATH_NAME" in
-            Cargo.toml|*/Cargo.toml|Cargo.lock|*/Cargo.lock|build.rs|*/build.rs|.github/workflows/*)
-                printf '%s\n' "$PATH_NAME" ;;
-            *) if printf '%s\n%s\n' "$GENERATED" "$SDK_LOCK_PATHS" | grep -Fqx -- "$PATH_NAME"; then printf '%s\n' "$PATH_NAME"; fi ;;
-        esac
-    done
-}
-
-# A reviewed head that is behind alpha may merge when no path changed on alpha
-# since the merge base is also changed by the PR, and neither side touched a
-# global path. GitHub's squash of a behind PR applies the PR onto current alpha
-# (a three-way merge), so disjoint paths cannot revert alpha's commits. Renames
-# count as both paths. Remaining semantic conflicts surface in the alpha
-# release build's host tests.
-assert_disjoint_from_alpha() {
-    local REVIEWED_HEAD="$1" MERGE_BASE PR_FILES ALPHA_FILES OVERLAP GENERATED GLOBAL
-    MERGE_BASE=$(git merge-base --all origin/alpha "$REVIEWED_HEAD")
-    if [ "$(printf '%s\n' "$MERGE_BASE" | wc -l)" -ne 1 ]; then
-        echo "ERROR: alpha and $REVIEWED_HEAD have more than one merge base (criss-cross history); rebase onto alpha and repeat validation before merging:" >&2
-        printf '%s\n' "$MERGE_BASE" | sed 's/^/  /' >&2
-        exit 1
-    fi
-    if [ "$MERGE_BASE" = "$(git rev-parse origin/alpha)" ]; then
-        return 0
-    fi
-    PR_FILES=$(git diff --name-only --no-renames "$MERGE_BASE" "$REVIEWED_HEAD" | LC_ALL=C sort -u)
-    ALPHA_FILES=$(git diff --name-only --no-renames "$MERGE_BASE" origin/alpha | LC_ALL=C sort -u)
-    OVERLAP=$(LC_ALL=C comm -12 <(printf '%s\n' "$PR_FILES") <(printf '%s\n' "$ALPHA_FILES") | sed '/^$/d')
-    echo "==> PR is behind alpha (merge base $MERGE_BASE); comparing changed paths"
-    echo "    PR paths:"
-    printf '%s\n' "$PR_FILES" | sed 's/^/      /'
-    echo "    alpha paths since merge base:"
-    printf '%s\n' "$ALPHA_FILES" | sed 's/^/      /'
-    if [ -n "$OVERLAP" ]; then
-        echo "ERROR: PR is behind alpha and both changed these paths; rebase and repeat required validation and independent review before merging:" >&2
-        printf '%s\n' "$OVERLAP" | sed 's/^/  /' >&2
-        exit 1
-    fi
-    GENERATED=$(generated_artifacts) || exit 1
-    GLOBAL=$(printf '%s\n%s\n' "$PR_FILES" "$ALPHA_FILES" | global_paths "$GENERATED" | LC_ALL=C sort -u)
-    if [ -n "$GLOBAL" ]; then
-        echo "ERROR: PR is behind alpha and these global paths (build inputs, CI workflows, or generated outputs) changed on one side; rebase and repeat required validation before merging:" >&2
-        printf '%s\n' "$GLOBAL" | sed 's/^/  /' >&2
-        exit 1
-    fi
-    echo "==> Disjoint: no path changed on both sides and no global path changed; merging without rebase"
-}
-
 # Heads the PR branch held before force-pushes that led to PR_HEAD, newest
 # first, from GitHub's HeadRefForcePushedEvent record. A server-side rebase is
 # such a force-push; the local lane still holds the pre-rebase head.
@@ -232,13 +100,13 @@ lane_head_matches() {
 }
 
 do_cleanup() {
-    local PR="$1" BRANCH="$2" REVIEWED_HEAD="$3" WORKTREE_PATH="$ROOT/worktrees/$2"
+    local PR="$1" BRANCH="$2" LANE_HEAD="$3" WORKTREE_PATH="$ROOT/worktrees/$2"
     local INFO STATE PR_BRANCH PR_HEAD LOCAL_HEAD REMOTE_HEAD PRIOR=""
     INFO=$(gh pr view "$PR" --json state,headRefName,headRefOid)
     STATE=$(printf '%s' "$INFO" | jq -r .state)
     PR_BRANCH=$(printf '%s' "$INFO" | jq -r .headRefName)
     PR_HEAD=$(printf '%s' "$INFO" | jq -r .headRefOid)
-    if [ "$STATE" != MERGED ] || [ "$PR_BRANCH" != "$BRANCH" ] || ! [[ "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]] || [ "$PR_HEAD" != "$REVIEWED_HEAD" ]; then
+    if [ "$STATE" != MERGED ] || [ "$PR_BRANCH" != "$BRANCH" ] || ! [[ "$LANE_HEAD" =~ ^[0-9a-f]{40}$ ]] || [ "$PR_HEAD" != "$LANE_HEAD" ]; then
         echo "ERROR: cannot establish merged PR #$PR and its exact lane head; no cleanup performed." >&2
         return 1
     fi
@@ -281,7 +149,7 @@ do_cleanup() {
         if [ -n "$IGNORED" ]; then
             echo "NOTICE: PR #$PR merged; retaining lane and branches to preserve ignored content: $WORKTREE_PATH" >&2
             printf '%s\n' "$IGNORED" >&2
-            echo "Preserve or deliberately handle those files, then run: just merge-cleanup $PR $BRANCH $REVIEWED_HEAD" >&2
+            echo "Preserve or deliberately handle those files, then run: just merge-cleanup $PR $BRANCH $LANE_HEAD" >&2
             return 0
         fi
         echo "==> Retiring lane with recognized generated artifacts (if present)"
@@ -561,31 +429,22 @@ test_resolve_issue() {
                     if [[ "$*" == *closingIssuesReferences* ]]; then
                         printf '\n'
                     else
-                        printf '%s\n' '{"branch":"feature/1347-x","base":"alpha","state":"OPEN","body":"Stint: 1347"}'
+                        printf '%s\n' '{"branch":"feature/1347-x","head":"0000000000000000000000000000000000000001","base":"alpha","state":"OPEN","body":"Stint: 1347"}'
                     fi
                     ;;
                 'pr merge') echo "mock merge $*" ;;
                 *) echo "unexpected gh call: $*" >&2; exit 1 ;;
             esac
         }
-        git() {
-            case "$*" in
-                'fetch origin feature/1347-x'|'diff --name-only -z --no-renames fixture-base '*) ;;
-                'rev-parse FETCH_HEAD') printf '%040d\n' 1 ;;
-                'merge-base origin/alpha '*) echo fixture-base ;;
-                *) echo "unexpected git call: $*" >&2; exit 1 ;;
-            esac
-        }
         do_sync() { :; }
         assert_clean_lane() { :; }
-        assert_disjoint_from_alpha() { :; }
         do_cleanup() { :; }
         task_file_for_stint() { echo "$1-fixture.md"; }
         stint() { echo "mock stint $*"; }
-        set -- 3202 --reviewed-head "$(printf '%040d' 1)"
+        set -- 3202
         eval "$(sed -n '/^# --- Dispatch ---/,$p' "$SCRIPT_DIR/merge-pr.sh")"
     ) || return 1
-    [[ "$actual" == *"mock merge pr merge 3202 --squash --match-head-commit "* ]] &&
+    [[ "$actual" == *"mock merge pr merge 3202 --squash"* ]] &&
         [[ "$actual" == *"mock stint done 1347"* ]] || {
         echo "expected stint-only merge and closeout, got '$actual'" >&2
         return 1
@@ -782,7 +641,7 @@ Stint-partial: 1238")
                         if [[ "$*" == *closingIssuesReferences* ]]; then
                             printf '\n'
                         else
-                            printf '%s\n' '{"branch":"feature/x","base":"alpha","state":"OPEN","body":"Stint-partial: 1240"}'
+                            printf '%s\n' '{"branch":"feature/x","head":"0000000000000000000000000000000000000001","base":"alpha","state":"OPEN","body":"Stint-partial: 1240"}'
                         fi
                         ;;
                     *) echo "mock gh $*" ;;
@@ -790,7 +649,7 @@ Stint-partial: 1238")
             }
             git() { echo "mock git $*"; }
             do_sync() { echo "mock sync"; }
-            set -- 3300 --reviewed-head "$(printf '%040d' 1)"
+            set -- 3300
             eval "$(sed -n '/^# --- Dispatch ---/,$p' "$SCRIPT_DIR/merge-pr.sh")"
         ) && fail "full flow must refuse a partial without Remaining, got '$actual'"
         [[ "$actual" != *"mock gh pr merge"* && "$actual" != *"mock sync"* ]] ||
@@ -808,10 +667,8 @@ case "$CMD" in
     test-resolve-stints) test_resolve_stints ;;
     test-resolve-both) test_resolve_both ;;
     test-resolve-partial) test_resolve_partial ;;
-    rebase)   do_rebase "${2:?BRANCH required}" ;;
-    squash)   do_squash "${2:?PR required}" "${3:?reviewed head SHA required}" ;;
     sync)     do_sync ;;
-    cleanup)  do_cleanup "${2:?PR required}" "${3:?BRANCH required}" "${4:?reviewed head SHA required}" ;;
+    cleanup)  do_cleanup "${2:?PR required}" "${3:?BRANCH required}" "${4:?lane head SHA required}" ;;
     close)    do_close "${2:?ISSUE required}" "${3:?PR required}" ;;
     close-stints)
         PR="${2:?PR required}"
@@ -826,19 +683,22 @@ case "$CMD" in
         fi
         shift
         NO_ISSUE=0
-        REVIEWED_HEAD=""
         while [ "$#" -gt 0 ]; do
             case "$1" in
                 no-issue|--no-issue) NO_ISSUE=1; shift ;;
-                --reviewed-head) REVIEWED_HEAD="${2:?reviewed head SHA required}"; shift 2 ;;
                 *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
             esac
         done
 
-        INFO=$(gh pr view "$PR" --json headRefName,baseRefName,state,body --jq '{branch: .headRefName, base: .baseRefName, state: .state, body: .body}')
+        INFO=$(gh pr view "$PR" --json headRefName,headRefOid,baseRefName,state,body --jq '{branch: .headRefName, head: .headRefOid, base: .baseRefName, state: .state, body: .body}')
         BRANCH=$(echo "$INFO" | jq -r .branch)
+        HEAD_SHA=$(echo "$INFO" | jq -r .head)
         STATE=$(echo "$INFO" | jq -r .state)
         BASE=$(echo "$INFO" | jq -r .base)
+        if [ "$STATE" != OPEN ] && [ "$STATE" != MERGED ]; then
+            echo "ERROR: PR #$PR is $STATE, not open; refusing to merge." >&2
+            exit 1
+        fi
         if [ "$BASE" != alpha ]; then
             echo "ERROR: PR #$PR targets $BASE, not alpha; refusing to merge." >&2
             exit 1
@@ -859,7 +719,7 @@ case "$CMD" in
             if [ -z "$ISSUE" ] && [ -z "$STINTS" ] && [ -z "$PARTIALS" ]; then
                 echo "ERROR: could not resolve GitHub issue or stint tasks for PR #$PR ($BRANCH)" >&2
                 echo "Link a GitHub issue through closingIssuesReferences or a closing keyword like 'Closes #1234'; for stints, use a stint-<id> branch or a 'Stint: 0123, 0124' line in the PR body ('Stint-partial: 0123' for a slice that leaves the stint open)." >&2
-                echo "For a standalone follow-up PR with nothing to close, re-run: just merge-pr $PR --reviewed-head <SHA> no-issue" >&2
+                echo "For a standalone follow-up PR with nothing to close, re-run: just merge-pr $PR no-issue" >&2
                 exit 1
             fi
             while IFS= read -r STINT; do
@@ -881,39 +741,18 @@ case "$CMD" in
             [ -z "$PARTIALS" ] || echo "==> Partial stint(s), released not closed: $(join_by ", " $PARTIALS)"
         fi
 
-        if ! [[ "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "ERROR: pass --reviewed-head with the full SHA independently reviewed and validated, including when resuming a merged PR." >&2
-            exit 1
-        fi
         # Advance the canonical checkout before touching the remote PR. Git refuses
         # overwriting local edits or dropping local commits.
         do_sync
         assert_clean_lane "$BRANCH"
         if [ "$STATE" != "MERGED" ]; then
-            git fetch origin "$BRANCH"
-            if [ "$(git rev-parse FETCH_HEAD)" != "$REVIEWED_HEAD" ]; then
-                echo "ERROR: PR branch no longer matches reviewed head; review the current head." >&2
-                exit 1
-            fi
-            assert_disjoint_from_alpha "$REVIEWED_HEAD"
-            MERGE_BASE=$(git merge-base origin/alpha "$REVIEWED_HEAD")
-            # Refuse before the remote merge when a local edit intersects the PR.
-            while IFS= read -r -d '' path; do
-                if [ -n "$(git status --porcelain -- "$path")" ]; then
-                    echo "ERROR: local change overlaps PR path $path; preserve it and resolve before merging." >&2
-                    exit 1
-                fi
-            done < <(git diff --name-only -z --no-renames "$MERGE_BASE" "$REVIEWED_HEAD")
-            do_squash "$PR" "$REVIEWED_HEAD"
+            do_merge "$PR"
         else
             echo "==> PR already merged — skipping squash; resuming sync and cleanup"
         fi
 
         do_sync
-        if [[ -n "${PLEXI_QUEUE_EXPECTED_ALPHA:-}" ]]; then
-            verify_queue_squash "$PR"
-        fi
-        do_cleanup "$PR" "$BRANCH" "$REVIEWED_HEAD"
+        do_cleanup "$PR" "$BRANCH" "$HEAD_SHA"
         if [ "$NO_ISSUE" -eq 1 ]; then
             echo "==> Skipping issue/stint close (no-issue)"
         else

@@ -77,7 +77,7 @@ Every new feature must be instrumented: no new capability, command, or user-visi
 
 ## Testing
 
-**Mandatory self-validation contract: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Follow its phase-aware gates before pushing, integrating, or installing.
+**Testing rules: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Run the tests for what you changed; the nightly beta release is the full gate.
 - Test-first for host logic. Define done by the test, not the code. No partial merges.
 - Observable state belongs in TOML scenes; return values and invariants belong in Rust tests.
 - Hosted CI is Apple Silicon only and runs no PR builds; the nightly beta release build and main release builds run the host tests. The manual `Rust host` workflow runs the full suite with the PTY tests.
@@ -133,5 +133,4 @@ Use `plexi host screenshot [--pane <id>] [--output <path>]` to capture real host
 
 - App/host state is reached through SDK tools or CLI, never a `~/.plexi*` path.
 - avoid `#[allow(dead_code)]` or `#[allow(unused)]`. Delete or wire up.
-- Follow the mandatory self-validation contract above after work; bare `cargo build` is not an installable-build gate.
 - **Failed PR reset:** close the PR, revert worktree, comment on the issue, re-label `ready`, start fresh.
