@@ -203,6 +203,12 @@ fn action_ids_slot(modal: &str) -> egui::Id {
     egui::Id::new(("plexi_action_modal_ids", modal))
 }
 
+/// How long after the window regains focus a dialog ignores activation keys
+/// (stint 1785). It outlasts a 225 ms macOS initial key-repeat delay
+/// (InitialKeyRepeat 15), so a key held through the blur repeats inside it;
+/// a deliberate press after a refocus rarely comes sooner.
+const REFOCUS_GUARD: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// The arm-delay guard of each modal's destructive actions, by modal id.
 type DestructiveGuards = std::collections::HashMap<String, crate::broker::consent::ConsentGuard>;
 
@@ -399,6 +405,17 @@ impl<'a> ActionModal<'a> {
                 .find(|(_, id)| *id == focused)
                 .and_then(|(name, _)| self.actions.iter().find(|a| a.id == name))
         });
+        // egui clears held keys on blur, so a key held through a refocus
+        // reads as a fresh press (stint 1785). For REFOCUS_GUARD after the
+        // window regains focus, every activation press is dropped like a repeat.
+        let now = ctx.input(|i| i.time);
+        let refocus_slot = egui::Id::new(("plexi_action_modal_refocus", self.id));
+        if ctx.input(|i| i.events.contains(&egui::Event::WindowFocused(true))) {
+            ctx.data_mut(|d| d.insert_temp(refocus_slot, now));
+        }
+        let refocusing = ctx
+            .data(|d| d.get_temp::<f64>(refocus_slot))
+            .is_some_and(|at| now - at < REFOCUS_GUARD.as_secs_f64());
         // egui tracks held keys across frames, including across modal changes.
         // Drop repeats before either shortcut dispatch or egui button activation.
         // A field can still repeat typing, including spaces and newlines.
@@ -407,18 +424,22 @@ impl<'a> ActionModal<'a> {
                 let egui::Event::Key {
                     key,
                     pressed: true,
-                    repeat: true,
+                    repeat,
                     modifiers,
                     ..
                 } = event
                 else {
                     return true;
                 };
+                if !(*repeat || refocusing) {
+                    return true;
+                }
                 let button_activation = matches!(key, egui::Key::Enter | egui::Key::Space)
                     && (field_id.is_none() || focused_action.is_some());
                 let default_activation =
                     self.default_action.is_some() && default_shortcut.matches(*key, *modifiers);
-                !(button_activation
+                let activation = *key == egui::Key::Escape
+                    || button_activation
                     || default_activation
                     || self.actions.iter().any(|action| {
                         action
@@ -428,7 +449,11 @@ impl<'a> ActionModal<'a> {
                             .any(|shortcut| {
                                 action_shortcut(action, *shortcut).matches(*key, *modifiers)
                             })
-                    }))
+                    });
+                if activation && !*repeat {
+                    log::info!("ui: modal {} ignored {key:?} just after refocus", self.id);
+                }
+                !activation
             });
         });
         // Only a modal that traps focus explicitly routes Enter or Space to
@@ -945,6 +970,103 @@ mod adoption_tests {
             },
         );
         choice
+    }
+
+    #[test]
+    fn refocus_modal_held_repeat_cannot_decide() {
+        use egui::{Event, Key, Modifiers, RawInput};
+
+        let colors = Colors::from_config(&crate::ui::theme::preset_colors("plexi-dusk").unwrap());
+        let actions = [
+            DialogAction::new("save", "Save", ButtonKind::Primary),
+            DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape).exact()),
+        ];
+        let mut held_decisions = Vec::new();
+        for (key_code, native_repeat) in [
+            (Key::Enter, false),
+            (Key::Enter, true),
+            (Key::Escape, false),
+            (Key::Escape, true),
+        ] {
+            let ctx = egui::Context::default();
+            crate::ui::theme::setup_fonts(&ctx);
+            // Egui input time, one 60 Hz frame per draw unless a test skips ahead.
+            let clock = std::cell::Cell::new(0.0_f64);
+            let draw = |shown, focused, events| {
+                clock.set(clock.get() + 1.0 / 60.0);
+                let mut result = (None, false);
+                let _ = ctx.run_ui(
+                    RawInput {
+                        events,
+                        focused,
+                        time: Some(clock.get()),
+                        ..Default::default()
+                    },
+                    |_| {
+                        if shown {
+                            let response = ActionModal::new("refocus-test", "Save?", &actions)
+                                .default_action("save")
+                                .show(&ctx, &colors, |_| {});
+                            result = (response.selected, response.dismissed);
+                        }
+                    },
+                );
+                result
+            };
+            let press = |repeat| Event::Key {
+                key: key_code,
+                physical_key: Some(key_code),
+                pressed: true,
+                repeat,
+                modifiers: Modifiers::NONE,
+            };
+
+            draw(false, true, vec![press(false)]);
+            draw(true, true, vec![]);
+            assert_eq!(draw(true, true, vec![press(false)]), (None, false));
+            draw(true, false, vec![Event::WindowFocused(false)]);
+            draw(true, true, vec![Event::WindowFocused(true)]);
+            held_decisions.push((
+                key_code,
+                native_repeat,
+                draw(true, true, vec![press(native_repeat)]),
+            ));
+
+            // Release while another window has focus; egui sees no key-up.
+            draw(true, false, vec![Event::WindowFocused(false)]);
+            draw(true, true, vec![Event::WindowFocused(true)]);
+            assert_eq!(
+                draw(true, true, vec![press(false)]),
+                (None, false),
+                "a press inside the refocus guard cannot tell held from fresh"
+            );
+            draw(
+                true,
+                true,
+                vec![Event::Key {
+                    key: key_code,
+                    physical_key: Some(key_code),
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                }],
+            );
+            clock.set(clock.get() + REFOCUS_GUARD.as_secs_f64());
+            assert_eq!(
+                draw(true, true, vec![press(false)]),
+                if key_code == Key::Enter {
+                    (Some("save"), false)
+                } else {
+                    (Some("cancel"), false)
+                },
+                "fresh {key_code:?} must decide the modal"
+            );
+        }
+        assert!(
+            held_decisions.iter().all(|(_, _, decision)| *decision == (None, false)),
+            "held keys decided the modal after refocus (key, raw repeat, decision): {held_decisions:?}"
+        );
     }
 
     /// Stint 1513: every destructive action in "Unsaved changes" (Discard by
