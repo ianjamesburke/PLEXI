@@ -5,7 +5,7 @@
 # high. A worktree is removed only when ALL of these hold:
 #   1. Its checked-out branch has a MERGED PR (not just "no open PR" — that
 #      would also match pre-PR dev work and abandoned/closed PRs).
-#   2. Working tree is clean: `git status --porcelain` is empty (covers
+#   2. Working tree is clean (checked first, for every worktree): `git status --porcelain` is empty (covers
 #      uncommitted tracked files AND untracked files).
 #   3. Zero unpushed commits: every local commit is on the remote. If the
 #      upstream ref can't be resolved, the work is unverifiable → keep.
@@ -41,11 +41,16 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 
 # One network call: every PR's head branch + state.
-pr_states="$(gh pr list --state all --limit 1000 --json headRefName,state \
-  --jq '.[] | "\(.headRefName)\t\(.state)"' 2>/dev/null || true)"
+pr_states="$(gh pr list --state all --limit 1000 --json headRefName,state,headRefOid \
+  --jq '.[] | "\(.headRefName)\t\(.state)\t\(.headRefOid)"' 2>/dev/null || true)"
 
 branch_states() {
   awk -F'\t' -v b="$1" '$1 == b { print $2 }' <<<"$pr_states"
+}
+
+# Head commits of this branch's MERGED PRs.
+merged_oids() {
+  awk -F'\t' -v b="$1" '$1 == b && $2 == "MERGED" { print $3 }' <<<"$pr_states"
 }
 
 removed=0
@@ -58,6 +63,19 @@ for wt_path in "$WORKTREES_DIR"/feature/* "$WORKTREES_DIR"/fix/* "$WORKTREES_DIR
   branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
   if [[ -z "$branch" ]]; then
     echo "  keep  $name (could not determine branch)"
+    ((kept++)) || true
+    continue
+  fi
+
+  # Gate 0: live work is never reaped, whatever the PR state.
+  if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
+    echo "  KEEP  $name  ($branch — uncommitted or untracked changes)"
+    ((kept++)) || true
+    continue
+  fi
+  if git -C "$wt_path" merge-base --is-ancestor HEAD origin/alpha 2>/dev/null \
+    && ! grep -qx "$(git -C "$wt_path" rev-parse HEAD)" <<<"$(merged_oids "$branch")"; then
+    echo "  KEEP  $name  ($branch — no commits of its own, no merged PR)"
     ((kept++)) || true
     continue
   fi
@@ -80,9 +98,12 @@ for wt_path in "$WORKTREES_DIR"/feature/* "$WORKTREES_DIR"/fix/* "$WORKTREES_DIR
     continue
   fi
 
-  # Gate 2: working tree must be clean.
-  if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
-    echo "  KEEP  $name  ($branch — MERGED but working tree is DIRTY; investigate)"
+  # Gate 2: a merged PR must have this exact commit as its head. A branch
+  # with no commits of its own (tip on origin/alpha) or one that reuses the
+  # name of an old merged PR is not proven merged.
+  head_oid="$(git -C "$wt_path" rev-parse HEAD)"
+  if ! grep -qx "$head_oid" <<<"$(merged_oids "$branch")"; then
+    echo "  KEEP  $name  ($branch — MERGED PR head differs from local HEAD; not proven merged)"
     ((kept++)) || true
     continue
   fi
