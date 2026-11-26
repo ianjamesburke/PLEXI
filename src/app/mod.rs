@@ -48,6 +48,7 @@ pub(crate) mod pane_wait;
 pub mod permissions;
 pub mod plexi_descriptor;
 mod plugin_call;
+mod plugin_commands;
 pub(crate) mod plugin_migration;
 pub(crate) mod python_env;
 pub(crate) mod quit;
@@ -5080,6 +5081,7 @@ impl PlexiApp {
             Action::RunUserCommand(name, scope) => {
                 self.queue_registered_user_command(name, scope, invocation);
             }
+            Action::RunPluginCommand(target) => self.run_plugin_command(target, input.origin),
         }
     }
 

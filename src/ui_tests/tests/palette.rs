@@ -1648,3 +1648,170 @@ fn palette_agents_stop_with_preview() {
         .is_some());
     h.save_screenshot(&evidence_png!()).expect("render failed");
 }
+
+/// A view that records the events the host delivers to it.
+struct PluginCommandRecorder(std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>);
+
+impl crate::app::view_trait::View for PluginCommandRecorder {
+    fn type_id(&self) -> &'static str {
+        "plugin-command-recorder"
+    }
+
+    fn display_name(&self) -> String {
+        "Palette Spell".to_string()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &crate::app::view_trait::ViewRenderContext<'_>) {}
+
+    fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+        self.0.lock().expect("recorder events").push(event);
+    }
+}
+
+const SPELL_PLUGIN: &str = "palette-spell";
+const SPELL_ROW: &str = "commands:plugin/palette-spell.check";
+
+/// Install a workspace plugin that contributes one manifest command.
+fn install_spell_plugin(root: &std::path::Path) {
+    let plugin = crate::app::registry::workspace_plugins_dir(root).join(SPELL_PLUGIN);
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(
+        plugin.join("manifest.toml"),
+        r#"schema_version = 2
+[plugin]
+id = "palette-spell"
+name = "Palette Spell"
+version = "0.1.0"
+[runtime]
+kind = "python"
+entry = "main.py"
+[[contributes.views]]
+id = "palette-spell.main"
+default = true
+[[contributes.commands]]
+id = "palette-spell.check"
+handler = "check_document"
+"#,
+    )
+    .unwrap();
+    std::fs::write(plugin.join("main.py"), "print('spell fixture')\n").unwrap();
+    crate::host::plugin_admission::trust_workspace_plugins_for_test(root);
+}
+
+/// Open a recorder view of the spell plugin beside the root and focus it.
+fn open_spell_view(
+    h: &mut PlexiUiHarness,
+    root: &std::path::Path,
+) -> (
+    PaneId,
+    std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
+) {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let pane_id = h.with_app_mut(|app| {
+        let pane_id = app.host.alloc_pane_id();
+        let win = &mut app.windows[app.active_window];
+        win.panes
+            .insert(
+                pane_id,
+                Pane::View(Box::new(ViewPane {
+                    incarnation: Default::default(),
+                    pip_status: None,
+                    id: pane_id,
+                    runtime: ViewRuntime::Builtin(Box::new(PluginCommandRecorder(events.clone()))),
+                    workspace_root: root.to_path_buf(),
+                    permissions: PluginPermissions::builtin(),
+                    manifest_id: SPELL_PLUGIN.to_string(),
+                    name: "Palette Spell".to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                })),
+            )
+            .unwrap();
+        let tile = win.tree.tiles.insert_pane(pane_id);
+        let root_tile = win.tree.root.expect("window has a root pane");
+        win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(vec![root_tile, tile]));
+        win.focused_pane = Some(tile);
+        pane_id
+    });
+    h.step();
+    (pane_id, events)
+}
+
+fn spell_actions(
+    events: &std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
+) -> Vec<String> {
+    events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            crate::protocol::PlexiEvent::Action { action, .. } => Some(action.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn palette_lists_plugin_commands_only_while_their_view_is_open() {
+    let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
+    let root = root_context_in_workspace(&mut h).canonicalize().unwrap();
+    install_spell_plugin(&root);
+    add_focused_pane(&mut h);
+
+    let keys = palette_result_keys(&mut h, "palette-spell");
+    assert!(
+        !keys.iter().any(|key| key == SPELL_ROW),
+        "no view open, so no plugin command: {keys:?}"
+    );
+    h.with_app_mut(|app| app.close_command_palette());
+    h.step();
+
+    let (first, first_events) = open_spell_view(&mut h, &root);
+    let (second, second_events) = open_spell_view(&mut h, &root);
+    let keys = palette_result_keys(&mut h, "palette-spell");
+    assert_eq!(
+        keys.iter().filter(|key| *key == SPELL_ROW).count(),
+        1,
+        "one row per command, however many views: {keys:?}"
+    );
+    h.with_app_mut(|app| app.close_command_palette());
+    h.step();
+
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+    h.run_steps(2);
+    type_palette_text(&mut h, "palette-spell.check");
+    h.run_steps(2);
+    assert_eq!(palette_picker(&h).2.as_deref(), Some(SPELL_ROW));
+    h.with_app(|app| {
+        let row = app
+            .host
+            .picker(crate::host::picker::PickerId::Palette)
+            .unwrap()
+            .rows()
+            .iter()
+            .find(|row| row.title == "palette-spell.check")
+            .expect("plugin command row");
+        assert_eq!(row.secondary, "Palette Spell", "row names its owner plugin");
+    });
+    h.save_screenshot(&evidence_png!()).expect("render failed");
+    h.harness().key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(
+        spell_actions(&second_events),
+        ["check_document"],
+        "the focused view {second} runs the handler"
+    );
+    assert!(
+        spell_actions(&first_events).is_empty(),
+        "the unfocused view {first} receives nothing"
+    );
+}

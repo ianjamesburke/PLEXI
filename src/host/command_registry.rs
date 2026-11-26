@@ -261,6 +261,41 @@ impl DiscoveredCommand {
     }
 }
 
+/// A manifest command bound to the open view that will run its handler.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginCommandTarget {
+    pub(crate) command: String,
+    pub(crate) handler: String,
+    pub(crate) plugin: String,
+    pub(crate) pane_id: u64,
+}
+
+/// The manifest commands `plugin` offers through its open view `pane_id`.
+/// The row shows the command ID with the owner plugin's name.
+pub(crate) fn plugin_view_commands(
+    plugin: &InstalledPlugin,
+    pane_id: u64,
+) -> impl Iterator<Item = DiscoveredCommand> + '_ {
+    let owner = &plugin.manifest;
+    plugin
+        .contributes
+        .commands
+        .iter()
+        .map(move |command| DiscoveredCommand {
+            action: Action::RunPluginCommand(PluginCommandTarget {
+                command: command.id.clone(),
+                handler: command.handler.clone(),
+                plugin: owner.id.clone(),
+                pane_id,
+            }),
+            name: command.id.clone().into(),
+            description: owner.name.clone().into(),
+            search_text: format!("{} {} {}", command.id, owner.name, owner.id)
+                .to_lowercase()
+                .into(),
+        })
+}
+
 pub(crate) fn discover_commands<'a>(
     apps: &'a PluginRegistry,
     workspace: Option<&'a Path>,

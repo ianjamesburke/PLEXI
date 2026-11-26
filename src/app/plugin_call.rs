@@ -1324,6 +1324,15 @@ pub(crate) fn keychain_recovery_actions(
     ]
 }
 
+/// A view action name that reads as an approval decision. Synthetic input
+/// never delivers one.
+pub(crate) fn is_approval_action(action: &str) -> bool {
+    let name = action.to_ascii_lowercase();
+    ["allow", "approve", "resolve", "grant", "deny", "revoke"]
+        .iter()
+        .any(|word| name.contains(word))
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1470,3 +1479,4 @@ mod recommend_tests {
         assert!(ask_recommend_error(&good).is_none());
     }
 }
+

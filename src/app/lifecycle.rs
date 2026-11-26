@@ -4645,12 +4645,7 @@ impl PlexiApp {
                     "pane_ipc: kind=send_pane_action pane_id={pane_id} action={action:?} argc={}",
                     args.len()
                 );
-                let approval_verb = {
-                    let name = action.to_ascii_lowercase();
-                    ["allow", "approve", "resolve", "grant", "deny", "revoke"]
-                        .iter()
-                        .any(|word| name == *word || name.contains(word))
-                };
+                let approval_verb = super::plugin_call::is_approval_action(action);
                 if approval_verb
                     && self.refuse_synthetic_approval(
                         &origin,

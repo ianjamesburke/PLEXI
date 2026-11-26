@@ -1143,11 +1143,17 @@ impl PlexiApp {
             .or(home.as_deref())
             .unwrap_or(std::path::Path::new("/"));
 
+        let invoking = self.palette_sources.invocation.as_ref().map(|i| i.focus);
+        let plugin_commands = self.context_plugin_commands(
+            invoking.map_or(active_ctx_id, |focus| focus.context_id),
+            invoking.and_then(|focus| focus.pane_id),
+        );
         let registered = discover_commands(
             self.registries.view_for_root(rescan_cwd),
             focused_workspace_root.as_deref(),
             &self.palette_commands,
-        );
+        )
+        .chain(plugin_commands);
         // A ready build has a pinned, versioned row. An explicit search can
         // still explain why the restart command is unavailable before then.
         let show_restart = !query.is_empty() && self.update_status.ready().is_none();

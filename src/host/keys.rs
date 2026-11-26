@@ -136,6 +136,9 @@ pub enum Action {
     /// Run a user-authored command from `commands.toml` (bound via `[keys]` `"<chord>" = "run:<name>"`).
     /// A discovered row also carries the scope of the definition it displayed.
     RunUserCommand(String, Option<UserCommandScope>),
+    /// Run a plugin's `[[contributes.commands]]` handler on the live view that
+    /// offered it. Discovery captures the view; dispatch revalidates it.
+    RunPluginCommand(PluginCommandTarget),
 }
 
 const fn cmd() -> egui::Modifiers {
@@ -182,7 +185,9 @@ const fn cmd_shift_ctrl() -> egui::Modifiers {
 }
 #[path = "command_registry.rs"]
 mod command_registry;
-pub(crate) use command_registry::{commands, discover_commands, DiscoveredCommand};
+pub(crate) use command_registry::{
+    commands, discover_commands, plugin_view_commands, DiscoveredCommand, PluginCommandTarget,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandTarget {
@@ -367,6 +372,7 @@ impl Action {
         match self {
             Self::LaunchApp(id, _) => Some(format!("view/{id}")),
             Self::RunUserCommand(name, _) => Some(format!("run/{name}")),
+            Self::RunPluginCommand(target) => Some(format!("plugin/{}", target.command)),
             _ => None,
         }
     }
