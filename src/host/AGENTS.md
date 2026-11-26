@@ -141,3 +141,10 @@ uses the existing focus stack. Route desktop decisions through
 `PermissionMonitor::approve_pending`; its decision lock rejects duplicate answers
 before grant or ledger mutation. Keybinding behavior is documented in
 `docs/CONFIG.md`; never route pane-injected keys into desktop approvals.
+
+## Inter-Pane Communication
+
+Three disjoint planes with sanctioned transports:
+- **Structured app-to-app data → event bus:** `DeclareEventStreams` / `EmitEvent` / `SubscribeAppEvents` (or `PipeOpenDirected` for exclusive duplex JSON channel).
+- **Bulk binary data → typed pipes** (`src/host/typed_pipes.rs`): Unix socket + ring buffer for audio/video/MIDI frames.
+- **Human-trust PTY injection → `plexi pane send`:** For human terminal driving only. Never route app-to-app data through PTY injection.

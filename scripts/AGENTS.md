@@ -46,6 +46,10 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 - **`just merge-pr` must run from the canonical alpha checkout.** Stint state lives in ignored `.stint/` files that feature worktrees may not have. If a PR body references stint IDs, running merge closeout from a feature worktree can fail before merge with missing `.stint/tasks`; rerun `just merge-pr` from the main checkout on `alpha`.
 - **Auto-committing scripts:** `cargo run -p gen_config_docs > website/src/content/docs/config.md` to regenerate config docs without `just`'s auto-commit/push.
 - **Runtime topology & channels:** Agent panes run under `plexi-beta`. To target a specific channel, always use the channel-named shim (`plexi-alpha`, `plexi-pr-<N>`) or explicit `env PLEXI_CHANNEL=<ch> plexi ...` — never rely on bare `plexi` or inherited `PLEXI_SOCKET`.
+- **Stale git index:** Run `git update-index --refresh` if `git status --porcelain` shows false-dirty files.
+- **Parallel worktrees:** When rebasing same-wave branch conflicts on shared files, keep the most complete fix.
+- **Alpha divergence before worktree:** `git fetch` and check `git log origin/alpha..HEAD` before `wtp add`.
+- **Bundle rebase conflicts:** When a multi-issue bundle conflicts because `alpha` already absorbed one issue's changes, take HEAD for those sections, keep only the branch's additive changes, and build-verify before continuing each rebase step.
 
 ## Child DOX Index
 
