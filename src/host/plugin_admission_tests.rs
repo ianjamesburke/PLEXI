@@ -1748,6 +1748,52 @@ fn a_personal_plugin_named_after_a_bundled_view_does_not_capture_its_open() {
     assert!(origin.is_bundled());
 }
 
+#[test]
+fn bundled_view_name_is_reserved_when_the_owner_is_missing() {
+    let (mut h, plugins) = harness_with_bundled(&[]);
+    write_plugin(&plugins, "todo.main");
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
+    let root = h.workspace_root();
+    let registry = h.app.registries.view_for_root(&root);
+    assert!(registry.get("todo").is_none());
+    assert!(registry.get("todo.main").is_some());
+
+    let context_id = h.app.windows[h.app.active_window].context_id;
+    assert_eq!(
+        h.app.resolve_launch_id(context_id, "todo.main"),
+        Ok("todo".into())
+    );
+    let error = h
+        .app
+        .launch_view_by_id_with_layout("todo.main", None, &[], Some(root))
+        .unwrap_err();
+    assert!(error.contains("plugin 'todo' not found"), "{error}");
+}
+
+#[test]
+fn bundled_view_name_is_reserved_when_the_owner_is_skipped() {
+    let (mut h, plugins) = harness_with_bundled(&["todo"]);
+    std::fs::write(plugins.join("todo/main.py"), "print('changed')\n").unwrap();
+    write_plugin(&plugins, "todo.main");
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(&plugins);
+    let root = h.workspace_root();
+    let registry = h.app.registries.view_for_root(&root);
+    assert!(registry.get("todo").is_none());
+    assert!(registry.skipped_reason("todo").is_some());
+    assert!(registry.get("todo.main").is_some());
+
+    let context_id = h.app.windows[h.app.active_window].context_id;
+    assert_eq!(
+        h.app.resolve_launch_id(context_id, "todo.main"),
+        Ok("todo".into())
+    );
+    let error = h
+        .app
+        .launch_view_by_id_with_layout("todo.main", None, &[], Some(root))
+        .unwrap_err();
+    assert!(error.contains("plugin install local:todo"), "{error}");
+}
+
 /// Scopes 5 and 6: an open the admission refuses leaves no capability rows,
 /// by path or by id; an id open whose folder now holds another plugin is
 /// refused before anything is granted under either id.

@@ -3322,9 +3322,9 @@ impl PlexiApp {
         )
     }
 
-    /// The id a launch of `id` in context `context_id` dispatches on: the
-    /// owning plugin of an installed plugin or contributed view, else `id`
-    /// itself (a built-in). Callers that gate on the handler decide on this.
+    /// The id a launch of `id` in context `context_id` dispatches on. A
+    /// contributed view resolves to its owner, including an unavailable
+    /// bundled owner. Built-in and unknown ids resolve to themselves.
     pub(crate) fn resolve_launch_id(
         &mut self,
         context_id: u64,
@@ -3335,21 +3335,25 @@ impl PlexiApp {
             return Ok(id.to_string());
         }
         let registry = self.registries.view_for_context(context_id, &self.router);
-        let contributes = |plugin: &&crate::app::registry::InstalledPlugin| {
-            plugin.contributes.views.iter().any(|view| view.id == id)
+        let installed = if let Some(owner) = crate::cli::install_host::bundled_view_owner(id) {
+            let Some(plugin) = registry.get(owner) else {
+                // Keep routing to the owner so the launcher can rescan and
+                // surface the bundled plugin's missing or skipped error.
+                log::info!(
+                    "view_open: reserved view_id={} plugin_id={owner} unavailable in context_id={context_id}",
+                    crate::host::guest_text::shown(id)
+                );
+                return Ok(owner.to_string());
+            };
+            Some(plugin)
+        } else {
+            registry.get(id).or_else(|| {
+                registry
+                    .list()
+                    .into_iter()
+                    .find(|plugin| plugin.contributes.views.iter().any(|view| view.id == id))
+            })
         };
-        // A bundled plugin's contributed view names are reserved like its id:
-        // an exact personal plugin id cannot take one (stint 1733). The
-        // registry indexes a bundled id only from its verified profile root.
-        let plugins = registry.list();
-        let bundled_view = plugins
-            .iter()
-            .copied()
-            .filter(contributes)
-            .find(|plugin| crate::cli::install_host::is_bundled_plugin_id(&plugin.manifest.id));
-        let installed = bundled_view
-            .or_else(|| registry.get(id))
-            .or_else(|| plugins.iter().copied().find(contributes));
         match installed {
             Some(plugin) => {
                 let view = plugin.contributes.resolve_view(&plugin.manifest.id, id)?;
