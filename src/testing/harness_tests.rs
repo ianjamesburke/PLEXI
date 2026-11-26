@@ -3766,20 +3766,14 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
 
 // -- QuickNote paste (#1637) -----------------------------------------------
 
-/// Regression guard for #1637: Cmd+V (paste) while QuickNote is open must
-/// land in `quick_note_text`, not fall through to the terminal pane behind
-/// the overlay.
-///
-/// The fix: `draw_quick_note_modal` explicitly consumes `egui::Event::Paste`
-/// via `ctx.input_mut` and inserts the text at the cursor position, rather
-/// than relying on the TextEdit's internal event processing (which depends on
-/// focus being fully settled by the time the TextEdit renders).
+/// Regression guard for paste ownership over a zoomed pane.
 #[test]
-fn quick_note_paste_inserts_into_note_text() {
+fn quick_note_paste_inserts_into_note_text_over_zoomed_pane() {
     let mut h = HostHarness::new();
 
-    // Open QuickNote.
-    h.app.push_focus_layer(crate::app::FocusKind::QuickNote);
+    let pane = h.add_test_pane();
+    zoom_focused_pane_through_shortcut(&mut h, pane);
+    h.app.open_quick_note_modal();
 
     // Run two idle frames so the overlay and focus fully settle.
     h.run_frames(2);
@@ -3798,6 +3792,39 @@ fn quick_note_paste_inserts_into_note_text() {
         h.app.quick_note_text, "hello world",
         "Pasted text must appear in quick_note_text after a Paste event with QuickNote open"
     );
+}
+
+// A snippet expander can deliver all of its edits before the next UI pass.
+#[test]
+fn quick_note_backspaces_before_paste_replace_the_trigger() {
+    let mut h = HostHarness::new();
+    h.app.open_quick_note_modal();
+    h.run_frames(2);
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Text("keep ;sig".into())],
+        ..Default::default()
+    });
+    assert_eq!(h.app.quick_note_text, "keep ;sig");
+
+    let mut events = Vec::new();
+    for _ in 0..4 {
+        for pressed in [true, false] {
+            events.push(egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+    }
+    events.push(egui::Event::Paste("expanded".into()));
+    h.frame(egui::RawInput {
+        events,
+        ..Default::default()
+    });
+
+    assert_eq!(h.app.quick_note_text, "keep expanded");
 }
 
 /// After a paste event with QuickNote open, `quick_note_text` must be
@@ -3822,6 +3849,7 @@ fn quick_note_paste_consumed_from_queue() {
     let ctx = h.app.ctx.clone();
     h.app.draw_quick_note_modal(&ctx);
 
+    assert_eq!(h.app.quick_note_text, "test");
     // Paste event must be gone.
     h.app.ctx.input(|i| {
         assert!(
