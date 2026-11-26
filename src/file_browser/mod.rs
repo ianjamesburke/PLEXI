@@ -1200,6 +1200,9 @@ impl FileBrowserView {
     }
 
     fn extend_selection_to(&mut self, visible_idx: usize) {
+        if self.selected != visible_idx {
+            self.open_outside_folder = false;
+        }
         let anchor = self.selection_anchor.unwrap_or(self.selected);
         self.multi_selected.clear();
         let (start, end) = if anchor <= visible_idx {
