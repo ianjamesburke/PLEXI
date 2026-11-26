@@ -91,6 +91,35 @@ pub fn workspace_target(cwd: &Path) -> Result<Option<SecretTarget>, String> {
     Ok(WorkspaceConfig::load(&root)?.map(|cfg| SecretTarget::Workspace { id: cfg.id, root }))
 }
 
+/// [`workspace_target`] for a caller that has not consented yet. A parser
+/// diagnostic quotes the offending source line, so the error and the log name
+/// the file and never its contents.
+fn consent_workspace_target(cwd: &Path) -> Result<Option<SecretTarget>, String> {
+    let Some(root) = crate::app::registry::resolve_workspace_root(cwd) else {
+        return Ok(None);
+    };
+    WorkspaceConfig::load(&root)
+        .map(|cfg| {
+            cfg.map(|cfg| SecretTarget::Workspace {
+                id: cfg.id,
+                root: root.clone(),
+            })
+        })
+        .map_err(|_| {
+            let file = root
+                .join(crate::config::workspace_channel_dir())
+                .join("workspace.toml");
+            log::warn!(
+                "secret_inventory: workspace config {} is unreadable or invalid",
+                file.display()
+            );
+            format!(
+                "The workspace config {} is unreadable or invalid. Fix it, then rerun.",
+                file.display()
+            )
+        })
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum SkippedSecrets {
@@ -164,7 +193,7 @@ impl InventoryScope {
         let folders = if global_only {
             None
         } else {
-            if let Some(SecretTarget::Workspace { id, root }) = workspace_target(cwd)? {
+            if let Some(SecretTarget::Workspace { id, root }) = consent_workspace_target(cwd)? {
                 let root = crate::platform::path::canonical_or_self(&root);
                 if let Some(pane_root) = pane_root.filter(|pane_root| !root.starts_with(pane_root))
                 {

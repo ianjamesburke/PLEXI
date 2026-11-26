@@ -14,6 +14,15 @@ pub(in crate::app) struct Inventory {
     global: bool,
     context_id: u64,
     skipped: Vec<SkippedSecrets>,
+    /// Set when the pane's folder-secret isolation check is still owed. It
+    /// enumerates the store, so the worker settles it before consent.
+    folder_check: Option<PaneContext>,
+}
+
+#[derive(Debug)]
+struct PaneContext {
+    root: PathBuf,
+    name: Option<String>,
 }
 
 impl PlexiApp {
@@ -44,6 +53,7 @@ impl PlexiApp {
                 global: false,
                 context_id: ctx.context_id,
                 skipped: Vec::new(),
+                folder_check: None,
             },
             origin,
             response_file,
@@ -75,6 +85,7 @@ impl PlexiApp {
             global,
             context_id: 0,
             skipped: Vec::new(),
+            folder_check: None,
         };
         if let Some(pane) = origin.socket_caller().and_then(SocketCaller::pane) {
             let Some(root) = self.pane_context_authority_root(pane.visible_pane) else {
@@ -83,21 +94,21 @@ impl PlexiApp {
                     Err("This pane has no resolvable context root.".into()),
                 );
             };
-            if !global && !self.scope_may_access(&root, &inventory.cwd) {
-                inventory.skipped.push(SkippedSecrets::OutsidePaneContext {
-                    scope: "workspace".into(),
-                    path: inventory.cwd.clone(),
-                    pane_context_root: root.clone(),
-                    pane_context_name: self
+            if !global {
+                let context = PaneContext {
+                    root: root.clone(),
+                    name: self
                         .router
                         .iter()
                         .find(|ctx| ctx.context_id == pane.context_id)
                         .map(|ctx| ctx.name.displayed().to_owned()),
-                });
-                inventory.global = true;
-            }
-            if !inventory.global {
-                inventory.root.clone_from(&root);
+                };
+                if self.scope_may_access_by_config(&root, &inventory.cwd) {
+                    inventory.root.clone_from(&root);
+                    inventory.folder_check = Some(context);
+                } else {
+                    inventory.leave_pane_context(context);
+                }
             }
             inventory.pane_root = Some(root);
             inventory.context_id = pane.context_id;
@@ -149,31 +160,38 @@ impl PlexiApp {
         let principal = pane.principal();
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir())?;
         let posture = self.pane_ceiling(pane.terminal_pane)?;
-        let call = format!("secret-list-{}", uuid::Uuid::new_v4());
-        let input = json!({"path": inventory.root}).to_string();
-        let admission = monitor.admit_for_use(
-            inventory.admit_request(&call, &input, &principal, "plexi-cli"),
-            posture.as_ref(),
-        );
-        match admission {
-            UseDecision::Allowed { .. } => {}
-            UseDecision::Required { pending_request_id } => return Err(format!(
-                "Missing secret.list grant. Approve request {pending_request_id} in Needs you, then rerun this command."
-            )),
-            UseDecision::Denied => return Err(
-                "Missing secret.list grant. Review the denial in Permissions and approve a new request in Needs you.".into()
-            ),
-        }
         let pane_scope = AdmittedScope::of(&pane.authority);
         let response_file = response_file.to_owned();
         spawn_secret_worker("secret-list", move || {
+            let mut inventory = inventory;
+            inventory.settle_folder_check();
+            // The approval names this scope, and the scan reuses it.
+            let scope = match inventory.resolve_scope() {
+                Ok(scope) => scope,
+                Err(error) => return inventory_reply(&response_file, Err(error)),
+            };
+            let call = format!("secret-list-{}", uuid::Uuid::new_v4());
+            let input = inventory.consent_input(None, &scope);
+            let admission = monitor.admit_for_use(
+                inventory.admit_request(&call, &input, &principal, "plexi-cli"),
+                posture.as_ref(),
+            );
+            match admission {
+                UseDecision::Allowed { .. } => {}
+                UseDecision::Required { pending_request_id } => return inventory_reply(&response_file, Err(format!(
+                    "Missing secret.list grant. Approve request {pending_request_id} in Needs you, then rerun this command."
+                ))),
+                UseDecision::Denied => return inventory_reply(&response_file, Err(
+                    "Missing secret.list grant. Review the denial in Permissions and approve a new request in Needs you.".into()
+                )),
+            }
             release_inventory_reply(
                 &monitor,
                 &call,
                 &principal,
                 admission,
                 &response_file,
-                || inventory.resolve_scope(),
+                || Ok(scope),
                 || pane_scope.current().map(|_| ()),
             );
         })
@@ -293,14 +311,41 @@ fn release_inventory_reply(
 }
 
 impl Inventory {
-    fn outside_input(&self, caller: &str, scope: &InventoryScope) -> String {
-        json!({
+    fn consent_input(&self, caller: Option<&str>, scope: &InventoryScope) -> String {
+        let mut input = json!({
             "path": self.root,
             "name": "secret names and usage metadata",
             "scope": scope.disclosure(),
-            "caller": caller,
-        })
-        .to_string()
+        });
+        if let Some(caller) = caller {
+            input["caller"] = caller.into();
+        }
+        input.to_string()
+    }
+
+    /// The listing falls back to global names when `cwd` is outside the pane's
+    /// context authority.
+    fn leave_pane_context(&mut self, context: PaneContext) {
+        self.skipped.push(SkippedSecrets::OutsidePaneContext {
+            scope: "workspace".into(),
+            path: self.cwd.clone(),
+            pane_context_root: context.root,
+            pane_context_name: context.name,
+        });
+        self.global = true;
+        self.root.clone_from(&self.cwd);
+    }
+
+    fn settle_folder_check(&mut self) {
+        if let Some(context) = self.folder_check.take() {
+            if crate::app::nested_folder_secret_shadows(&context.root, &self.cwd) {
+                log::info!(
+                    "secret_list: {} is isolated by a nested folder secret",
+                    self.cwd.display()
+                );
+                self.leave_pane_context(context);
+            }
+        }
     }
 
     fn admit_request<'a>(
@@ -363,7 +408,7 @@ impl SecretRequest {
         };
         let principal = self.subject.principal();
         let call = format!("secret-list-{}", uuid::Uuid::new_v4());
-        let input = inventory.outside_input(caller, &scope);
+        let input = inventory.consent_input(Some(caller), &scope);
         let req = inventory.admit_request(
             &call,
             &input,

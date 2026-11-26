@@ -95,6 +95,32 @@ pub(crate) fn is_finished_script_session(session: &crate::workspace::SavedAgentS
         )
 }
 
+/// Check 4 of [`PlexiApp::scope_may_access`]: a folder secret bound below
+/// `pane_root` and above `target_path` isolates that subtree. Enumerates the
+/// folder store, so it never runs on the event loop for a socket request.
+pub(crate) fn nested_folder_secret_shadows(
+    pane_root: &std::path::Path,
+    target_path: &std::path::Path,
+) -> bool {
+    let target = crate::platform::path::canonical_or_self(target_path);
+    if target == pane_root {
+        return false;
+    }
+    let host = match crate::broker::custody::host_process() {
+        Ok(host) => host,
+        Err(error) => {
+            log::warn!("context scope: {error}");
+            return true;
+        }
+    };
+    crate::workspace::secrets::list_folder_secrets(crate::workspace::secrets::folder_store(&host))
+        .iter()
+        .any(|meta| {
+            let folder = crate::platform::path::canonical_or_self(&meta.folder);
+            folder != pane_root && folder.starts_with(pane_root) && target.starts_with(&folder)
+        })
+}
+
 /// Build a shell command string from an args list for passing to `zsh -c <cmd>`.
 /// A single arg is used as-is (it's already a shell expression — CLI path).
 /// Multiple args are joined with shell quoting so word-splitting is preserved.
@@ -2628,53 +2654,48 @@ impl PlexiApp {
         pane_root: &std::path::Path,
         target_path: &std::path::Path,
     ) -> bool {
+        self.scope_may_access_by_config(pane_root, target_path)
+            && !nested_folder_secret_shadows(pane_root, target_path)
+    }
+
+    /// [`Self::scope_may_access`] without the folder-secret check, which
+    /// enumerates the store. A caller on the event loop runs this, then
+    /// [`nested_folder_secret_shadows`] on a worker.
+    pub(crate) fn scope_may_access_by_config(
+        &self,
+        pane_root: &std::path::Path,
+        target_path: &std::path::Path,
+    ) -> bool {
         let target_canon = crate::platform::path::canonical_or_self(target_path);
         if !target_canon.starts_with(pane_root) {
             return false;
         }
-        if target_canon != pane_root {
-            // Check 1: another context in the router is rooted at a deeper
-            // directory under `pane_root` that contains `target_canon`.
-            let shadowed_by_nested_context = self.router.iter().any(|ctx| {
-                let ctx_root = crate::platform::path::canonical_or_self(&ctx.root);
-                ctx_root != pane_root
-                    && ctx_root.starts_with(pane_root)
-                    && target_canon.starts_with(&ctx_root)
-            });
-            if shadowed_by_nested_context {
+        if target_canon == pane_root {
+            return true;
+        }
+        // Check 1: another context in the router is rooted at a deeper
+        // directory under `pane_root` that contains `target_canon`.
+        let shadowed_by_nested_context = self.router.iter().any(|ctx| {
+            let ctx_root = crate::platform::path::canonical_or_self(&ctx.root);
+            ctx_root != pane_root
+                && ctx_root.starts_with(pane_root)
+                && target_canon.starts_with(&ctx_root)
+        });
+        if shadowed_by_nested_context {
+            return false;
+        }
+        // Check 2: workspace config resolution on disk resolves `target_canon`
+        // to a nested workspace root different from `pane_root`.
+        if let Some(ws) = crate::app::registry::resolve_workspace_root(&target_canon) {
+            if crate::platform::path::canonical_or_self(&ws) != pane_root {
                 return false;
             }
-            // Check 2: workspace config resolution on disk resolves `target_canon`
-            // to a nested workspace root different from `pane_root`.
-            if let Some(ws) = crate::app::registry::resolve_workspace_root(&target_canon) {
-                if crate::platform::path::canonical_or_self(&ws) != pane_root {
-                    return false;
-                }
-            }
-            // Check 3: agent lookup root or folder secrets scope at a nested path.
-            if let Some(agent_ws) =
-                crate::app::registry::resolve_agent_lookup_workspace_root(&target_canon)
-            {
-                if crate::platform::path::canonical_or_self(&agent_ws) != pane_root {
-                    return false;
-                }
-            }
-            let host = match crate::broker::custody::host_process() {
-                Ok(host) => host,
-                Err(error) => {
-                    log::warn!("context scope: {error}");
-                    return false;
-                }
-            };
-            let nested_folder_secret = crate::workspace::secrets::list_folder_secrets(
-                crate::workspace::secrets::folder_store(&host),
-            )
-            .iter()
-            .any(|meta| {
-                let f = crate::platform::path::canonical_or_self(&meta.folder);
-                f != pane_root && f.starts_with(pane_root) && target_canon.starts_with(&f)
-            });
-            if nested_folder_secret {
+        }
+        // Check 3: agent lookup root at a nested path.
+        if let Some(agent_ws) =
+            crate::app::registry::resolve_agent_lookup_workspace_root(&target_canon)
+        {
+            if crate::platform::path::canonical_or_self(&agent_ws) != pane_root {
                 return false;
             }
         }

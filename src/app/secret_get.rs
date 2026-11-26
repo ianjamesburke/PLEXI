@@ -1033,6 +1033,95 @@ mod list_tests {
         assert_eq!(value_reads, 0);
     }
 
+    fn pending_secret_list(monitor: &PermissionMonitor) -> crate::broker::gate::PendingView {
+        monitor
+            .host_records()
+            .pending()
+            .into_iter()
+            .find(|row| row.tool == "secret.list")
+            .unwrap()
+    }
+
+    #[test]
+    fn pane_inventory_approval_names_resolved_scopes() {
+        let mut h = HostHarness::new();
+        let root = h.workspace_root().canonicalize().unwrap();
+        secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let pane = h.add_focused_terminal();
+        let peer = PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        for (cwd, workspace) in [(root.as_path(), true), (outside.path(), false)] {
+            let frame = serde_json::json!({"type":"secret_list","cwd":cwd,"global":false});
+            let refused = send(&mut h, frame.clone(), Some(peer.clone()));
+            assert_eq!(refused["error_code"], "permission_denied", "{refused}");
+            let ask = pending_secret_list(&monitor);
+            // The approval card names this resource.
+            let summary = ask.resource_id.as_deref().unwrap_or_default();
+            assert!(summary.contains("usage metadata"), "{summary}");
+            assert!(summary.contains("global"), "{summary}");
+            assert_eq!(
+                summary.contains(&format!("workspace: {}", root.display())),
+                workspace,
+                "{summary}"
+            );
+            monitor
+                .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
+                .unwrap();
+            let allowed = send(&mut h, frame, Some(peer.clone()));
+            assert!(allowed["entries"].is_array(), "the retry must match: {allowed}");
+            super::worker_test::join();
+        }
+    }
+
+    #[test]
+    fn pane_subdirectory_inventory_keeps_the_store_off_the_host_thread() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let peer = PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+        let cwd = h.workspace_root().join("sub");
+        std::fs::create_dir(&cwd).unwrap();
+        let frame = serde_json::json!({"type":"secret_list","cwd":cwd,"global":false});
+        secrets::take_test_store_calls();
+        let refused = send(&mut h, frame.clone(), Some(peer.clone()));
+        assert_eq!(refused["error_code"], "permission_denied", "{refused}");
+        assert_eq!(
+            secrets::take_test_store_calls(),
+            0,
+            "a subdirectory listing opened the store on the host thread"
+        );
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        monitor
+            .approve_pending(&pending_secret_list(&monitor).pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        let allowed = send(&mut h, frame, Some(peer));
+        assert!(allowed["entries"].is_array(), "{allowed}");
+        assert_eq!(secrets::take_test_store_calls(), 0);
+        assert!(super::worker_test::join().0 > 0, "the worker must scan");
+    }
+
+    #[test]
+    fn invalid_workspace_config_is_sanitized_before_consent() {
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("workspace.toml");
+        std::fs::write(&file, "id = \"ws\"\nleak = not-for-output\n").unwrap();
+        let peer = PeerWitness::for_live_pids(&[std::process::id()]);
+        let frame = serde_json::json!({"type":"secret_list","cwd":root.path(),"global":false});
+        let reply = send(&mut h, frame, Some(peer));
+        let error = reply["error"].as_str().unwrap_or_default();
+        assert!(error.contains("workspace.toml"), "{reply}");
+        assert!(!reply.to_string().contains("not-for-output"), "{reply}");
+        let (_, logs, _) = super::worker_test::join();
+        assert!(
+            logs.iter().all(|line| !line.contains("not-for-output")),
+            "{logs:?}"
+        );
+        assert!(logs.iter().any(|line| line.contains("workspace.toml")), "{logs:?}");
+    }
+
     #[test]
     fn context_inventory_human_names_agent_requires_exact_grant() {
         let mut h = HostHarness::new();
