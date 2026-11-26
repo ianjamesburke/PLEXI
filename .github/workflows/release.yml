@@ -1,18 +1,30 @@
 name: Build and publish Plexi release
 
-# Every push to alpha, beta or main publishes that branch's next release when
-# it has new commits (scripts/release-next-tag.sh): alpha -> vX.Y.Z-alpha.N,
-# beta -> vX.Y.Z-beta.N, main -> vX.Y.Z. main fails when it has commits but no
-# version bump. A newer push to the same branch cancels a run still building.
-# Dispatch republishes an existing tag or runs the verify/signing checks.
+# Releases come from two triggers (scripts/release-next-tag.sh picks the tag).
+# Nightly (cron, or dispatch with nightly=true): when alpha has commits since
+# the last beta tag, build and test alpha's head, and only if every package
+# passes tag that exact commit vX.Y.Z-beta.N and publish it; no new commits
+# means no heavy jobs and no release. There is no beta branch: a beta is a tag
+# on an alpha commit. A push to main publishes vX.Y.Z (promoted by hand with
+# `just promote main`); main fails when it has commits but no version bump.
+# Pushes to alpha publish nothing; alpha is installed from source. A started
+# release always finishes. Dispatch with a tag republishes it or runs the
+# verify/signing checks.
 on:
   push:
-    branches: [alpha, beta, main]
+    branches: [main]
+  schedule:
+    - cron: "0 10 * * *" # 03:00 UTC-7
   workflow_dispatch:
     inputs:
+      nightly:
+        description: Run the nightly beta release now (leave tag empty)
+        type: boolean
+        default: false
       tag:
-        description: Existing immutable release tag (or source ref for verification only)
-        required: true
+        description: Existing immutable release tag (or source ref for verification only); required unless nightly
+        required: false
+        default: ""
         type: string
       verify_only:
         description: Run package/signing acceptance without publishing a release
@@ -27,17 +39,18 @@ on:
         type: boolean
         default: false
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly-beta' || inputs.tag || github.ref_name }}
   # A started release always finishes; later pushes wait, and only the newest
   # waiting run is kept. Cancelling on push starved alpha releases during
   # merge bursts (four of nine runs on 2026-11-23).
   cancel-in-progress: false
 jobs:
   next-tag:
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ !inputs.signing_only }}
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.tag.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -46,10 +59,29 @@ jobs:
           persist-credentials: false
       - name: Compute the release tag
         id: tag
+        env:
+          EVENT: ${{ github.event_name }}
+          NIGHTLY: ${{ github.event_name == 'schedule' || inputs.nightly }}
+          INPUT_TAG: ${{ inputs.tag }}
+          BRANCH: ${{ github.ref_name }}
+          PUSH_SHA: ${{ github.sha }}
         run: |
-          tag=$(bash scripts/release-next-tag.sh '${{ github.ref_name }}' '${{ github.sha }}')
+          if [[ "$EVENT" == workflow_dispatch && "$NIGHTLY" != true ]]; then
+            [[ -n "$INPUT_TAG" ]] || { echo "error: dispatch needs a tag unless nightly is set" >&2; exit 1; }
+            exit 0
+          fi
+          if [[ "$NIGHTLY" == true ]]; then
+            [[ -z "$INPUT_TAG" ]] || { echo "error: nightly takes no tag input" >&2; exit 1; }
+            branch=beta
+            sha=$(git rev-parse refs/remotes/origin/alpha)
+          else
+            branch=$BRANCH
+            sha=$PUSH_SHA
+          fi
+          tag=$(bash scripts/release-next-tag.sh "$branch" "$sha")
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "${tag:-no new commits since the last ${{ github.ref_name }} release; nothing to publish}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "${tag:-no new commits since the last $branch release; nothing to publish}"
   signing:
     if: ${{ inputs.signing_only }}
     runs-on: macos-15
@@ -89,11 +121,11 @@ jobs:
           bash scripts/setup-release-signing.sh --cleanup
   packages:
     needs: next-tag
-    if: ${{ !cancelled() && !inputs.signing_only && (github.event_name == 'workflow_dispatch' || needs.next-tag.outputs.tag != '') }}
+    if: ${{ !cancelled() && !inputs.signing_only && needs.next-tag.result == 'success' && (needs.next-tag.outputs.tag != '' || inputs.tag != '') }}
     uses: ./.github/workflows/distribution.yml
     with:
-      ref: ${{ inputs.tag || github.sha }}
-      tag: ${{ inputs.verify_only && (inputs.verify_stable && 'v0.0.0' || 'v0.0.0-alpha.0') || inputs.tag || needs.next-tag.outputs.tag }}
+      ref: ${{ needs.next-tag.outputs.sha || inputs.tag }}
+      tag: ${{ inputs.verify_only && (inputs.verify_stable && 'v0.0.0' || 'v0.0.0-alpha.0') || needs.next-tag.outputs.tag || inputs.tag }}
     secrets:
       PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
       PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
@@ -108,7 +140,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag || github.sha }}
+          ref: ${{ needs.next-tag.outputs.sha || inputs.tag }}
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -118,12 +150,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag || needs.next-tag.outputs.tag }}
+          TAG: ${{ needs.next-tag.outputs.tag || inputs.tag }}
+          SHA: ${{ needs.next-tag.outputs.sha }}
         run: |
           # Tag only after the packages passed, so a failed or cancelled build
-          # never burns a release number.
-          if [[ '${{ github.event_name }}' == push ]]; then
-            git tag "$TAG" '${{ github.sha }}'
+          # never burns a release number. The tag goes on the tested commit,
+          # never on a newer alpha tip.
+          if [[ -n "$SHA" ]]; then
+            git tag "$TAG" "$SHA"
             git push origin "refs/tags/$TAG"
           fi
           bash scripts/publish-release.sh "$TAG" dist

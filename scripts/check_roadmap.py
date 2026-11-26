@@ -19,7 +19,7 @@ Two inputs, read separately:
   --roadmap-ref REF  read the roadmap committed on REF. The site deploys from
                      alpha, so promotion passes origin/alpha: the public copy.
   --commits-ref REF  the release candidate whose commits are searched
-                     (origin/alpha for promote beta, origin/beta for main).
+                     (origin/alpha for promote beta, the beta tag for main).
 Either one omitted: the working tree roadmap, or commits on HEAD.
 --roadmap PATH reads that file instead of either roadmap source (tests).
 

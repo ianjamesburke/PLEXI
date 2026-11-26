@@ -55,7 +55,7 @@ does not enforce the release warning gate.
 
 Independent validation installs the exact head and exercises the affected behavior. A scoped worker pass alone is insufficient; preserve the installed-head match, independent vendor, PASS verdict, non-deferred checks, and truthful evidence. Apply the testing skill's existing install-skip rules outside aggregate mode. Aggregate batches still require an installed-head record.
 
-The final combined candidate requires a full `cargo test --bin plexi` with stdin closed and the Plexi environment scrubbed, plus release build, Clippy, independent combined installed validation, and the final manifest gate. Scoped-only evidence must fail that final gate. A subsequent change invalidates the candidate's evidence. Hosted Rust verification is deferred to the alpha release build after landing; record it as deferred, never passed, and retain other PR check gates.
+The final combined candidate requires a full `cargo test --bin plexi` with stdin closed and the Plexi environment scrubbed, plus release build, Clippy, independent combined installed validation, and the final manifest gate. Scoped-only evidence must fail that final gate. A subsequent change invalidates the candidate's evidence. Hosted Rust verification is deferred to the nightly beta release build (alpha pushes publish nothing); record it as deferred, never passed, and retain other PR check gates.
 
 Run the selector from the worktree against the actual PR base (`SCOPED_TEST_BASE=origin/feature/alpha-cleanup` for aggregate batches). It includes committed, staged, unstaged and untracked paths. Pass the filters together after libtest's `--`:
 
@@ -94,8 +94,8 @@ warnings denied, runs strict Clippy, and records the artifact digest. Run all
 other applicable scoped, script, SDK, docs and visual checks before ready status.
 A changed head/base/configuration requires reassessment and fresh matching evidence.
 Only then mark the PR ready and hand it to the independent tester.
-Pull requests start no hosted Rust build. The alpha release build after
-landing runs `cargo test --bin plexi` and Clippy (`.github/workflows/release.yml`).
+Pull requests start no hosted Rust build. The nightly beta release build
+(alpha pushes publish nothing) runs `cargo test --bin plexi` and Clippy (`.github/workflows/release.yml`).
 
 `just pr-candidate` and `just pr-install` use `scripts/build-cache.py`: two
 persistent, exclusively locked Cargo slots per repository under
