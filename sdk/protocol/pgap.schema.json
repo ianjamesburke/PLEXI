@@ -2081,7 +2081,7 @@
               ]
             },
             "command": {
-              "description": "Shell command to launch the agent harness.",
+              "description": "Explicit raw command. Omit it to launch the named definition.",
               "type": "string"
             },
             "cwd": {
@@ -2092,16 +2092,18 @@
               ]
             },
             "ephemeral": {
-              "default": false,
-              "description": "Whether the worker pane is ephemeral (`PLEXI_EPHEMERAL=1`, self-closes on exit 0).",
-              "type": "boolean"
+              "description": "Override the configured lifetime. Raw commands default to non-ephemeral.",
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "focus": {
               "description": "Focus and reveal the new pane (set only by interactive `plexi agent start`).\nDefault false: workers, calls, and teams never steal the caller's focus.",
               "type": "boolean"
             },
             "harness": {
-              "description": "CLI harness identifier (`claude`, `codex`, `pi`, `agy`).",
+              "description": "Harness identifier for an explicit raw command.",
               "type": "string"
             },
             "initial_slots": {
@@ -2167,8 +2169,6 @@
           },
           "required": [
             "type",
-            "harness",
-            "command",
             "response_file"
           ],
           "type": "object"
