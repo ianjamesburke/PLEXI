@@ -3,6 +3,7 @@ use super::*;
 impl PlexiApp {
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
         let count = self.quit_press_count;
+        let shortcut = crate::ui::shortcuts::egui_chord_label(self.key_bindings.quit);
         crate::ui::toast::ToastShell::bottom("quit_confirm_overlay").show(
             ctx,
             &self.colors,
@@ -16,11 +17,7 @@ impl PlexiApp {
                         );
                         crate::ui::toast::toast_caption(
                             ui,
-                            format!(
-                                "{} pressed {} of 3 — press again to quit",
-                                crate::ui::shortcuts::key_text(&["cmd", "Q"]),
-                                count
-                            ),
+                            format!("{shortcut} pressed {count} of 3 — press again to quit"),
                             &self.colors,
                         );
                     });

@@ -479,6 +479,66 @@ fn screenshot_micro_motion_floating_shells() {
         .expect("floating shells screenshot");
 }
 
+#[test]
+fn quit_toast_names_bound_shortcut() {
+    let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+    add_focused_pane(&mut h);
+
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Q);
+    h.run_steps(2);
+    let default_shortcut = if cfg!(target_os = "macos") {
+        "⌘Q"
+    } else {
+        "Ctrl+Q"
+    };
+    let default_toast = format!("{default_shortcut} pressed 1 of 3 — press again to quit");
+    assert!(
+        h.harness().query_by_label(&default_toast).is_some(),
+        "expected default quit toast: {default_toast}"
+    );
+    h.harness().key_press(egui::Key::Escape);
+    h.run_steps(2);
+
+    press_rebound_quit(&mut h);
+    let rebound_shortcut = if cfg!(target_os = "macos") {
+        "⌘⇧Y"
+    } else {
+        "Ctrl+Shift+Y"
+    };
+    let rebound_toast = format!("{rebound_shortcut} pressed 1 of 3 — press again to quit");
+    assert_eq!(h.with_app(|app| app.quit_press_count), 1);
+    assert!(
+        h.harness().query_by_label(&rebound_toast).is_some(),
+        "expected rebound quit toast: {rebound_toast}"
+    );
+}
+
+#[test]
+fn screenshot_rebound_quit_toast() {
+    let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+    add_focused_pane(&mut h);
+    press_rebound_quit(&mut h);
+    h.save_screenshot(&evidence_png!())
+        .expect("rebound quit toast screenshot");
+}
+
+fn press_rebound_quit(h: &mut PlexiUiHarness) {
+    h.with_app_mut(|app| {
+        let config = crate::config::KeybindingsConfig {
+            quit: Some("cmd+shift+y".into()),
+            ..Default::default()
+        };
+        app.key_bindings = crate::host::keys::build_key_bindings(Some(&config));
+        app.binding_table = crate::host::keys::build_binding_table(&app.key_bindings);
+    });
+    h.harness().key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::Y,
+    );
+    h.run_steps(2);
+}
+
 /// Stint 1645: the metadata chip sits at the row's right edge and the
 /// meta text right-aligns just left of it. Chips of different widths
 /// share one reserved lane, so every meta label keeps one right edge, and
