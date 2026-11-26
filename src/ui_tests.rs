@@ -254,7 +254,7 @@ pub struct PlexiUiHarness {
     inner: egui_kittest::Harness<'static, PlexiApp>,
     workspace: tempfile::TempDir,
     _profile_guard: Option<crate::config::TestProfileDirGuard>,
-    _profile_dir: tempfile::TempDir,
+    _profile_dir: crate::host::flight_recorder::HarnessProfile,
     /// Isolates the channel-neutral shared dir (`~/.plexi`) for the harness
     /// lifetime, so a test that renders the notes picker reads a tempdir rather
     /// than the developer's real global notes tier.
@@ -285,7 +285,7 @@ impl PlexiUiHarness {
             inner: harness,
             workspace,
             _profile_guard: profile_guard,
-            _profile_dir: profile_dir,
+            _profile_dir: crate::host::flight_recorder::HarnessProfile(profile_dir),
             _shared_guard,
             _shared_dir: shared_dir,
         }
@@ -336,7 +336,7 @@ impl PlexiUiHarness {
             inner: harness,
             workspace,
             _profile_guard: profile_guard,
-            _profile_dir: profile_dir,
+            _profile_dir: crate::host::flight_recorder::HarnessProfile(profile_dir),
             _shared_guard,
             _shared_dir: shared_dir,
         }

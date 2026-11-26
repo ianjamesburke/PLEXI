@@ -211,7 +211,7 @@ pub struct HostHarness {
     /// Offscreen renderer for headless screenshots.
     renderer: egui_kittest::LazyRenderer,
     /// Keeps the per-test tempdir alive for the harness lifetime when owned; auto-deletes on drop.
-    _profile_dir: Option<tempfile::TempDir>,
+    _profile_dir: Option<crate::host::flight_recorder::HarnessProfile>,
     /// Profile directory backing this harness (`workspaces/default.json`, `config.toml`, etc.).
     profile_path: std::path::PathBuf,
     /// Isolated workspace root for panes the harness creates. Held alive for the
@@ -266,7 +266,7 @@ impl HostHarness {
             last_full_output: None,
             last_repaint_delay: std::time::Duration::MAX,
             renderer: egui_kittest::LazyRenderer::default(),
-            _profile_dir: Some(profile_dir),
+            _profile_dir: Some(crate::host::flight_recorder::HarnessProfile(profile_dir)),
             profile_path,
             _workspace_dir: workspace_dir,
             _profile_guard: profile_guard,

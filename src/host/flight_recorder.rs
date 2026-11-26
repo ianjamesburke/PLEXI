@@ -61,6 +61,28 @@ fn slots() -> &'static Mutex<HashMap<PathBuf, Slot>> {
     SLOTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// An owned harness profile releases its recorder before deleting its directory.
+#[cfg(test)]
+pub(crate) struct HarnessProfile(pub tempfile::TempDir);
+
+#[cfg(test)]
+impl HarnessProfile {
+    pub(crate) fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+#[cfg(test)]
+impl Drop for HarnessProfile {
+    fn drop(&mut self) {
+        let key = crate::platform::path::canonical_or_self(self.path());
+        slots()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+    }
+}
+
 /// `<profile>/sessions`.
 pub fn sessions_dir(profile: &Path) -> PathBuf {
     profile.join("sessions")
@@ -469,6 +491,22 @@ pub fn list_session_ids(profile: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_harness_releases_its_session_trace() {
+        for _ in 0..4 {
+            let harness = crate::testing::HostHarness::new();
+            let profile = crate::platform::path::canonical_or_self(harness.profile_dir());
+            let has_writer = slots().lock().unwrap()[&profile]
+                .active
+                .as_ref()
+                .is_some_and(|session| session.file.is_some());
+            assert!(has_writer);
+            drop(harness);
+            let retained = slots().lock().unwrap().contains_key(&profile);
+            assert!(!retained, "finished profile still owns a session recorder");
+        }
+    }
 
     #[test]
     fn file_names_map_back_to_session_ids() {
