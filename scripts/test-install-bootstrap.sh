@@ -549,6 +549,14 @@ for fixture in truncated redirect-closed; do
   check_row "real curl $fixture" "$err" "$(grep -c "^/fixtures/$fixture/" "$hits")" 3 slow
 done
 
+# Source-level guard also runs on hosts without Windows PowerShell.
+if grep -Eq 'per_page|Get-PublishedTags' "$repo/scripts/install-windows.ps1"; then
+  echo 'FAIL Windows bootstrap still uses the paginated release list'
+  fail=1
+else
+  echo 'PASS Windows bootstrap has no paginated release-list lookup'
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "install bootstrap channel selection failed"
   exit 1

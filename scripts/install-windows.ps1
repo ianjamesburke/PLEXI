@@ -10,83 +10,143 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $base = if ($env:PLEXI_RELEASE_BASE_URL) { $env:PLEXI_RELEASE_BASE_URL } else { 'https://github.com/ianjamesburke/PLEXI/releases/download' }
+$asset = 'plexi-installer-windows-x64.exe'
+$tagPattern = '^v(\d+\.\d+\.\d+)(?:-(alpha|beta)\.(\d+))?$'
 
-function ConvertTo-ReleaseParts([string]$Tag) {
-    if ($Tag -notmatch '^v(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta)\.(\d+))?$') { return $null }
-    $number = 0
-    if ($Matches[5]) { $number = [int]$Matches[5] }
-    return @{ Major = [int]$Matches[1]; Minor = [int]$Matches[2]; Patch = [int]$Matches[3]; Lane = $Matches[4]; Number = $number }
-}
-function Compare-ReleaseTag([string]$Left, [string]$Right) {
-    $a = ConvertTo-ReleaseParts $Left
-    $b = ConvertTo-ReleaseParts $Right
-    foreach ($part in @('Major', 'Minor', 'Patch')) {
-        if ($a[$part] -ne $b[$part]) { if ($a[$part] -gt $b[$part]) { return 1 } else { return -1 } }
+function Get-RateLimitMessage($Headers) {
+    $resetAt = 'the time shown by GitHub'
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $max = [DateTimeOffset]::MaxValue.ToUnixTimeSeconds()
+    $reset = 0L
+    if ([long]::TryParse($Headers['x-ratelimit-reset'], [ref]$reset) -and $reset -ge 0 -and $reset -le $max) {
+        $resetAt = [DateTimeOffset]::FromUnixTimeSeconds($reset).ToLocalTime().ToString('yyyy-MM-dd HH:mm zzz')
+    } elseif ([long]::TryParse($Headers['retry-after'], [ref]$reset) -and $reset -ge 0 -and $reset -le ($max - $now)) {
+        $resetAt = [DateTimeOffset]::FromUnixTimeSeconds($now + $reset).ToLocalTime().ToString('yyyy-MM-dd HH:mm zzz')
     }
-    if (-not $a.Lane -and -not $b.Lane) { return 0 }
-    if (-not $a.Lane) { return 1 }
-    if (-not $b.Lane) { return -1 }
-    if ($a.Lane -ne $b.Lane) { if ($a.Lane -eq 'beta') { return 1 } else { return -1 } }
-    if ($a.Number -ne $b.Number) { if ($a.Number -gt $b.Number) { return 1 } else { return -1 } }
-    return 0
+    return "GitHub API rate limit reached (unauthenticated limit is 60 requests/hour per IP). Resets at ${resetAt}. Set GITHUB_TOKEN (or GH_TOKEN) and retry, or retry after the reset."
 }
-function Select-MaxTag($Tags) {
-    $best = $null
-    foreach ($tag in @($Tags)) {
-        if (-not $tag) { continue }
-        if (-not $best -or (Compare-ReleaseTag $tag $best) -gt 0) { $best = $tag }
-    }
-    return $best
-}
-function Get-PublishedTags([string]$Api) {
-    $tags = @()
-    for ($page = 1; $page -le 1000; $page++) {
-        $batch = @(Invoke-RestMethod -Uri "${Api}?per_page=100&page=$page")
-        if ($batch.Count -eq 0 -or $null -eq $batch[0].tag_name) { break }
-        foreach ($rel in $batch) {
-            if ($rel.draft) { continue }
-            if ($rel.tag_name -match '^v\d+\.\d+\.\d+(-(alpha|beta)\.\d+)?$') { $tags += $rel.tag_name }
+
+function Get-GitHubResponse([string]$Url) {
+    # Windows' curl.exe exposes both the HTTP status and the transport exit code,
+    # including when a response body was cut short. Match install.sh's policy.
+    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $curl) { throw "GitHub request to $Url failed (curl.exe is unavailable)." }
+    $PSNativeCommandUseErrorActionPreference = $false
+    $bodyFile = Join-Path $work 'response.json'
+    $headerFile = Join-Path $work 'response.headers'
+    $curlArgs = @('-q', '-s', '-L', '--connect-timeout', '10', '--max-time', '20',
+        '-H', '@-', '-D', $headerFile, '-o', $bodyFile, '-w', '%{http_code}', $Url)
+    $requestHeaders = @('Accept: application/vnd.github+json')
+    $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { $env:GH_TOKEN }
+    if ($token) { $requestHeaders += "Authorization: Bearer $token" }
+    $fatalExitCodes = @(1, 2, 3, 4, 5, 6, 23, 26, 27, 43, 47, 48, 51, 53, 54, 58, 59, 60, 66, 77, 83, 90, 91)
+    $attempts = 3
+    $delay = 1
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        [IO.File]::WriteAllText($headerFile, '')
+        $status = $requestHeaders | & $curl.Source @curlArgs
+        $exitCode = $LASTEXITCODE
+        if ($status -notmatch '^[1-9][0-9][0-9]$') { $status = $null }
+        $detail = if ($status) { "HTTP $status" } else { 'HTTP status missing' }
+        if ($exitCode -ne 0) {
+            $detail = if ($status) { "curl exit $exitCode after HTTP $status" } else { "curl exit $exitCode" }
         }
-        if ($batch.Count -lt 100) { break }
-        if ($page -eq 1000) { throw 'release pagination exceeded its bound' }
-    }
-    return ,$tags
-}
-function Select-BootstrapTag([string]$Wanted, [string]$Api) {
-    $tags = @(Get-PublishedTags $Api)
-    if ($Wanted -eq 'alpha') {
-        foreach ($lane in @('alpha', 'beta', 'stable')) {
-            $laneTags = @($tags | Where-Object {
-                $parts = ConvertTo-ReleaseParts $_
-                $name = if ($parts.Lane) { $parts.Lane } else { 'stable' }
-                $name -eq $lane
-            })
-            $best = Select-MaxTag $laneTags
-            if ($best) { return $best }
+
+        # The server's 4xx or 5xx verdict takes precedence over body errors.
+        if ($status -match '^4[0-9]{2}$') {
+            if ($status -in @('403', '429')) {
+                $headers = @{}
+                foreach ($line in (Get-Content -LiteralPath $headerFile)) {
+                    if ($line -match '^HTTP/') { $headers.Clear() }
+                    elseif ($line -match '^([^:]+):\s*(.*)$') { $headers[$Matches[1]] = $Matches[2].Trim() }
+                }
+                if ($status -eq '429' -or $headers['x-ratelimit-remaining'] -eq '0' -or $headers['retry-after']) {
+                    throw (Get-RateLimitMessage $headers)
+                }
+            }
+            return @{ Status = $status }
         }
-        return $null
+        if ($status -notmatch '^5[0-9]{2}$') {
+            if ($exitCode -eq 0 -and $status -match '^[23][0-9]{2}$') {
+                $body = if ($status -eq '200') { Get-Content -Raw -Encoding UTF8 -LiteralPath $bodyFile | ConvertFrom-Json }
+                return @{ Status = $status; Body = $body }
+            }
+            if ($exitCode -ge 126 -or $fatalExitCodes -contains $exitCode) {
+                throw "GitHub request to $Url failed ($detail)."
+            }
+        }
+        if ($attempt -eq $attempts) {
+            throw "GitHub is slow, try again. ($detail from $Url after $attempts attempts)"
+        }
+        [Console]::Error.WriteLine("GitHub request failed ($detail); retrying in ${delay}s (attempt $attempt/$attempts).")
+        Start-Sleep -Seconds $delay
+        $delay *= 2
     }
-    $accepted = @($tags | Where-Object { (ConvertTo-ReleaseParts $_).Lane -ne 'alpha' })
-    return Select-MaxTag $accepted
+}
+
+function Get-ReleaseTag([string]$Path, [switch]$AllowMissing) {
+    $response = Get-GitHubResponse "$releasesApi/$Path"
+    if ($AllowMissing -and $response.Status -eq '404') { return }
+    if ($response.Status -ne '200') { throw "Unable to read Plexi release ${Path}: HTTP $($response.Status)." }
+    $release = $response.Body
+    if (-not $release.draft -and $release.tag_name -cmatch $tagPattern -and $release.assets.name -contains $asset) {
+        return $release.tag_name
+    }
+}
+
+function Select-BootstrapTag([string]$Wanted) {
+    if ($Wanted -in @('stable', 'main')) { return Get-ReleaseTag 'latest' }
+    $response = Get-GitHubResponse "$repoApi/git/matching-refs/tags/v"
+    if ($response.Status -ne '200') { throw "Unable to list Plexi release tags: HTTP $($response.Status)." }
+
+    # Alpha prefers its own lane, then beta, then stable. Beta excludes alpha.
+    # Every lane uses SemVer ordering, including the numeric prerelease suffix.
+    $candidates = foreach ($ref in $response.Body) {
+        $name = [string]$ref.ref
+        if (-not $name.StartsWith('refs/tags/')) { continue }
+        $tagName = $name.Substring('refs/tags/'.Length)
+        if ($tagName -cnotmatch $tagPattern -or ($Wanted -eq 'beta' -and $Matches[2] -eq 'alpha')) { continue }
+        $laneRank = 2
+        if ($Matches[2] -eq 'alpha') { $laneRank = 0 }
+        elseif ($Matches[2] -eq 'beta') { $laneRank = 1 }
+        [pscustomobject]@{
+            Tag = $tagName
+            Preference = if ($Wanted -eq 'alpha') { 2 - $laneRank } else { 0 }
+            Core = [version]$Matches[1]
+            Lane = $laneRank
+            Number = [uint64]$Matches[3]
+        }
+    }
+    $ranked = @($candidates | Sort-Object -Property Preference, Core, Lane, Number -Descending)
+    $maxTagLookups = 5
+    foreach ($candidate in ($ranked | Select-Object -First $maxTagLookups)) {
+        $found = Get-ReleaseTag "tags/$($candidate.Tag)" -AllowMissing
+        if ($found) { return $found }
+    }
+    if ($ranked.Count -gt $maxTagLookups) {
+        throw "None of the newest $maxTagLookups $Wanted releases has $asset."
+    }
 }
 
 if ($Channel -notmatch '^(stable|main|alpha|beta|pr-[A-Za-z0-9-]+)$') { throw "Unsupported install channel: $Channel" }
-$bootstrap = $env:PLEXI_BOOTSTRAP_TAG
-if (-not $bootstrap) {
-    $api = if ($env:PLEXI_RELEASES_URL) { $env:PLEXI_RELEASES_URL } else { 'https://api.github.com/repos/ianjamesburke/PLEXI/releases' }
-    $wanted = if ($Channel -eq 'main') { 'stable' } else { $Channel }
-    if ($wanted -eq 'alpha' -or $wanted -eq 'beta') {
-        $bootstrap = Select-BootstrapTag $wanted $api
-    } else {
-        $bootstrap = (Invoke-RestMethod -Uri "$api/latest").tag_name
-    }
-}
-if ($bootstrap -notmatch '^v\d+\.\d+\.\d+(-(alpha|beta)\.\d+)?$') { throw 'No valid released installer tag was found.' }
-Write-Host "Resolved Plexi installer $bootstrap ($Channel)."
-$asset = 'plexi-installer-windows-x64.exe'
 $work = Join-Path ([IO.Path]::GetTempPath()) ('plexi-install-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $work | Out-Null
 try {
+    $bootstrap = if ($env:PLEXI_BOOTSTRAP_TAG) { $env:PLEXI_BOOTSTRAP_TAG } else { $Tag }
+    if (-not $bootstrap) {
+        $repoApi = 'https://api.github.com/repos/ianjamesburke/PLEXI'
+        $releasesApi = "$repoApi/releases"
+        if ($env:PLEXI_GITHUB_REPO_API) {
+            $repoApi = $env:PLEXI_GITHUB_REPO_API.TrimEnd('/')
+            $releasesApi = "$repoApi/releases"
+        } elseif ($env:PLEXI_RELEASES_URL) {
+            $releasesApi = $env:PLEXI_RELEASES_URL.TrimEnd('/')
+            $repoApi = $releasesApi -replace '/releases$', ''
+        }
+        $bootstrap = Select-BootstrapTag $Channel
+    }
+    if ($bootstrap -cnotmatch $tagPattern) { throw 'No valid released installer tag was found.' }
+    Write-Host "Resolved Plexi installer $bootstrap ($Channel)."
     $installer = Join-Path $work $asset
     $checksum = Join-Path $work 'checksum'
     Invoke-WebRequest -UseBasicParsing -Uri "$base/$bootstrap/$asset" -OutFile $installer
@@ -96,6 +156,7 @@ try {
     if ((Get-FileHash -Algorithm SHA256 $installer).Hash -ne $parts[0]) { throw 'Installer checksum mismatch.' }
     $arguments = @('--channel', $Channel)
     if ($Tag) { $arguments += @('--tag', $Tag) }
+    elseif ($Channel -notlike 'pr-*') { $arguments += @('--tag', $bootstrap) }
     if ($InstallOnly) { $arguments += '--install-only' }
     if ($DryRun) { $arguments += '--dry-run' }
     if ($InstallDir) { $arguments += @('--install-dir', $InstallDir) }

@@ -412,10 +412,14 @@ time.sleep(600)
                 dict(name=helper + '.sha256'),
             ],
         )
+        ref_tags = [release['tag_name']]
+        hits = []
+        latest_replies = []
         class Handler(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *a, **kw): super().__init__(*a, directory=str(server_root), **kw)
             def log_message(self, *a): pass
             def do_GET(self):
+                hits.append(self.path)
                 if self.path.startswith('/rate-limited/'):
                     self.send_response(403)
                     self.send_header('x-ratelimit-remaining', '0')
@@ -423,26 +427,99 @@ time.sleep(600)
                     self.send_header('Content-Length', '0')
                     self.end_headers()
                     return
+                if self.path == '/releases/latest' and latest_replies:
+                    status, headers, payload = latest_replies.pop(0)
+                    self.send_response(status)
+                    for name, value in headers.items():
+                        self.send_header(name, value)
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 # The repository API: latest, the tag refs and one release by tag.
                 if self.path in ('/releases/latest', '/releases/tags/' + release['tag_name']):
                     body = json.dumps(release).encode()
-                elif self.path.startswith('/releases?'):
-                    # install-windows.ps1 still pages the release list.
-                    body = json.dumps([release]).encode()
                 elif self.path == '/git/matching-refs/tags/v':
-                    body = json.dumps([dict(ref='refs/tags/' + release['tag_name'])]).encode()
+                    body = json.dumps([dict(ref='refs/tags/' + tag) for tag in ref_tags]).encode()
+                elif self.path.startswith('/releases?'):
+                    self.send_error(504)
+                    return
                 else:
                     return super().do_GET()
                 self.send_response(200); self.end_headers(); self.wfile.write(body)
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
-        # PLEXI_RELEASES_URL is read only by install-windows.ps1.
-        http_env = env | {'PLEXI_GITHUB_REPO_API': base, 'PLEXI_RELEASES_URL': base + '/releases', 'PLEXI_RELEASE_BASE_URL': base + '/download'}
+        http_env = env | {
+            'PLEXI_GITHUB_REPO_API': base,
+            'PLEXI_RELEASES_URL': base + '/releases',
+            'PLEXI_RELEASE_BASE_URL': base + '/download',
+        }
+        for key in ('PLEXI_BOOTSTRAP_TAG', 'GITHUB_TOKEN', 'GH_TOKEN'):
+            http_env.pop(key, None)
         try:
             bootstrap = ['powershell', '-NoProfile', '-File', REPO / 'scripts/install-windows.ps1', '-InstallOnly'] if os.name == 'nt' else ['bash', REPO / 'install.sh', '--install-only']
             run(bootstrap, http_env)
             assert active() == 'new'
+            if os.name == 'nt':
+                def api_hits():
+                    return [path for path in hits if not path.startswith('/download/')]
+
+                assert api_hits() == ['/releases/latest'], hits
+                timeout = (504, {'Content-Length': '100'}, b'{}')
+                for replies, message, count in (
+                    ([timeout], None, 2),
+                    ([timeout] * 3, 'GitHub is slow, try again.', 3),
+                    ([(200, {'Content-Length': '100'}, b'{}')], None, 2),
+                    ([(404, {}, b'')], 'HTTP 404', 1),
+                    ([(429, {}, b'')], 'GitHub API rate limit reached', 1),
+                    ([(403, {'x-ratelimit-remaining': '0'}, b'')], 'GitHub API rate limit reached', 1),
+                    ([(403, {'Retry-After': '30'}, b'')], 'GitHub API rate limit reached', 1),
+                    ([(403, {}, b'')], 'HTTP 403', 1),
+                ):
+                    hits.clear()
+                    latest_replies[:] = replies
+                    result = run(bootstrap, http_env, message is None)
+                    assert api_hits() == ['/releases/latest'] * count, hits
+                    if message:
+                        assert message in result.stderr, result.stderr
+                    else:
+                        assert f"Installed {release['tag_name']}" in result.stdout, result.stdout
+                        assert active() == 'new'
+                    for delay in range(1, count):
+                        assert f'retrying in {delay}s' in result.stderr, result.stderr
+                    print(f'PASS Windows bootstrap HTTP {replies[0][0]}: {count} request(s), {message or "installed"}')
+
+                hits.clear()
+                invalid = run(bootstrap, http_env | {'PLEXI_GITHUB_REPO_API': 'http://[invalid'}, False)
+                assert 'curl exit 3' in invalid.stderr and 'retrying' not in invalid.stderr, invalid.stderr
+                assert hits == [], hits
+                print('PASS Windows bootstrap stops on a malformed URL')
+
+                # A missing candidate must return to channel selection without retry.
+                ref_tags[:] = ['v1.1.1', release['tag_name']]
+                for channel in ('alpha', 'beta'):
+                    hits.clear()
+                    result = run([*bootstrap, '-Channel', channel, '-DryRun'], http_env)
+                    assert api_hits() == [
+                        '/git/matching-refs/tags/v', '/releases/tags/v1.1.1',
+                        f"/releases/tags/{release['tag_name']}",
+                    ], hits
+                    assert f"Plexi {release['tag_name']} ({channel}," in result.stdout, result.stdout
+                    print(f'PASS Windows {channel} falls back after an unpublished tag')
+
+                ref_tags[:] = ['v1.1.1']
+                hits.clear()
+                result = run([*bootstrap, '-Channel', 'pr-1708'], http_env, False)
+                assert api_hits() == ['/git/matching-refs/tags/v', '/releases/tags/v1.1.1'], hits
+                assert 'No valid released installer tag was found.' in result.stderr, result.stderr
+                print('PASS Windows PR channel uses tag refs and one release lookup')
+                ref_tags[:] = [release['tag_name']]
+
+                hits.clear()
+                run([*bootstrap, '-Tag', release['tag_name']], http_env)
+                assert api_hits() == [], hits
+                assert active() == 'new'
+                print('PASS Windows explicit tag bypasses the release API')
             rate_limited_env = http_env | {'PLEXI_GITHUB_REPO_API': base + '/rate-limited'}
             run([installer, '--channel', 'stable', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
             run([installer, '--channel', 'alpha', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
