@@ -70,10 +70,6 @@ Never add `Co-Authored-By: Claude ...` trailers. Never push directly to `main` o
 Always use the `/create-stint` skill and read [Plexi task creation rules](.agents/create-stint.md) to create tasks. Never create stint tasks or GitHub issues manually.
 `.stint/` is git-ignored by design. Validate task state with `stint check`, `stint list`, `stint show <id>`, and `stint status`.
 
-## Planning
-
-Read the relevant PRM first. Use `stint next` for the next claimable task. Stint tasks are the primary implementation tickets; GitHub issues are optional. Pipeline labels (`pipeline:implement`, `pipeline:open-pr`, `pipeline:validate`, `pipeline:merge`) track live state.
-
 ## Logging
 
 Log file: `~/.plexi-<channel>/plexi.log` (level set in `config.toml`).
@@ -99,22 +95,13 @@ Try-catch all I/O, network, external API calls. Log where + what failed. Never s
 
 Reproduce the bug before fixing it. Preferred: a failing `HostHarness` test. Acceptable: a targeted `log::info!` confirmed in `plexi.log`. If you can't reproduce or instrument it, stop and flag it.
 
-## Issue Prior Attempts
-
-Document failures in the issue **body** under `## Prior Attempts`, not in comments. Comments are invisible to `gh issue view` without `--comments`.
-
 ## Python Tooling
 
 `uv` for all Python. `pyproject.toml` with `requires-python = ">=3.11"`, `uv sync`, `uv run`.
 
 ## Session Velocity
 
-- **Orient from the document, not the issues.** The PRM IS the plan.
-- **Never serialize issue reads.** Use `gh issue list --search` with filters.
-- **Context is a budget.** Before fetching, ask: do I already have enough?
 - **Checkpoint before another audit.** Once a coherent implementation slice passes targeted validation, commit it before starting a fresh review or broad suite.
-- **Pipeline phases flow inline.** implement → open-pr → validate → merge. No stopping to ask.
-- **Match user energy.** When the user says "do it," start building.
 - **Sequential child agents only.** Never parallel in one worktree.
 - **Ideas become stint tasks, not tangents.**
 - **Direct-to-alpha when user is watching.**
@@ -130,24 +117,13 @@ Every fact lives in exactly one place. Other files reference it; they never rest
 ## Traps
 
 Use `pgrep -P <pid>` instead of proc_listchildpids
-- **Stale git index:** Run `git update-index --refresh` if `git status --porcelain` shows false-dirty files.
 - **Issue-referenced code:** Grep `alpha` before implementing; referenced functions may have moved or been deleted.
-- **Parallel worktrees:** When rebasing same-wave branch conflicts on shared files, keep the most complete fix.
-- **Alpha divergence before worktree:** `git fetch` and check `git log origin/alpha..HEAD` before `wtp add`.
-- **Bundle rebase conflicts:** When a multi-issue bundle conflicts because `alpha` already absorbed one issue's changes, take HEAD for those sections, keep only the branch's additive changes, and build-verify before continuing each rebase step.
 - **`rustfmt` on mod files:** `rustfmt src/main.rs` reformats all reachable modules. Format only leaf files touched.
 - **`stint add` race:** Create tasks sequentially; parallel invocations can cross-assign task IDs.
 
 ## Architecture
 
 **HostModel** is a pure state machine with zero egui dependency. Commands in, effects out. All business logic lives here. The renderer reads state and paints — never owns logic.
-
-## Inter-Pane Communication
-
-Three disjoint planes with sanctioned transports:
-- **Structured app-to-app data → event bus:** `DeclareEventStreams` / `EmitEvent` / `SubscribeAppEvents` (or `PipeOpenDirected` for exclusive duplex JSON channel).
-- **Bulk binary data → typed pipes** (`src/host/typed_pipes.rs`): Unix socket + ring buffer for audio/video/MIDI frames.
-- **Human-trust PTY injection → `plexi pane send`:** For human terminal driving only. Never route app-to-app data through PTY injection.
 
 ## Capturing Host State
 
