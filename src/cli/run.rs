@@ -1,6 +1,17 @@
 use super::reply::OutputMode;
 use super::{is_executable, print_tip, PlexiCommands, UserCommandScope};
+use std::ffi::OsString;
+use std::path::Path;
 use std::process::Command;
+
+const RUN_CHAIN_ENV: &str = "PLEXI_RUN_CALL_CHAIN";
+
+/// A command's name is local to the file that defined it.
+#[derive(PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+struct RunFrame {
+    name: String,
+    commands_file: OsString,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedRunTarget {
@@ -434,11 +445,12 @@ fn layout_from_flags(
 /// back to spawning the current binary for uncommon subcommands. In-process
 /// requests inherit the enclosing invocation's mode unless the verb reads
 /// its own flag, as `pane tree` does.
-pub fn dispatch_cli_step(
+fn dispatch_cli_step(
     argv: &[String],
     cwd: Option<&std::path::Path>,
     env_vars: &[(String, String)],
     mode: OutputMode,
+    run_chain: Option<&str>,
 ) -> i32 {
     use crate::cli::args::{Cli, Commands, PaneCmd, ViewCmd};
     use clap::Parser;
@@ -623,7 +635,7 @@ pub fn dispatch_cli_step(
                 };
                 crate::cli::pane_capture_cli(pid, lines, full_output, from_cursor, plain, mode)
             }
-            _ => spawn_plexi_subcommand(argv, cwd, env_vars),
+            _ => spawn_plexi_subcommand(argv, cwd, env_vars, None),
         },
         Some(Commands::View {
             cmd:
@@ -673,7 +685,10 @@ pub fn dispatch_cli_step(
                 1
             }
         }
-        _ => spawn_plexi_subcommand(argv, cwd, env_vars),
+        Some(Commands::Run {
+            command: Some(_), ..
+        }) => spawn_plexi_subcommand(argv, cwd, env_vars, run_chain),
+        _ => spawn_plexi_subcommand(argv, cwd, env_vars, None),
     }
 }
 
@@ -681,6 +696,7 @@ fn spawn_plexi_subcommand(
     argv: &[String],
     cwd: Option<&std::path::Path>,
     env_vars: &[(String, String)],
+    run_chain: Option<&str>,
 ) -> i32 {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -699,8 +715,12 @@ fn spawn_plexi_subcommand(
         cmd.current_dir(dir);
     }
     cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
+    cmd.env_remove(RUN_CHAIN_ENV);
     for (k, v) in env_vars {
         cmd.env(k, v);
+    }
+    if let Some(chain) = run_chain {
+        cmd.env(RUN_CHAIN_ENV, chain);
     }
     match cmd.status() {
         Ok(status) => status.code().unwrap_or(1),
@@ -730,6 +750,7 @@ fn run_shell_snippet(
         child_cmd.current_dir(dir);
     }
     child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
+    child_cmd.env_remove(RUN_CHAIN_ENV);
     for (k, v) in env_vars {
         child_cmd.env(k, v);
     }
@@ -743,18 +764,19 @@ fn run_shell_snippet(
 }
 
 /// Execute a list of steps (CLI invocations or shell snippets) sequentially.
-pub fn execute_steps(
+fn execute_steps(
     steps: &[String],
     extra_args: &[String],
     cwd: Option<&std::path::Path>,
     env_vars: &[(String, String)],
     mode: OutputMode,
+    run_chain: Option<&str>,
 ) -> StepRunReport {
     run_steps_with(
         steps,
         extra_args,
         |_step_num, _rendered, parsed| match parsed {
-            ParsedStep::PlexiCli(argv) => dispatch_cli_step(argv, cwd, env_vars, mode),
+            ParsedStep::PlexiCli(argv) => dispatch_cli_step(argv, cwd, env_vars, mode, run_chain),
             ParsedStep::Shell(snippet) => run_shell_snippet(snippet, extra_args, cwd, env_vars),
         },
     )
@@ -772,7 +794,7 @@ pub fn run_on_load_steps(
         .map(|id| vec![("PLEXI_PANE_ID".to_string(), id.to_string())])
         .unwrap_or_default();
     let cwd = std::env::current_dir().ok();
-    execute_steps(steps, &extra_args, cwd.as_deref(), &env_vars, mode)
+    execute_steps(steps, &extra_args, cwd.as_deref(), &env_vars, mode, None)
 }
 
 /// Format the output of `plexi run` / `plexi run --json` for a given workspace root.
@@ -933,11 +955,34 @@ pub fn run_command(command_name: &str, extra_args: &[String], mode: OutputMode) 
         }
     };
     let ws_root = super::resolve_commands_workspace_root(&cwd);
-    run_command_for_root(ws_root.as_deref(), &cwd, command_name, extra_args, mode).exit_code
+    let run_chain = std::env::var(RUN_CHAIN_ENV)
+        .ok()
+        .and_then(|chain| match serde_json::from_str(&chain) {
+            Ok(chain) => Some(chain),
+            Err(error) => {
+                log::debug!(
+                    "cli: ignored invalid run call chain ({:?})",
+                    error.classify()
+                );
+                None
+            }
+        })
+        .unwrap_or_default();
+    run_command_with_chain(
+        ws_root.as_deref(),
+        &cwd,
+        command_name,
+        extra_args,
+        None,
+        mode,
+        run_chain,
+    )
+    .exit_code
 }
 
 /// Execute a named command against an explicit `workspace_root` and `cwd`,
 /// returning the full [`StepRunReport`].
+#[cfg(test)]
 pub fn run_command_for_root(
     ws_root: Option<&std::path::Path>,
     cwd: &std::path::Path,
@@ -951,6 +996,7 @@ pub fn run_command_for_root(
 /// Execute a named command against an explicit `workspace_root`, `cwd`, and
 /// optional `invoker_pane_id` (used when `PLEXI_PANE_ID` is not set in the
 /// process environment, such as in-process test callers).
+#[cfg(test)]
 pub fn run_command_for_root_from_pane(
     ws_root: Option<&std::path::Path>,
     cwd: &std::path::Path,
@@ -958,6 +1004,26 @@ pub fn run_command_for_root_from_pane(
     extra_args: &[String],
     invoker_pane_id: Option<u64>,
     mode: OutputMode,
+) -> StepRunReport {
+    run_command_with_chain(
+        ws_root,
+        cwd,
+        command_name,
+        extra_args,
+        invoker_pane_id,
+        mode,
+        Vec::new(),
+    )
+}
+
+fn run_command_with_chain(
+    ws_root: Option<&Path>,
+    cwd: &Path,
+    command_name: &str,
+    extra_args: &[String],
+    invoker_pane_id: Option<u64>,
+    mode: OutputMode,
+    mut run_chain: Vec<RunFrame>,
 ) -> StepRunReport {
     let fail = |code: i32| StepRunReport {
         exit_code: code,
@@ -1008,6 +1074,7 @@ pub fn run_command_for_root_from_pane(
             }
             child_cmd.current_dir(cwd);
             child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
+            child_cmd.env_remove(RUN_CHAIN_ENV);
             let code = match child_cmd.status() {
                 Ok(status) => status.code().unwrap_or(1),
                 Err(e) => {
@@ -1032,6 +1099,32 @@ pub fn run_command_for_root_from_pane(
             secrets,
         } => (scope, run, steps, on_load, secrets),
     };
+    let commands_file = match (scope, ws_root) {
+        (UserCommandScope::Workspace, Some(root)) => root.join(super::commands_file()),
+        _ => super::global_commands_path(),
+    };
+    let frame = RunFrame {
+        name: command_name.to_owned(),
+        commands_file: commands_file.into_os_string(),
+    };
+    if let Some(start) = run_chain.iter().position(|ancestor| *ancestor == frame) {
+        let cycle = run_chain[start..]
+            .iter()
+            .map(|ancestor| ancestor.name.as_str())
+            .chain(std::iter::once(command_name))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        let message = format!(
+            "recursive command cycle: {cycle}. Edit '{}' to break the cycle.",
+            Path::new(&frame.commands_file).display()
+        );
+        log::info!("cli: refused recursive run '{command_name}'");
+        eprintln!("error: {message}");
+        return StepRunReport {
+            error_message: Some(message),
+            ..fail(2)
+        };
+    }
     let approved_cwd;
     let (cwd, resolved) = if secret_keys.is_empty() {
         (cwd, Vec::new())
@@ -1075,6 +1168,15 @@ pub fn run_command_for_root_from_pane(
 
     // If `steps` or `on_load` are declared, run sequentially through the step runner.
     if !steps.is_empty() || !on_load.is_empty() {
+        // Nested CLI steps keep using the normal subprocess entry point.
+        run_chain.push(frame);
+        let run_chain = match serde_json::to_string(&run_chain) {
+            Ok(chain) => chain,
+            Err(error) => {
+                eprintln!("error: could not encode run call chain: {error}");
+                return fail(1);
+            }
+        };
         let mut all_steps = if steps.is_empty() {
             vec![run_snippet]
         } else {
@@ -1092,7 +1194,14 @@ pub fn run_command_for_root_from_pane(
                 env_vars.push(("PLEXI_PANE_ID".to_string(), pane_id.to_string()));
             }
         }
-        let report = execute_steps(&all_steps, extra_args, Some(cwd), &env_vars, mode);
+        let report = execute_steps(
+            &all_steps,
+            extra_args,
+            Some(cwd),
+            &env_vars,
+            mode,
+            Some(&run_chain),
+        );
         if report.exit_code == 0 {
             print_tip("run `plexi run` to see all available commands.");
         }
@@ -1114,6 +1223,7 @@ pub fn run_command_for_root_from_pane(
     }
     child_cmd.current_dir(cwd);
     child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
+    child_cmd.env_remove(RUN_CHAIN_ENV);
     for entry in &resolved {
         child_cmd.env(&entry.name, &entry.value.0);
     }
@@ -1370,6 +1480,40 @@ steps = []
     }
 
     #[test]
+    fn run_cycle_matches_command_name_and_source_file() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let global_file = super::super::global_commands_path();
+        std::fs::write(&global_file, "[commands]\nbuild = { steps = ['true'] }").unwrap();
+
+        let invoke = |commands_file: std::path::PathBuf| {
+            super::run_command_with_chain(
+                None,
+                profile.path(),
+                "build",
+                &[],
+                None,
+                OutputMode::Text,
+                vec![super::RunFrame {
+                    name: "build".to_string(),
+                    commands_file: commands_file.into_os_string(),
+                }],
+            )
+        };
+        let other_source = profile.path().join("other/commands.toml");
+        assert_eq!(invoke(other_source).exit_code, 0);
+        let report = invoke(global_file.clone());
+        assert_eq!(report.exit_code, 2);
+        assert_eq!(
+            report.error_message.unwrap(),
+            format!(
+                "recursive command cycle: build -> build. Edit '{}' to break the cycle.",
+                global_file.display()
+            )
+        );
+    }
+
+    #[test]
     fn substitute_step_args_replaces_positional_and_at() {
         let args = vec!["alpha".to_string(), "two words".to_string()];
         assert_eq!(
@@ -1393,7 +1537,8 @@ steps = []
             format!("touch '{}'", marker3.display()),
         ];
 
-        let report = super::execute_steps(&steps, &[], Some(dir.path()), &[], OutputMode::Text);
+        let report =
+            super::execute_steps(&steps, &[], Some(dir.path()), &[], OutputMode::Text, None);
         assert_eq!(report.exit_code, 1);
         assert_eq!(report.total_steps, 3);
         assert_eq!(report.completed_steps, 1);
