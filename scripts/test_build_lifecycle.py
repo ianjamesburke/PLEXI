@@ -30,7 +30,9 @@ CACHE = module('build-cache')
 @unittest.skipUnless(sys.platform == 'darwin', 'APFS clone requires macOS')
 class CodexTargetSeed(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(dir=ROOT)
+        build_dir = ROOT / 'target'
+        build_dir.mkdir(exist_ok=True)
+        temp = tempfile.TemporaryDirectory(prefix='seed-codex-test-', dir=build_dir)
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.worktree = self.root / 'worktree'
@@ -45,18 +47,24 @@ class CodexTargetSeed(unittest.TestCase):
             (fingerprint / 'lib').write_text(name)
         self.target = self.worktree / 'target'
 
-    def seed(self):
-        return subprocess.run(
-            [sys.executable, str(ROOT / 'scripts' / 'build-cache.py'),
+    def seed(self, prefix=()):
+        result = subprocess.run(
+            [*prefix, sys.executable, str(ROOT / 'scripts' / 'build-cache.py'),
              'seed-codex', str(self.source), str(self.worktree)],
             env={**os.environ, 'PLEXI_BUILD_MIN_FREE_BYTES': '1',
                  'PLEXI_BUILD_CACHE_ROOT': str(self.root / 'cache')},
-            capture_output=True, text=True, check=True,
-        ).stdout
+            capture_output=True, text=True, timeout=30,
+        )
+        return result
+
+    def seed_output(self):
+        result = self.seed()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
 
     def test_seeds_empty_target_and_invalidates_only_path_packages(self):
         self.target.mkdir()
-        self.assertIn('seeded', self.seed())
+        self.assertIn('seeded Codex target', self.seed_output())
         fingerprints = self.target / 'debug' / '.fingerprint'
         registry_artifact = fingerprints / 'registry-lib-456' / 'lib'
         self.assertEqual(registry_artifact.read_text(), 'registry-lib-456')
@@ -67,7 +75,7 @@ class CodexTargetSeed(unittest.TestCase):
 
     def test_missing_warm_target_is_a_no_op(self):
         shutil.rmtree(self.source)
-        self.assertIn('no warm target', self.seed())
+        self.assertIn('no warm target', self.seed_output())
         self.assertFalse(self.target.exists())
 
     def test_disk_floor_reserves_seed_size(self):
@@ -81,15 +89,140 @@ class CodexTargetSeed(unittest.TestCase):
     def test_busy_warm_target_is_a_no_op(self):
         with (self.source / '.cargo-build-lock').open('wb') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            self.assertIn('warm target busy', self.seed())
+            self.assertIn('warm target busy', self.seed_output())
         self.assertFalse(self.target.exists())
 
     def test_existing_target_is_preserved(self):
         self.target.mkdir()
         (self.target / 'existing').write_text('keep')
-        self.assertIn('target already populated', self.seed())
+        self.assertIn('target already populated', self.seed_output())
         self.assertEqual(list(self.target.iterdir()), [self.target / 'existing'])
         self.assertEqual((self.target / 'existing').read_text(), 'keep')
+
+    def test_interrupted_copy_cleans_staging_and_seed_can_retry(self):
+        run = subprocess.run
+
+        def interrupted_copy(command, **kwargs):
+            if command[0] != '/bin/cp':
+                return run(command, **kwargs)
+            partial = Path(command[-1]) / '.fingerprint' / 'partial'
+            partial.mkdir(parents=True)
+            (partial / 'lib').write_text('incomplete')
+            raise subprocess.CalledProcessError(-signal.SIGINT, command)
+
+        with mock.patch.dict(os.environ, {'PLEXI_BUILD_MIN_FREE_BYTES': '1'}), \
+                mock.patch.object(CACHE.subprocess, 'run', side_effect=interrupted_copy):
+            with self.assertRaises(subprocess.CalledProcessError) as error:
+                CACHE.seed_codex(self.source, self.worktree)
+        self.assertEqual(error.exception.returncode, -signal.SIGINT)
+        self.assertEqual(list(self.target.glob('*')), [])
+        self.assertIn('seeded Codex target', self.seed_output())
+        self.assertEqual(list(self.target.iterdir()), [self.target / 'debug'])
+
+    def test_sandboxed_seed_refuses_symlinked_target(self):
+        referent = self.root / 'outside-target'
+        referent.mkdir()
+        self.target.symlink_to(referent, target_is_directory=True)
+        profile = f'(version 1) (allow default) (deny file-write* (subpath {json.dumps(str(referent))}))'
+        result = self.seed(('/usr/bin/sandbox-exec', '-p', profile))
+        if result.stderr.strip() == 'sandbox-exec: sandbox_apply: Operation not permitted':
+            # Codex's Seatbelt sandbox forbids nesting another profile. Keep
+            # the referent read-only and exercise the same pre-copy refusal.
+            referent.chmod(0o555)
+            self.addCleanup(referent.chmod, 0o755)
+            result = self.seed()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('target already populated', result.stdout)
+        self.assertEqual(self.target.readlink(), referent)
+        self.assertEqual(list(referent.iterdir()), [])
+
+    def build_seed_fixture(self, project):
+        env = dict(os.environ)
+        for key in ('CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR',
+                    'CARGO_BUILD_DIR', 'CARGO_BUILD_TARGET', 'CARGO_ENCODED_RUSTFLAGS',
+                    'RUSTFLAGS', 'PLEXI_BUILD_CACHE_SLOT'):
+            env.pop(key, None)
+        env.update(RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='', CARGO_INCREMENTAL='0')
+        cargo = ['cargo', 'build', '--offline', '--message-format=json', '--verbose']
+        if env.get('PLEXI_CARGO_LOCK'):
+            cargo = ['bash', str(ROOT / 'scripts/cargo-with-lease.sh'), '--class', 'short', *cargo]
+        result = subprocess.run(cargo, cwd=project, env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        return [json.loads(line) for line in result.stdout.splitlines()], result.stderr
+
+    def warm_seed_fixture(self):
+        # A directory source has registry identity in Cargo.lock and requires
+        # neither a network connection nor a populated global registry cache.
+        dependency = self.root / 'vendor' / 'seed_dependency'
+        (dependency / 'src').mkdir(parents=True)
+        (dependency / 'Cargo.toml').write_text(
+            '[package]\nname="seed_dependency"\nversion="0.1.0"\nedition="2021"\n'
+        )
+        (dependency / '.cargo-checksum.json').write_text('{"files":{},"package":null}')
+        (dependency / 'build.rs').write_text(
+            'fn main() {\n'
+            '    println!("cargo:rerun-if-changed=build.rs");\n'
+            '    let out = std::env::var_os("OUT_DIR").unwrap();\n'
+            '    std::fs::write(std::path::Path::new(&out).join("message.txt"), "generated").unwrap();\n'
+            '}\n'
+        )
+        (dependency / 'src/lib.rs').write_text(
+            'pub const MESSAGE: &str = include_str!(concat!(env!("OUT_DIR"), "/message.txt"));\n'
+        )
+        (self.root / '.cargo').mkdir()
+        (self.root / '.cargo/config.toml').write_text(
+            '[source.crates-io]\nreplace-with = "seed-fixture"\n'
+            '[source.seed-fixture]\ndirectory = "vendor"\n'
+        )
+        warm = self.root / 'warm-project'
+        for project, label in ((warm, 'warm'), (self.worktree, 'worktree')):
+            (project / 'src').mkdir(parents=True)
+            (project / '.cargo').mkdir()
+            (project / '.cargo/config.toml').write_text('[build]\ntarget-dir = "target"\n')
+            (project / 'Cargo.toml').write_text(
+                '[workspace]\n[package]\nname="seed_probe"\nversion="0.1.0"\nedition="2021"\n'
+                '[dependencies]\nseed_dependency="0.1.0"\n'
+            )
+            (project / 'src/main.rs').write_text(
+                f'fn main() {{ println!("{label}: {{}}", seed_dependency::MESSAGE); }}\n'
+            )
+        cold, _ = self.build_seed_fixture(warm)
+        shutil.copyfile(warm / 'Cargo.lock', self.worktree / 'Cargo.lock')
+        self.source = warm / 'target/debug'
+        self.assertIn('seeded Codex target', self.seed_output())
+        return cold
+
+    def test_real_cargo_build_reuses_seeded_registry_artifact(self):
+        cold = self.warm_seed_fixture()
+        seeded, build_output = self.build_seed_fixture(self.worktree)
+        for messages, expected in ((cold, {'seed_dependency': False, 'seed_probe': False}),
+                                   (seeded, {'seed_dependency': True, 'seed_probe': False})):
+            freshness = {message['target']['name']: message['fresh'] for message in messages
+                         if message['reason'] == 'compiler-artifact'
+                         and message['target']['kind'] in (['lib'], ['bin'])}
+            self.assertEqual(freshness, expected, build_output)
+        executable = self.target / 'debug/seed_probe'
+        output = subprocess.check_output([str(executable)], text=True, timeout=10).strip()
+        self.assertEqual(output, 'worktree: generated')
+        print('\n'.join(line for line in build_output.splitlines()
+                        if line.lstrip().startswith(('Fresh ', 'Compiling ', 'Finished '))), flush=True)
+        print(f'seeded debug binary: {output}', flush=True)
+
+    def test_debug_out_dir_reused_from_seeded_build_script(self):
+        cold = self.warm_seed_fixture()
+        source_out = Path(next(message['out_dir'] for message in cold
+                               if message['reason'] == 'build-script-executed'))
+        seeded_out = self.target / 'debug' / source_out.relative_to(self.source)
+        generated = seeded_out / 'message.txt'
+        self.assertEqual(generated.read_text(), 'generated')
+        before = generated.stat().st_mtime_ns
+        shutil.rmtree(self.source)
+        seeded, build_output = self.build_seed_fixture(self.worktree)
+        out_dirs = [Path(message['out_dir']) for message in seeded
+                    if message['reason'] == 'build-script-executed']
+        self.assertEqual(out_dirs, [seeded_out], build_output)
+        self.assertEqual(generated.read_text(), 'generated')
+        self.assertEqual(generated.stat().st_mtime_ns, before, build_output)
 
 
 class Lifecycle(unittest.TestCase):
