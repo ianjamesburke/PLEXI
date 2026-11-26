@@ -188,6 +188,22 @@ impl PlexiApp {
         }
     }
 
+    /// Project a modal's single text surface before it reads this pass's
+    /// events. The end-of-pass reconciler still owns focus after rendering.
+    #[expect(clippy::disallowed_methods)]
+    pub(crate) fn focus_overlay_text_for_input(
+        &self,
+        ctx: &egui::Context,
+        kind: FocusKind,
+        id: Id,
+    ) {
+        if self.host_input_owner() == InputOwner::Overlay(OverlaySurface::Layer(kind))
+            && !ctx.memory(|memory| memory.has_focus(id))
+        {
+            ctx.memory_mut(|memory| memory.request_focus(id));
+        }
+    }
+
     /// Project the frame's input owner onto egui widget focus. Called exactly
     /// once, at the end of `update()`, after every overlay and pane has
     /// rendered and registered its text surfaces.
