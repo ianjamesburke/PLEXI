@@ -1225,8 +1225,11 @@ mod secret_list_tests {
         let child = root.path().join("child");
         std::fs::create_dir(&child).unwrap();
         let mut output = Vec::new();
+        let scope =
+            secrets::manager::InventoryScope::resolve(&child, global, None, Vec::new()).unwrap();
         let inventory = secrets::manager::inventory_for_caller(
-            &child, global, None, Vec::new(), &crate::broker::principal::Principal::External,
+            scope,
+            &crate::broker::principal::Principal::External,
         )
         .unwrap();
         write_secret_inventory(&inventory, Some("in-memory"), json, &mut output).unwrap();

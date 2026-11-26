@@ -210,11 +210,7 @@ impl PlexiApp {
             }
             repaint.request_repaint();
         };
-        #[cfg(test)]
-        let spawn = worker_test::spawn(tool, crate::config::config_dir(), run);
-        #[cfg(not(test))]
-        let spawn = std::thread::Builder::new().name(tool.into()).spawn(run);
-        if let Err(error) = spawn {
+        if let Err(error) = spawn_secret_worker(tool, run) {
             log::error!("{tool}: worker failed: {error}");
             stream_reply(
                 &reply_path,
@@ -222,6 +218,16 @@ impl PlexiApp {
             );
         }
     }
+}
+
+fn spawn_secret_worker(tool: &str, run: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    #[cfg(test)]
+    return worker_test::spawn(tool, crate::config::config_dir(), run);
+    #[cfg(not(test))]
+    std::thread::Builder::new()
+        .name(tool.into())
+        .spawn(run)
+        .map(drop)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -712,7 +718,7 @@ mod worker_test {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    type Evidence = (usize, Vec<String>);
+    type Evidence = (usize, Vec<String>, usize);
     #[derive(Default)]
     pub(super) enum Timing {
         #[default]
@@ -721,6 +727,10 @@ mod worker_test {
         ExpireAtClaim,
         DropClientAfterClaimCheck(Option<crate::platform::ipc::IpcStream>),
         PauseAfterAsk(std::sync::mpsc::Receiver<()>),
+        PauseAfterInventoryScan {
+            scanned: std::sync::mpsc::Sender<()>,
+            resume: std::sync::mpsc::Receiver<()>,
+        },
         ObserveStoreBeforeClick(std::sync::mpsc::Sender<usize>),
         DropReply,
     }
@@ -748,6 +758,17 @@ mod worker_test {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    pub(super) fn after_inventory_scan() {
+        TIMING.with_borrow(|mode| {
+            if let Timing::PauseAfterInventoryScan { scanned, resume } = mode {
+                scanned.send(()).unwrap();
+                resume
+                    .recv_timeout(crate::testing::load_aware_timeout(Duration::from_secs(5)))
+                    .unwrap();
+            }
+        });
     }
 
     pub(super) fn deadline(real: Instant, claim: bool) -> Instant {
@@ -793,6 +814,7 @@ mod worker_test {
                 (
                     crate::workspace::secrets::take_test_store_calls(),
                     logs.lines(),
+                    crate::workspace::secrets::take_test_value_reads(),
                 )
             })?;
         WORKERS.with_borrow_mut(|workers| workers.push(worker));
@@ -817,17 +839,13 @@ mod list_tests {
     use crate::workspace::secrets;
 
     fn request(h: &mut HostHarness, context: &str, peer: &[u32]) -> serde_json::Value {
-        let response_file = crate::rpc::response_file("secret-list-test", "json");
-        let request = crate::protocol::HostRequest::PaneSecretList {
-            context: context.into(),
-            response_file: response_file.clone(),
-        };
-        let line = serde_json::to_string(&request).unwrap();
-        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(peer), &mut Vec::new());
-        h.hidden_frame();
-        let body = std::fs::read_to_string(response_file).unwrap();
-        assert!(!body.contains("not-for-output"));
-        serde_json::from_str(&body).unwrap()
+        let reply = send(
+            h,
+            serde_json::json!({"type":"pane_secret_list","context":context}),
+            Some(PeerWitness::for_live_pids(peer)),
+        );
+        assert!(!reply.to_string().contains("not-for-output"));
+        reply
     }
 
     #[test]
@@ -854,18 +872,107 @@ mod list_tests {
     }
 
     #[test]
+    fn outside_inventory_withholds_metadata_when_revoked_during_scan() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let mut h = HostHarness::new();
+        let cwd = h.workspace_root();
+        let peer = PeerWitness::for_live_pids(&[std::process::id()]);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let (scanned, scan_finished) = mpsc::channel();
+        let (resume, continuation) = mpsc::channel();
+        super::worker_test::TIMING.replace(super::worker_test::Timing::PauseAfterInventoryScan {
+            scanned,
+            resume: continuation,
+        });
+        let (client, ask) = live_secret(
+            &mut h,
+            serde_json::json!({"type":"secret_list","cwd":cwd,"global":true}),
+            &peer,
+        );
+        monitor
+            .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        scan_finished
+            .recv_timeout(crate::testing::load_aware_timeout(Duration::from_secs(5)))
+            .unwrap();
+        let grant = monitor
+            .host_records()
+            .audit()
+            .into_iter()
+            .find(|row| row.kind == "use")
+            .unwrap();
+        assert!(monitor.revoke_grant_id(&grant.grant_id).unwrap());
+        resume.send(()).unwrap();
+        let reply = read_client(client, "revoked-inventory");
+        assert_eq!(reply["error_code"], "permission_denied", "{reply}");
+        assert!(reply.get("entries").is_none(), "{reply}");
+        super::worker_test::join();
+    }
+
+    #[test]
+    fn outside_inventory_discloses_resolved_scopes() {
+        use std::fs;
+
+        let mut h = HostHarness::new();
+        let workspace = tempfile::tempdir().unwrap();
+        let plain = tempfile::tempdir().unwrap();
+        let root = workspace.path().canonicalize().unwrap();
+        let child = root.join("docs");
+        fs::create_dir(&child).unwrap();
+        secrets::init_workspace(&root, &crate::config::workspace_channel_dir()).unwrap();
+        let peer = PeerWitness::for_live_pids(&[std::process::id()]);
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        for (cwd, workspace) in [(child.as_path(), Some(root.as_path())), (plain.path(), None)] {
+            let frame = serde_json::json!({"type":"secret_list","cwd":cwd,"global":false});
+            let (client, ask) = live_secret(&mut h, frame, &peer);
+            let summary = ask.input_summary;
+            monitor
+                .approve_pending(&ask.pending_request_id, ApprovalChoice::Deny)
+                .unwrap();
+            assert_eq!(read_client(client, "list-scopes")["status"], "denied");
+            assert_eq!(
+                super::worker_test::join().0,
+                0,
+                "consent must precede scanning"
+            );
+            assert!(summary.contains("usage metadata"), "{summary}");
+            assert!(summary.contains("global"), "{summary}");
+            if let Some(root) = workspace {
+                assert!(
+                    summary.contains(&format!("workspace: {}", root.display())),
+                    "{summary}"
+                );
+            } else {
+                assert!(!summary.contains("workspace:"), "{summary}");
+            }
+        }
+    }
+
+    #[test]
     fn openrouter_secret_status_scans_legacy_accounts_without_reading_values() {
         let mut h = HostHarness::new();
         let peer = PeerWitness::for_live_pids(&[std::process::id()]);
         crate::cli::workspace::secret_set_tests::with_stored_account("openrouter-api-key", || {
-            secrets::take_test_value_reads();
+            secrets::take_test_store_calls();
             let reply = send(
                 &mut h,
                 serde_json::json!({"type":"openrouter_secret_status"}),
                 Some(peer),
             );
             assert_eq!(reply, serde_json::json!({"configured":true}));
-            assert_eq!(secrets::take_test_value_reads(), 0);
+            assert_eq!(
+                secrets::take_test_store_calls(),
+                0,
+                "status scanned on the host thread"
+            );
+            let (calls, _, value_reads) = super::worker_test::join();
+            assert_eq!(calls, 1, "the worker must scan exactly once");
+            assert_eq!(
+                value_reads, 0,
+                "the worker must only scan account attributes"
+            );
             assert!(secrets::system_store(crate::broker::custody::TEST_HOST)
                 .scan_accounts()
                 .unwrap()
@@ -899,6 +1006,34 @@ mod list_tests {
     }
 
     #[test]
+    fn default_pane_inventory_scans_on_the_worker() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        let peer = PeerWitness::for_live_pids(&[h.shell_pid(pane)]);
+        let cwd = h.workspace_root();
+        let frame = serde_json::json!({"type":"secret_list","cwd":cwd,"global":false});
+        let refused = send(&mut h, frame.clone(), Some(peer.clone()));
+        assert_eq!(refused["error_code"], "permission_denied");
+        let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+        let ask = monitor
+            .host_records()
+            .pending()
+            .into_iter()
+            .find(|row| row.tool == "secret.list")
+            .unwrap();
+        monitor
+            .approve_pending(&ask.pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        secrets::take_test_store_calls();
+        let allowed = send(&mut h, frame, Some(peer));
+        assert!(allowed["entries"].is_array(), "{allowed}");
+        assert_eq!(secrets::take_test_store_calls(), 0);
+        let (calls, _, value_reads) = super::worker_test::join();
+        assert!(calls > 0);
+        assert_eq!(value_reads, 0);
+    }
+
+    #[test]
     fn context_inventory_human_names_agent_requires_exact_grant() {
         let mut h = HostHarness::new();
         let pane = h.add_focused_terminal();
@@ -928,10 +1063,15 @@ mod list_tests {
             );
         }
         // The listener overwrites forged ancestry before dispatch, including while hidden.
-        assert_eq!(
-            request(&mut h, &context, &[])["error_code"],
-            "permission_denied"
-        );
+        let reply_file = crate::rpc::response_file("forged-secret-list", "json");
+        let line = serde_json::json!({
+            "type":"pane_secret_list", "context":context, "response_file":reply_file,
+        }).to_string();
+        crate::app::handle_socket_line(&line, &h.ipc_tx, Some(&[]), &mut Vec::new());
+        h.hidden_frame();
+        let reply: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(reply_file).unwrap()).unwrap();
+        assert_eq!(reply["error_code"], "permission_denied");
         let restricted = crate::broker::pane_authority::PaneAuthority::for_test(
             pane,
             crate::broker::pane_authority::Ceiling::Baseline,
@@ -960,7 +1100,15 @@ mod list_tests {
         monitor
             .approve_pending(&pending.id, crate::broker::gate::ApprovalChoice::Once)
             .unwrap();
+        secrets::take_test_store_calls();
         let allowed = request(&mut h, &context, &[pid]);
+        assert_eq!(
+            secrets::take_test_store_calls(),
+            0,
+            "inventory scanned on the host thread"
+        );
+        let (calls, _, _) = super::worker_test::join();
+        assert!(calls > 0, "the inventory worker must reach the store");
         assert!(allowed["entries"]
             .as_array()
             .unwrap()
@@ -1193,7 +1341,7 @@ mod list_tests {
                     .iter()
                     .any(|item| item["name"] == "LOCAL" && item["value"] == "local-canary"));
             }
-            let (_, logs) = super::worker_test::join();
+            let (_, logs, _) = super::worker_test::join();
             for canary in ["terminal-canary", "ancestor-canary", "local-canary"] {
                 assert!(!logs.join("\n").contains(canary));
                 assert!(!granted.input_summary.contains(canary));
@@ -2323,7 +2471,7 @@ mod cli_tests {
                 None,
                 crate::cli::OutputMode::Text,
             ),
-            "status" => i32::from(!crate::cli::ai::check_openrouter_configured()),
+            "status" => i32::from(crate::cli::ai::check_openrouter_configured() != Some(true)),
             "set" => crate::cli::workspace::workspace_secret_set(
                 name,
                 std::env::var_os("SECRET_PROMPT").is_none(),
@@ -2767,7 +2915,7 @@ mod cli_tests {
             }
             f.decide(&second, ApprovalChoice::Deny);
             finish(b, 1);
-            let (count, lines) = join();
+            let (count, lines, _) = join();
             assert_eq!(count, usize::from(op == "exec")); // exec enumerates account names only.
             evidence.push_str(&lines.join("\n"));
             f.decide(&first, ApprovalChoice::Once);
@@ -2865,7 +3013,7 @@ mod cli_tests {
         finish(second, 1);
         // Join in reverse spawn order: B made no calls and A wrote once.
         for calls in [0, 1] {
-            let (actual, lines) = join();
+            let (actual, lines, _) = join();
             assert_eq!(actual, calls);
             evidence.push_str(&lines.join("\n"));
         }
@@ -2875,7 +3023,7 @@ mod cli_tests {
             f.decide(&ask, ApprovalChoice::Once);
             let stdout = String::from_utf8(finish(child, 0).stdout).unwrap();
             assert_eq!(stdout.lines().last(), Some("first-1280-canary"));
-            let (calls, lines) = join();
+            let (calls, lines, _) = join();
             assert_eq!(calls, 2); // Names-only discovery, then the approved fetch.
             evidence.push_str(&lines.join("\n"));
         } else {

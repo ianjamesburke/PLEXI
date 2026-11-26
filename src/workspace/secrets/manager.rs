@@ -37,12 +37,14 @@ impl SecretTarget {
         format!("{name}@{scope}")
     }
 
-    /// The key reads are granted and audited under. A folder read keeps the
-    /// bare path (the key saved decisions already use); set and delete prefix it.
+    /// The key reads are granted and audited under. Inventory uses the
+    /// captured workspace root. Folder reads use the bare path.
     fn read_resource(&self, name: &str) -> String {
         match self {
-            Self::Folder(folder) => format!("{name}@{}", folder.display()),
-            _ => self.resource(name),
+            Self::Workspace { root, .. } | Self::Folder(root) => {
+                format!("{name}@{}", root.display())
+            }
+            Self::Global => self.resource(name),
         }
     }
 
@@ -134,28 +136,95 @@ pub fn global_secret_stored(name: &str) -> Result<bool, String> {
 }
 
 pub fn secret_inventory(cwd: &Path, global_only: bool) -> Result<Vec<SecretEntry>, String> {
-    Ok(inventory_for_scope(cwd, global_only, None, Vec::new(), None)?.entries)
+    let scope = InventoryScope::resolve(cwd, global_only, None, Vec::new())?;
+    Ok(inventory_for_scope(scope, None)?.entries)
+}
+
+/// Scope selected before consent and reused by the scan after consent.
+pub(crate) struct InventoryScope {
+    targets: Vec<SecretTarget>,
+    folders: Option<FolderInventoryScope>,
+    skipped: Vec<SkippedSecrets>,
+}
+
+struct FolderInventoryScope {
+    cwd: PathBuf,
+    pane_root: Option<PathBuf>,
+    enabled: bool,
+}
+
+impl InventoryScope {
+    pub(crate) fn resolve(
+        cwd: &Path,
+        global_only: bool,
+        pane_root: Option<&Path>,
+        mut skipped: Vec<SkippedSecrets>,
+    ) -> Result<Self, String> {
+        let mut targets = vec![SecretTarget::Global];
+        let folders = if global_only {
+            None
+        } else {
+            if let Some(SecretTarget::Workspace { id, root }) = workspace_target(cwd)? {
+                let root = crate::platform::path::canonical_or_self(&root);
+                if let Some(pane_root) = pane_root.filter(|pane_root| !root.starts_with(pane_root))
+                {
+                    skipped.push(SkippedSecrets::OutsidePaneContext {
+                        scope: "workspace".into(),
+                        path: root,
+                        pane_context_root: pane_root.to_path_buf(),
+                        pane_context_name: None,
+                    });
+                } else if !super::workspace_id_is_reserved(&id) {
+                    targets.push(SecretTarget::Workspace { id, root });
+                }
+            }
+            Some(FolderInventoryScope {
+                cwd: crate::platform::path::canonical_or_self(cwd),
+                pane_root: pane_root.map(Path::to_path_buf),
+                enabled: crate::release::feature_enabled(
+                    crate::release::ReleaseFeature::FolderSecrets,
+                ),
+            })
+        };
+        Ok(Self {
+            targets,
+            folders,
+            skipped,
+        })
+    }
+
+    pub(crate) fn disclosure(&self) -> String {
+        let mut scopes: Vec<_> = self.targets.iter().map(SecretTarget::label).collect();
+        if let Some(folders) = &self.folders {
+            let cwd = folders.cwd.display();
+            scopes.push(if folders.enabled {
+                format!("folder: {cwd} and its ancestors")
+            } else {
+                format!("hidden folder secret count for {cwd} and its ancestors")
+            });
+        }
+        scopes.join(", ")
+    }
 }
 
 /// Inventory for an admitted socket caller. The grant column shows only its rows.
 pub(crate) fn inventory_for_caller(
-    cwd: &Path,
-    global_only: bool,
-    pane_root: Option<&Path>,
-    skipped: Vec<SkippedSecrets>,
+    scope: InventoryScope,
     requester: &crate::broker::principal::Principal,
 ) -> Result<SecretInventory, String> {
-    inventory_for_scope(cwd, global_only, pane_root, skipped, Some(requester))
+    inventory_for_scope(scope, Some(requester))
 }
 
 /// The desktop reconciles legacy entries. Socket inventory scans names only.
 fn inventory_for_scope(
-    cwd: &Path,
-    global_only: bool,
-    pane_root: Option<&Path>,
-    mut skipped: Vec<SkippedSecrets>,
+    scope: InventoryScope,
     requester: Option<&crate::broker::principal::Principal>,
 ) -> Result<SecretInventory, String> {
+    let InventoryScope {
+        targets,
+        folders,
+        mut skipped,
+    } = scope;
     let host = host_process()?;
     let accounts = if requester.is_some() {
         Some(
@@ -179,25 +248,6 @@ fn inventory_for_scope(
         }
         None
     };
-    let mut targets = vec![SecretTarget::Global];
-    if !global_only {
-        if let Some(target) = workspace_target(cwd)? {
-            if let (SecretTarget::Workspace { root, .. }, Some(pane_root)) = (&target, pane_root) {
-                if !crate::platform::path::canonical_or_self(root).starts_with(pane_root) {
-                    skipped.push(SkippedSecrets::OutsidePaneContext {
-                        scope: "workspace".into(),
-                        path: root.clone(),
-                        pane_context_root: pane_root.to_path_buf(),
-                        pane_context_name: None,
-                    });
-                } else {
-                    targets.push(target);
-                }
-            } else {
-                targets.push(target);
-            }
-        }
-    }
     let mut entries = Vec::new();
     let (uses, permissions, grant_details_unavailable) =
         match PermissionMonitor::for_profile(&crate::config::config_dir()) {
@@ -239,10 +289,8 @@ fn inventory_for_scope(
     for target in targets {
         let prefix = match &target {
             SecretTarget::Global => super::keychain_user_name(""),
-            SecretTarget::Workspace { id, .. } if !super::workspace_id_is_reserved(id) => {
-                super::keychain_workspace_name(id, "")
-            }
-            _ => continue,
+            SecretTarget::Workspace { id, .. } => super::keychain_workspace_name(id, ""),
+            SecretTarget::Folder(_) => continue,
         };
         let names;
         let accounts = match &accounts {
@@ -258,12 +306,14 @@ fn inventory_for_scope(
             }
         }
     }
-    if !global_only {
-        let cwd = crate::platform::path::canonical_or_self(cwd);
-        let enabled =
-            crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
+    if let Some(FolderInventoryScope {
+        cwd,
+        pane_root,
+        enabled,
+    }) = folders
+    {
         let mut hidden = 0;
-        let folders = if requester.is_some() {
+        let bindings = if requester.is_some() {
             super::folder_store(&host)
                 .scan_accounts()
                 .map_err(|error| error.to_string())?
@@ -273,9 +323,13 @@ fn inventory_for_scope(
         } else {
             super::list_folder_secrets(super::folder_store(&host))
         };
-        for meta in folders {
+        for meta in bindings {
             let folder = crate::platform::path::canonical_or_self(&meta.folder);
-            if cwd.starts_with(&folder) && pane_root.is_none_or(|root| folder.starts_with(root)) {
+            if cwd.starts_with(&folder)
+                && pane_root
+                    .as_deref()
+                    .is_none_or(|root| folder.starts_with(root))
+            {
                 if enabled {
                     add(meta.name, SecretTarget::Folder(meta.folder));
                 } else {
@@ -626,6 +680,26 @@ mod tests {
 mod inventory_tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn workspace_inventory_usage_stays_on_the_resolved_root() {
+        let fixture = tempfile::tempdir().unwrap();
+        let parent = fixture.path().canonicalize().unwrap();
+        let root = parent.join("workspace");
+        let moved = parent.join("moved");
+        std::fs::create_dir(&root).unwrap();
+        let target = SecretTarget::Workspace {
+            id: "workspace-fixture".into(),
+            root: root.clone(),
+        };
+        std::fs::rename(&root, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &root).unwrap();
+        assert_eq!(
+            target.read_resource("FIXTURE_TOKEN"),
+            format!("FIXTURE_TOKEN@{}", root.display())
+        );
+    }
+
     #[test]
     fn folder_inventory_shows_read_grants_and_last_use() {
         use crate::broker::gate::ApprovalChoice;
@@ -767,9 +841,9 @@ mod inventory_tests {
             .any(|grant| grant.contains("inventory-reader") && grant.contains("allow")));
         // A requester's inventory shows its own grant rows only (stint 1743).
         let stranger = crate::broker::principal::Principal::agent("inventory-stranger").unwrap();
-        let theirs =
-            inventory_for_caller(root.path(), false, Some(root.path()), Vec::new(), &stranger)
-                .unwrap();
+        let scope =
+            InventoryScope::resolve(root.path(), false, Some(root.path()), Vec::new()).unwrap();
+        let theirs = inventory_for_caller(scope, &stranger).unwrap();
         let seen = theirs
             .entries
             .iter()

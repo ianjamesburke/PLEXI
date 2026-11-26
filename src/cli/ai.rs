@@ -8,6 +8,8 @@ const OLLAMA_INSTALL: InstallTarget = InstallTarget {
     winget: Some("Ollama.Ollama"),
     url: "https://ollama.com/download",
 };
+const OPENROUTER_STATUS_UNAVAILABLE: &str =
+    "OpenRouter status is unavailable. Make sure Plexi is running, then retry.";
 
 // ── Hardware detection ────────────────────────────────────────────────────────
 
@@ -28,7 +30,8 @@ struct IntegrationReport {
     ollama_installed: bool,
     ollama_running: bool,
     ollama_models: Vec<String>,
-    openrouter_configured: bool,
+    /// A failed host status check is serialized as null.
+    openrouter_configured: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -235,25 +238,38 @@ fn probe_ollama() -> (bool, Vec<String>) {
     (true, models)
 }
 
-pub(crate) fn check_openrouter_configured() -> bool {
-    let reply = crate::rpc::request_json(
-        &super::resolve_secret_socket(),
+pub(crate) fn check_openrouter_configured() -> Option<bool> {
+    query_openrouter_status(&super::resolve_secret_socket())
+}
+
+fn query_openrouter_status(socket: &std::path::Path) -> Option<bool> {
+    decode_openrouter_status(crate::rpc::request_json(
+        socket,
         serde_json::json!({"type":"openrouter_secret_status"}),
         std::time::Duration::from_secs(3),
-    );
+    ))
+}
+
+fn decode_openrouter_status(
+    reply: Result<serde_json::Value, crate::rpc::PollError>,
+) -> Option<bool> {
     match reply {
-        Ok(reply) if reply["configured"].is_boolean() => {
-            let configured = reply["configured"] == true;
-            log::info!("ai: OPENROUTER_API_KEY stored={configured}");
-            configured
-        }
         Ok(reply) => {
-            log::warn!("ai: OpenRouter status unavailable: {}", reply["error"]);
-            false
+            if let Some(error) = reply.get("error") {
+                log::warn!("ai: OpenRouter status unavailable: {error}");
+                return None;
+            }
+            let configured = reply["configured"].as_bool();
+            if let Some(configured) = configured {
+                log::info!("ai: OPENROUTER_API_KEY stored={configured}");
+            } else {
+                log::warn!("ai: OpenRouter status unavailable: missing configured flag");
+            }
+            configured
         }
         Err(error) => {
             log::warn!("ai: OpenRouter status unavailable: {error}");
-            false
+            None
         }
     }
 }
@@ -382,10 +398,10 @@ fn print_report(hw: &HardwareReport, integrations: &IntegrationReport, rec: &Mod
         println!("    {dim}{model_list}{reset}");
     }
 
-    let openrouter_status = if integrations.openrouter_configured {
-        format!("{ok} OpenRouter API key configured")
-    } else {
-        format!("{no} OpenRouter not configured  {dim}(plexi secret set OPENROUTER_API_KEY --global){reset}")
+    let openrouter_status = match integrations.openrouter_configured {
+        Some(true) => format!("{ok} OpenRouter API key configured"),
+        Some(false) => format!("{no} OpenRouter not configured  {dim}(plexi secret set OPENROUTER_API_KEY --global){reset}"),
+        None => format!("{yellow}{OPENROUTER_STATUS_UNAVAILABLE}{reset}"),
     };
     println!("  {openrouter_status}");
 
@@ -402,19 +418,27 @@ fn print_report(hw: &HardwareReport, integrations: &IntegrationReport, rec: &Mod
     println!("  {dim}{}{reset}", rec.note);
 }
 
-fn format_onboarding_guide(openrouter_configured: bool) -> String {
+fn format_onboarding_guide(openrouter_configured: Option<bool>) -> String {
     let mut out = String::new();
     out.push_str("plexi ai onboard -- first-run setup\n\n");
     out.push_str("1. Set up AI\n");
 
-    if openrouter_configured {
-        out.push_str("   Cloud AI is ready. OpenRouter is configured.\n");
-        out.push_str("   Next: run `plexi ai doctor` to verify the full report.\n");
-    } else {
-        out.push_str(
-            "   Plexi uses OpenRouter for AI. Local providers are not supported in 0.5.0.\n",
-        );
-        out.push_str("   Next: run `plexi secret set OPENROUTER_API_KEY --global`.\n");
+    match openrouter_configured {
+        Some(true) => {
+            out.push_str("   Cloud AI is ready. OpenRouter is configured.\n");
+            out.push_str("   Next: run `plexi ai doctor` to verify the full report.\n");
+        }
+        Some(false) => {
+            out.push_str(
+                "   Plexi uses OpenRouter for AI. Local providers are not supported in 0.5.0.\n",
+            );
+            out.push_str("   Next: run `plexi secret set OPENROUTER_API_KEY --global`.\n");
+        }
+        None => {
+            out.push_str("   ");
+            out.push_str(OPENROUTER_STATUS_UNAVAILABLE);
+            out.push('\n');
+        }
     }
 
     out.push_str("\n2. Skip AI for now\n");
@@ -454,7 +478,7 @@ pub fn ai_onboard_cli() -> i32 {
     log::info!("cli:ai:onboard: starting first-run guide");
 
     let openrouter_configured = check_openrouter_configured();
-    log::info!("cli:ai:onboard: openrouter={openrouter_configured}");
+    log::info!("cli:ai:onboard: openrouter={openrouter_configured:?}");
 
     print!("{}", format_onboarding_guide(openrouter_configured));
     0
@@ -474,7 +498,7 @@ pub fn ai_doctor_cli(json: bool) -> i32 {
 
     let integrations = check_integrations();
     log::info!(
-        "cli:ai:doctor: integrations -- ollama_installed={} ollama_running={} models={} openrouter={}",
+        "cli:ai:doctor: integrations -- ollama_installed={} ollama_running={} models={} openrouter={:?}",
         integrations.ollama_installed,
         integrations.ollama_running,
         integrations.ollama_models.len(),
@@ -504,7 +528,7 @@ pub fn ai_doctor_cli(json: bool) -> i32 {
     } else {
         print_report(&hw, &integrations, &recommendation);
         crate::cli::print_tip(&format!(
-            "Run `plexi secret set OPENROUTER_API_KEY --global` to configure cloud AI, or `{}` then `ollama pull llama3.2:3b` for local AI.",
+            "Run `{}` then `ollama pull llama3.2:3b` for local AI.",
             install_hint(OLLAMA_INSTALL)
         ));
     }
@@ -517,8 +541,44 @@ mod tests {
     use super::{ai_setup_cli, format_onboarding_guide, AI_SETUP_REFUSAL};
 
     #[test]
+    fn openrouter_unavailable_does_not_report_a_missing_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = super::query_openrouter_status(&dir.path().join("missing.sock"));
+        let guide = format_onboarding_guide(status);
+        let integrations = super::IntegrationReport {
+            ollama_installed: false,
+            ollama_running: false,
+            ollama_models: Vec::new(),
+            openrouter_configured: status,
+        };
+        let json = serde_json::to_value(integrations).unwrap();
+        assert_eq!(
+            json.get("openrouter_configured"),
+            Some(&serde_json::Value::Null)
+        );
+        assert!(guide.contains("status is unavailable"), "{guide}");
+        assert!(!guide.contains("plexi secret set"), "{guide}");
+    }
+
+    #[test]
+    fn openrouter_status_distinguishes_confirmed_results_from_failures() {
+        use crate::rpc::PollError;
+        use serde_json::json;
+
+        for (reply, expected) in [
+            (Ok(json!({"configured": true})), Some(true)),
+            (Ok(json!({"configured": false})), Some(false)),
+            (Ok(json!({"error": "scan refused"})), None),
+            (Ok(json!({"configured": "false"})), None),
+            (Err(PollError::TimedOut), None),
+        ] {
+            assert_eq!(super::decode_openrouter_status(reply), expected);
+        }
+    }
+
+    #[test]
     fn onboarding_guides_fresh_profile_without_hidden_prerequisites() {
-        let guide = format_onboarding_guide(false);
+        let guide = format_onboarding_guide(Some(false));
 
         assert!(guide.contains("plexi ai onboard -- first-run setup"));
         assert!(guide.contains("plexi secret set OPENROUTER_API_KEY --global"));
@@ -528,7 +588,7 @@ mod tests {
 
     #[test]
     fn onboarding_prefers_ready_cloud_ai_when_openrouter_configured() {
-        let guide = format_onboarding_guide(true);
+        let guide = format_onboarding_guide(Some(true));
 
         assert!(guide.contains("Cloud AI is ready"));
         assert!(guide.contains("plexi ai doctor"));
@@ -539,7 +599,7 @@ mod tests {
     /// never route a user to Ollama, whatever the machine could run.
     #[test]
     fn onboarding_routes_to_openrouter_and_never_to_ollama() {
-        for openrouter_configured in [false, true] {
+        for openrouter_configured in [Some(false), Some(true), None] {
             let guide = format_onboarding_guide(openrouter_configured);
 
             assert!(!guide.contains("ollama pull"), "{guide}");
@@ -547,9 +607,8 @@ mod tests {
             assert!(!guide.contains("install Ollama"), "{guide}");
             assert!(!guide.contains("plexi ai setup"), "{guide}");
         }
-        assert!(
-            format_onboarding_guide(false).contains("plexi secret set OPENROUTER_API_KEY --global")
-        );
+        assert!(format_onboarding_guide(Some(false))
+            .contains("plexi secret set OPENROUTER_API_KEY --global"));
     }
 
     /// Stint 1315: the refusal names what is unsupported, the supported
