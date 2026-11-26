@@ -6,18 +6,13 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 
 ## Source of Truth
 
-- **V1 plan + live state** → `TRUTH.md` (repo root, untracked, on the release owner's machine). When present it outranks `.stint/`, GitHub issues, beads, and external checklists. Update it when the project's current state, active blocker, standing decision, release/installed acceptance, or next action changes, or an existing claim becomes false. Routine commits, PR activity, task creation and validation runs do not require an entry by themselves.
 - **What shipped** → `git log --oneline -20`
 - **Product direction** → `NORTH_STAR.md`
 - **Feature specs** → `docs/*.md` (active PRMs; see `docs/AGENTS.md` for lifecycle rules)
 - **Task graph** → `.stint/` (`stint next`, `stint status`). Flat list, no sprints — ordering is `priority` plus `blocked_by`.
-- **Implementation tickets** → `.stint/` tasks (GitHub issues are optional; stint outranks issues, `TRUTH.md` outranks stint)
+- **Implementation tickets** → `.stint/` tasks (GitHub issues are optional; stint outranks issues)
 
 Do not track in-progress work or completion status in this file.
-
-### Keeping TRUTH current
-
-Keep `TRUTH.md` a concise snapshot. Replace the affected statement in place and remove resolved blockers or superseded claims. Put task progress and detailed evidence in the stint, commit history in Git, and review evidence in the PR; link to those records when needed. Preserve the distinction between code complete, installed, and human accepted. Workflow instructions to update `TRUTH.md` use this same change criterion; they do not require an activity log. If nothing in the snapshot needs to change, leave it alone.
 
 ## Website
 
@@ -54,7 +49,7 @@ When work begins: `stint claim <task-id>`. When done: `stint done <task-id>`. Us
 
 ## V1 Hand and Dogfood Tracking
 
-Record current Alpha tag, Hand, Ian note, and Dogfood state in root `TRUTH.md`. Eng `done` is not Mac `pass`.
+Eng `done` is not Mac `pass`.
 
 ## Branches
 
