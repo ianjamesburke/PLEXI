@@ -4,8 +4,8 @@ name: Build and publish Plexi release
 # Nightly (cron, or dispatch with nightly=true): when alpha has commits since
 # the last beta tag, build and test alpha's head, and only if every package
 # passes tag that exact commit vX.Y.Z-beta.N and publish it; no new commits
-# means no heavy jobs and no release. There is no beta branch: a beta is a tag
-# on an alpha commit. A push to main publishes vX.Y.Z (promoted by hand with
+# means no heavy jobs and no release. After publishing, the beta branch is
+# fast-forwarded to the released commit. A push to main publishes vX.Y.Z (promoted by hand with
 # `just promote main`); main fails when it has commits but no version bump.
 # Pushes to alpha publish nothing; alpha is installed from source. A started
 # release always finishes. Dispatch with a tag republishes it or runs the
@@ -166,3 +166,11 @@ jobs:
           if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             gh workflow run publish-sdk.yml --ref "$TAG"
           fi
+      - name: Move the beta branch to the released commit
+        if: ${{ github.event_name == 'schedule' || inputs.nightly }}
+        env:
+          SHA: ${{ needs.next-tag.outputs.sha }}
+        run: |
+          # After the release is out, so a refused push never blocks a beta.
+          # Fast-forward only. A GITHUB_TOKEN push starts no workflow run.
+          git push origin "$SHA:refs/heads/beta"

@@ -75,13 +75,13 @@ finishes.
 | Branch | Publishes | Tag |
 |---|---|---|
 | `alpha` | nothing; install from source with `just channel-install alpha` | none |
-| none (a tag on an alpha commit) | one scheduled nightly run (03:00 UTC-7) | `vX.Y.Z-beta.N` |
+| `beta` | one scheduled nightly run (03:00 UTC-7) | `vX.Y.Z-beta.N` |
 | `main` | a push, made by `just promote main` | `vX.Y.Z` |
 
 The nightly run does nothing when alpha has no commits since the last beta tag.
 Otherwise it builds, tests and packages alpha's head commit; only if everything
 passes it tags that exact commit (never a newer alpha tip) and publishes the
-next beta. There is no beta branch: a beta is a tag on an alpha commit. `just promote beta` starts the same run
+next beta, then fast-forwards the `beta` branch to that commit. `just promote beta` starts the same run
 by hand.
 
 Per-push alpha releases cost about 55 hosted minutes each and served no one but
