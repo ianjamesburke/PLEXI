@@ -12,7 +12,7 @@ How Plexi is tested, which layer owns what, and how to add coverage.
 - Visible UI change: run the scene that shows it and look at the screenshot.
 - If a person needs to try it: open a PR and run `just pr-install <N>`.
 - On approval: `just merge-pr <N>`. Nothing is re-run after approval.
-- The nightly beta release runs the full suite, release build and packaging once (`scripts/RELEASE_CHANNELS.md`).
+- The beta release runs the full suite, release build and packaging once (`scripts/RELEASE_CHANNELS.md`).
 
 ## Wall-clock budgets
 

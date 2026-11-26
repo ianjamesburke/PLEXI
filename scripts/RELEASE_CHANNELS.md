@@ -75,19 +75,24 @@ finishes.
 | Branch | Publishes | Tag |
 |---|---|---|
 | `alpha` | nothing; install from source with `just install` on alpha | `vX.Y.Z-alpha.N`, counted locally |
-| `beta` | one scheduled nightly run (03:00 UTC-7) | `vX.Y.Z-beta.N` |
+| `beta` | the release run `just promote beta` starts | `vX.Y.Z-beta.N` |
 | `main` | a push, made by `just promote main` | `vX.Y.Z` |
 
-`just promote beta` fast-forwards the `beta` branch to `origin/alpha`; that push
-publishes nothing. The nightly run does nothing when beta has no commits since
-the last beta tag. Otherwise it builds, tests and packages beta's head commit;
-only if everything passes it tags that exact commit and publishes the next beta.
+`just promote beta` fast-forwards the `beta` branch to `origin/alpha` and starts
+the release run. The run does nothing when beta has no commits since the last
+beta tag. Otherwise it builds, tests and packages beta's head commit; only if
+everything passes it tags that exact commit and publishes the next beta. Run
+`just promote beta` again to retry a beta that did not publish.
+
+The workflow's cron is only a backstop for a beta that did not publish. GitHub
+starts this repo's scheduled runs 4 to 10 hours after the cron time and
+sometimes skips them, so a beta never waits on it.
 
 A source install of alpha is tagged by `scripts/local-alpha-tag.sh`: N counts
 up on every install and restarts when `X.Y.Z` changes.
 
 Per-push alpha releases cost about 55 hosted minutes each and served no one but
-the owner. The full suite now gates the nightly beta instead of each merge.
+the owner. The full suite now gates each beta instead of each merge.
 
 `X.Y.Z` is `Cargo.toml`'s version. Once `vX.Y.Z` is released, alpha and beta
 count on the next patch, because SemVer ranks `X.Y.Z-alpha.N` below `X.Y.Z`
@@ -100,7 +105,7 @@ on stable tags only.
 ```sh
 just changelog       # preview unreleased commits
 just bump            # on alpha: version + CHANGELOG commit (minor|major optional); push it
-just promote beta    # fast-forward beta to alpha; the nightly run publishes vX.Y.Z-beta.N
+just promote beta    # fast-forward beta to alpha and start the run that publishes vX.Y.Z-beta.N
 just promote main    # fast-forward main to the newest beta tag's commit; CI publishes vX.Y.Z
 ```
 

@@ -468,8 +468,8 @@ changelog:
 bump bump="patch":
     bash scripts/release-version.sh "{{bump}}"
 
-# beta: fast-forward the beta branch to origin/alpha; the nightly run tests and
-# publishes it. The push itself publishes nothing.
+# beta: fast-forward the beta branch to origin/alpha, then start the release
+# run that tests and publishes it. Run again to retry a beta that did not publish.
 # main: fast-forward main to the newest beta tag's commit; that push publishes.
 # Refuses a non-fast-forward.
 #   just promote beta | just promote main
@@ -478,7 +478,7 @@ promote to:
     set -euo pipefail
     case "{{to}}" in
         beta)
-            git fetch -q origin alpha beta
+            git fetch -q origin alpha beta --tags
             if git rev-parse -q --verify refs/heads/alpha >/dev/null; then
                 ahead=$(git rev-list --count origin/alpha..refs/heads/alpha)
                 [[ "$ahead" == 0 ]] || { echo "error: local alpha has $ahead commit(s) that are not on GitHub, so beta would not get them. Run 'git push origin alpha', then 'just promote beta' again." >&2; exit 1; }
@@ -486,10 +486,15 @@ promote to:
             sha=$(git rev-parse origin/alpha)
             if [[ "$sha" == "$(git rev-parse origin/beta)" ]]; then
                 echo "beta is already at alpha: $(git log -1 --format='%h %s' "$sha")"
-                exit 0
+            else
+                git push origin "$sha:refs/heads/beta"
+                echo "beta -> $(git log -1 --format='%h %s' "$sha")"
             fi
-            git push origin "$sha:refs/heads/beta"
-            echo "beta -> $(git log -1 --format='%h %s' "$sha"). The nightly run publishes it."
+            tag=$(bash scripts/release-next-tag.sh beta "$sha")
+            [[ -n "$tag" ]] || { echo "this commit is already published as a beta; nothing to release"; exit 0; }
+            gh workflow run release.yml --ref alpha -f nightly=true >/dev/null \
+                || { echo "error: beta is at ${sha:0:9} but the $tag release run did not start ('gh workflow run release.yml' failed). Run 'just promote beta' again." >&2; exit 1; }
+            echo "release run started for $tag. Watch it: gh run list --workflow release.yml --limit 1"
             exit 0
             ;;
         main) ;;

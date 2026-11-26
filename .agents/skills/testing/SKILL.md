@@ -5,7 +5,7 @@ description: "Agent self-validation before commit. Classifies the diff (host log
 
 # Testing — Self-Validation
 
-Use [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate): run the tests that cover what you changed, add one if nothing does, look at the screenshot for visible UI changes. The nightly beta release runs the full suite once.
+Use [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate): run the tests that cover what you changed, add one if nothing does, look at the screenshot for visible UI changes. The beta release runs the full suite once.
 
 All commands run from the feature worktree.
 

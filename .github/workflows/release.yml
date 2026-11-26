@@ -1,11 +1,13 @@
 name: Build and publish Plexi release
 
 # Releases come from two triggers (scripts/release-next-tag.sh picks the tag).
-# Nightly (cron, or dispatch with nightly=true): when the beta branch has
-# commits since the last beta tag, build and test its head, and only if every
-# package passes tag that exact commit vX.Y.Z-beta.N and publish it; no new
-# commits means no heavy jobs and no release. The beta branch moves only by
-# `just promote beta`. A push to main publishes vX.Y.Z (promoted by hand with
+# Beta (dispatch with nightly=true, sent by `just promote beta`; the cron is
+# only a backstop): when the beta branch has commits since the last beta tag,
+# build and test its head, and only if every package passes tag that exact
+# commit vX.Y.Z-beta.N and publish it; no new commits means no heavy jobs and
+# no release. The beta branch moves only by `just promote beta`. GitHub starts
+# this repo's scheduled runs 4 to 10 hours late and sometimes not at all, so
+# nothing may depend on the cron's time. A push to main publishes vX.Y.Z (promoted by hand with
 # `just promote main`); main fails when it has commits but no version bump.
 # Pushes to alpha and beta publish nothing; alpha is installed from source. A started
 # release always finishes. Dispatch with a tag republishes it or runs the
@@ -14,11 +16,11 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: "0 10 * * *" # 03:00 UTC-7
+    - cron: "17 10 * * *" # backstop for a beta that did not publish; starts hours late
   workflow_dispatch:
     inputs:
       nightly:
-        description: Run the nightly beta release now (leave tag empty)
+        description: Release the beta branch now (leave tag empty)
         type: boolean
         default: false
       tag:

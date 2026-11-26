@@ -17,7 +17,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertNotIn(banned, host)
         release = (root / ".github/workflows/release.yml").read_text()
         self.assertIn("  push:\n    branches: [main]\n", release)
-        self.assertIn('  schedule:\n    - cron: "0 10 * * *"', release)
+        self.assertIn('  schedule:\n    - cron: "17 10 * * *"', release)
         self.assertIn("sha=$(git rev-parse refs/remotes/origin/beta)", release)
         self.assertNotIn("refs/heads/beta", release)
         self.assertNotIn("\n    tags:\n", release)
