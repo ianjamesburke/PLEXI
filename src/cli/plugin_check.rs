@@ -1427,6 +1427,7 @@ fn run_python_type_check(
         entry_path,
         Path::new(&runtime.executable),
         &crate::config::build_pythonpath(None),
+        Path::new("uv"),
     )
 }
 
@@ -1440,6 +1441,7 @@ fn run_python_type_check_with(
     entry_path: &Path,
     python: &Path,
     pythonpath: &str,
+    uv: &Path,
 ) -> Result<TypeCheckOutcome, String> {
     // The venv resolver can hand back paths relative to the caller's cwd;
     // the mypy run below changes cwd to the plugin dir, so resolve everything
@@ -1450,9 +1452,10 @@ fn run_python_type_check_with(
             entry_path.display()
         )
     })?;
-    let python = &python.canonicalize().map_err(|e| {
+    // Python locates pyvenv.cfg from the invoked path, so keep the venv symlink.
+    let python = &std::path::absolute(python).map_err(|e| {
         format!(
-            "could not resolve plugin venv python {}: {e}",
+            "could not make plugin Python interpreter path {} absolute: {e}",
             python.display()
         )
     })?;
@@ -1462,16 +1465,19 @@ fn run_python_type_check_with(
         }
         // One-time install into the plugin venv, mirroring how plugin
         // dependencies land there (`python_env::install_dependencies`).
-        let install = Helper::new("uv")
+        let install = Helper::new(uv)
             .args(["pip", "install", "--python"])
             .arg(python)
             .arg("mypy")
-            .run("`uv pip install mypy`", MYPY_INSTALL_LIMIT);
+            .run(
+                &format!("`uv pip install --python {} mypy`", python.display()),
+                MYPY_INSTALL_LIMIT,
+            );
         if let Err(error) = install {
             return unavailable_or_fatal(error, &probe);
         }
         probe_mypy(python).map_err(|e| format!("mypy installed but still not importable: {e}"))?;
-        log::info!("plugin_check: installed mypy into the plugin venv");
+        log::info!("plugin_check: installed mypy via {}", python.display());
     }
     let plugin_dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
     let cache_dir = plugin_dir.join(".venv").join("mypy_cache");
@@ -1495,7 +1501,8 @@ fn run_python_type_check_with(
     let output = &exited.output;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     log::info!(
-        "plugin_check: mypy exited {:?} ({} finding bytes)",
+        "plugin_check: mypy via {} exited {:?} ({} finding bytes)",
+        python.display(),
         exited.status.code(),
         stdout.len()
     );
@@ -1503,7 +1510,8 @@ fn run_python_type_check_with(
         Some(0) => Ok(TypeCheckOutcome::Clean),
         Some(1) if !stdout.is_empty() => Ok(TypeCheckOutcome::Findings(stdout)),
         code => Err(format!(
-            "mypy failed (exit {code:?}): {}",
+            "mypy via {} failed (exit {code:?}): {}",
+            python.display(),
             if stdout.is_empty() {
                 String::from_utf8_lossy(&output.stderr).trim().to_string()
             } else {
@@ -2318,6 +2326,134 @@ mod type_check_tests {
 
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn mypy_gate_uses_symlinked_plugin_venv() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo_python = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/python");
+        if !repo_python.exists() || probe_mypy(&repo_python).is_err() {
+            eprintln!("skipping: repo venv python with mypy not available");
+            return;
+        }
+        let limit = crate::testing::load_aware_timeout(PYTHON_PROBE_LIMIT);
+        let python_query = |python: &Path, script: &str| {
+            let output = Helper::new(python)
+                .args(["-IB", "-c", script])
+                .run("query fixture Python", limit)
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let root = dir.path();
+        let venv = root.join(".venv");
+        let python = venv.join("bin/python");
+        let base = repo_python.canonicalize().unwrap();
+        Helper::new("uv")
+            .args([
+                "--no-config",
+                "venv",
+                "--offline",
+                "--no-python-downloads",
+                "--no-project",
+                "--python",
+            ])
+            .arg(&base)
+            .arg(&venv)
+            .env("UV_CACHE_DIR", root.join("uv-cache"))
+            .run("create fixture venv", limit)
+            .unwrap();
+        assert!(python.is_symlink());
+        assert_eq!(python.canonicalize().unwrap(), base);
+        assert!(tool_unavailable(&probe_mypy(&python).unwrap_err()));
+
+        let purelib = "import sysconfig; print(sysconfig.get_path('purelib'))";
+        let site = PathBuf::from(python_query(&python, purelib));
+        let dependency = site.join("plexi_venv_fixture_dep");
+        fs::create_dir(&dependency).unwrap();
+        fs::write(
+            dependency.join("__init__.py"),
+            "def value() -> int:\n    return 42\n",
+        )
+        .unwrap();
+        fs::write(dependency.join("py.typed"), "").unwrap();
+        fs::write(
+            site.join("sitecustomize.py"),
+            r#"from pathlib import Path
+import sys
+
+if sys.orig_argv[1:3] == ["-m", "mypy"] and "--version" not in sys.orig_argv:
+    Path("mypy-prefix").write_text(sys.prefix)
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            python_query(
+                &base,
+                "import importlib.util; print(importlib.util.find_spec('plexi_venv_fixture_dep'))",
+            ),
+            "None"
+        );
+        let entry = dir.path().join("main.py");
+        fs::write(
+            &entry,
+            "from plexi_venv_fixture_dep import value\nanswer: int = value()\n",
+        )
+        .unwrap();
+
+        // Serve the repo's real mypy offline, only after the install target
+        // identifies itself as this fixture's venv.
+        fs::write(
+            root.join("mypy.pth"),
+            format!("{}\n", python_query(&repo_python, purelib)),
+        )
+        .unwrap();
+        let uv = root.join("uv");
+        fs::write(
+            &uv,
+            r#"#!/bin/sh
+set -eu
+test "$#" -eq 5
+test "$1 $2 $3 $5" = "pip install --python mypy"
+exec "$4" -IB -c '
+from pathlib import Path
+import sys
+import sysconfig
+
+root = Path(sys.argv[1]).resolve().parent
+prefix = Path(sys.prefix).resolve()
+assert prefix == root / ".venv", f"install interpreter sys.prefix is {prefix}"
+site = Path(sysconfig.get_path("purelib"))
+(site / "mypy.pth").write_bytes((root / "mypy.pth").read_bytes())
+(root / "install-prefix").write_text(str(prefix))
+' "$0"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&uv, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let relative_python = python
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap();
+        match run_python_type_check_with(&entry, relative_python, "", &uv).expect("mypy run") {
+            TypeCheckOutcome::Clean => {}
+            TypeCheckOutcome::Findings(findings) => {
+                panic!("venv dependency type check: {findings}")
+            }
+            TypeCheckOutcome::Unavailable(reason) => panic!("venv mypy unavailable: {reason}"),
+        }
+        for receipt in ["install-prefix", "mypy-prefix"] {
+            let prefix = PathBuf::from(fs::read_to_string(root.join(receipt)).unwrap());
+            assert_eq!(
+                prefix.canonicalize().unwrap(),
+                venv.canonicalize().unwrap(),
+                "{receipt}"
+            );
+        }
+    }
+
     /// Stint 0415, both halves of the contract: (1) a plugin reading a field
     /// that doesn't exist on an SDK event (`UiValueChange.payload` — it only
     /// has `.value`) fails the type gate instead of crashing the guest at
@@ -2351,7 +2487,7 @@ mod type_check_tests {
              \x20   return []\n",
         )
         .unwrap();
-        match run_python_type_check_with(&bad, &python, &sdk).expect("mypy run") {
+        match run_python_type_check_with(&bad, &python, &sdk, Path::new("uv")).expect("mypy run") {
             TypeCheckOutcome::Findings(findings) => assert!(
                 findings.contains("payload"),
                 "findings must name the bogus attribute: {findings}"
@@ -2383,7 +2519,7 @@ mod type_check_tests {
              \x20   ])\n",
         )
         .unwrap();
-        match run_python_type_check_with(&good, &python, &sdk).expect("mypy run") {
+        match run_python_type_check_with(&good, &python, &sdk, Path::new("uv")).expect("mypy run") {
             TypeCheckOutcome::Clean => {}
             TypeCheckOutcome::Findings(findings) => panic!(
                 "mixed and variable-held child lists must type-check clean under Sequence covariance: {findings}"
@@ -2422,7 +2558,7 @@ mod type_check_tests {
             std::fs::create_dir_all(&plugin_dir).unwrap();
             let entry = plugin_dir.join("main.py");
             std::fs::write(&entry, source).unwrap();
-            run_python_type_check_with(&entry, &python, &sdk).expect("mypy run")
+            run_python_type_check_with(&entry, &python, &sdk, Path::new("uv")).expect("mypy run")
         };
 
         let appended = edit(
