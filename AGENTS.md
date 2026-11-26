@@ -130,31 +130,13 @@ Every fact lives in exactly one place. Other files reference it; they never rest
 ## Traps
 
 Use `pgrep -P <pid>` instead of proc_listchildpids
-- **Auto-committing scripts:** `cargo run -p gen_config_docs > website/src/content/docs/config.md` to regenerate config docs without `just`'s auto-commit/push.
 - **Stale git index:** Run `git update-index --refresh` if `git status --porcelain` shows false-dirty files.
-- **macOS platform timing:** Add a throwaway `log::info!()` to observe actual runtime values on the first frame instead of guessing callback order.
-- **Command handler data:** Store all required data in command fields; never look up from ambient state at dispatch time.
-- **`#[cfg(unix)]` removal:** Grep for `set_mode`, `PermissionsExt`, and `0o755` across test files when removing unix blocks.
 - **Issue-referenced code:** Grep `alpha` before implementing; referenced functions may have moved or been deleted.
-- **Context targeting:** `create_page_at` takes an explicit `context_id`. Never switch `active_window` or `router.active` to steer it.
-- **Thread data through arguments:** Pass explicit parameters instead of mutating global focus/active state.
-- **CLI context:** Plexi CLI almost always runs inside a Plexi pane with `PLEXI_SOCKET` set.
-- **Runtime topology & channels:** Agent panes run under `plexi-beta`. To target a specific channel, always use the channel-named shim (`plexi-alpha`, `plexi-pr-<N>`) or explicit `env PLEXI_CHANNEL=<ch> plexi ...` — never rely on bare `plexi` or inherited `PLEXI_SOCKET`.
 - **Parallel worktrees:** When rebasing same-wave branch conflicts on shared files, keep the most complete fix.
 - **Alpha divergence before worktree:** `git fetch` and check `git log origin/alpha..HEAD` before `wtp add`.
 - **Bundle rebase conflicts:** When a multi-issue bundle conflicts because `alpha` already absorbed one issue's changes, take HEAD for those sections, keep only the branch's additive changes, and build-verify before continuing each rebase step.
-- **Login shell probes:** Host-spawned probes must be setsid-isolated (no controlling TTY, stdin=/dev/null, capture stdio). Use `run_login_shell_probe` in `src/host/shell.rs`.
-- **egui repaint scheduling:** Add `InputState::predicted_dt` to remaining delay; avoid literal zero-delay requests which cause immediate repaint loops.
-- **macOS App Nap:** Non-frontmost idle host gets napped without `NSProcessInfo` activity (`platform::app_nap::disable_app_nap`).
-- **Service external I/O in `App::logic`, never `App::ui`:** eframe skips `App::ui` entirely when the window is hidden or occluded. All external drains (pane IPC, spawn queue, PTY events, shutdown, event-bus, screenshots, Python runtimes) must live in `App::logic`.
-- **App servicing axes:** `service_plugin_commands` in `App::logic` handles occluded windows; `ViewRuntime::background_tick` handles inactive contexts. Both are required.
 - **`rustfmt` on mod files:** `rustfmt src/main.rs` reformats all reachable modules. Format only leaf files touched.
-- **`cargo test` vs `just build`:** Test builds don't enforce dead-code warnings or non-test cfg blocks. Run the installable release gate before ready/merge; TESTING.md permits a focused-check draft push to acquire the PR channel before its final candidate build.
-- **Window close vs process exit:** Closing the window does not end the process. Every quit path must finish in `app::quit::exit_host`.
-- **Mid-frame exit skips `App::on_exit`:** Any exit outside `on_exit` (like `plexi host stop`) must explicitly invoke cleanups (e.g. `bank_final_focus_segment`).
-- **UI thread profiling:** Drag/resize stutter in `App::ui` is invisible to logic heartbeat. Use `PLEXI_UI_PROFILE=1` to profile.
 - **`stint add` race:** Create tasks sequentially; parallel invocations can cross-assign task IDs.
-- **Filesystem walks on UI thread:** Picker walks must run in background threads and drain via `App::logic`, never block `App::ui`.
 
 ## Architecture
 

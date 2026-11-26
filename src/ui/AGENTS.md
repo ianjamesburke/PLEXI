@@ -50,6 +50,15 @@ Instrument migrated surfaces with `layout_report::Capture`, recording allocated 
 - **New theme presets must pass the WCAG contrast test.** `text_on_is_legible_on_every_preset_accent_and_danger` in `src/ui/theme.rs` asserts `text_on` clears 4.5:1 (`Role::SmallText`) on `accent` and `danger` fills for every entry in `preset_names()`; `text_on` prefers white, then the palette's darker text, then black. Add new presets to `preset_names()`, `canonical_preset_name()`, and `preset_colors()` — verify `text_on()` returns a legible color if the accent/danger is mid-luminance.
 - **Canvas apps bypass the host's WCAG check.** `ctx.theme.muted` (`#6c7086`) is only ~2.6:1 against bg — fails WCAG for body text. Use `ctx.theme.fg` for primary labels, a deliberate readable subtext (e.g. `#a6adc8`) for captions. `dim()` is for fills/tracks/glows, never text.
 - **`setup_fonts` only binds the `ui-medium` family on the *next* frame.** `set_fonts` is applied at the following `begin_frame`, so laying out any `font_medium`/`ui-medium` text (declarative Button, ListRow) on the same frame the font is registered panics in epaint ("FontFamily::Name(\"ui-medium\") is not bound"). The live host never hits this (fonts set once at startup), but offscreen rasterizers must apply fonts on a content-less first frame before rendering — see `render_ui_tree_to_png` in `src/host/wasm_render.rs`. Canvas-only trees (e.g. `calc`) dodge it because they never lay out `ui-medium` text.
+- **macOS platform timing:** Add a throwaway `log::info!()` to observe actual runtime values on the first frame instead of guessing callback order.
+- **egui repaint scheduling:** Add `InputState::predicted_dt` to remaining delay; avoid literal zero-delay requests which cause immediate repaint loops.
+- **macOS App Nap:** Non-frontmost idle host gets napped without `NSProcessInfo` activity (`platform::app_nap::disable_app_nap`).
+- **Service external I/O in `App::logic`, never `App::ui`:** eframe skips `App::ui` entirely when the window is hidden or occluded. All external drains (pane IPC, spawn queue, PTY events, shutdown, event-bus, screenshots, Python runtimes) must live in `App::logic`.
+- **App servicing axes:** `service_plugin_commands` in `App::logic` handles occluded windows; `ViewRuntime::background_tick` handles inactive contexts. Both are required.
+- **Window close vs process exit:** Closing the window does not end the process. Every quit path must finish in `app::quit::exit_host`.
+- **Mid-frame exit skips `App::on_exit`:** Any exit outside `on_exit` (like `plexi host stop`) must explicitly invoke cleanups (e.g. `bank_final_focus_segment`).
+- **UI thread profiling:** Drag/resize stutter in `App::ui` is invisible to logic heartbeat. Use `PLEXI_UI_PROFILE=1` to profile.
+- **Filesystem walks on UI thread:** Picker walks must run in background threads and drain via `App::logic`, never block `App::ui`.
 
 ## Rules
 
