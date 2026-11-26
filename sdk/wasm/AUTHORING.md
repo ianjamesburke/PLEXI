@@ -2,9 +2,9 @@
 
 The Rust SDK wraps the `plexi-plugin` world in [`wit/plexi.wit`](https://github.com/ianjamesburke/PLEXI/blob/alpha/wit/plexi.wit). See [the runtime reference](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/wasm-runtime.md) for the host architecture and security model.
 
-## Create an plugin
+## Create a plugin
 
-Install `cargo-component`, then scaffold, build, and open an plugin:
+Install `cargo-component`, then scaffold, build, and open a plugin:
 
 ```sh
 cargo install cargo-component

@@ -3015,7 +3015,7 @@ mod plugin_test_command_tests {
         );
     }
 
-    /// An plugin that declares its own project keeps project mode, so uv installs
+    /// A plugin that declares its own project keeps project mode, so uv installs
     /// the author's dependencies next to pytest.
     #[test]
     fn plugin_test_keeps_project_mode_when_the_plugin_declares_one() {

@@ -850,7 +850,7 @@ pub(crate) const HOST_METADATA_FILES: [&str; 3] = [
     INSTALL_COMPLETE_MARKER,
 ];
 
-/// Marker the installer writes last. An plugin directory without it is a partial
+/// Marker the installer writes last. A plugin directory without it is a partial
 /// or interrupted install and is never trusted for CLI operations.
 pub(crate) const INSTALL_COMPLETE_MARKER: &str = ".plexi-install-complete";
 

@@ -330,7 +330,7 @@ Warn-level lines flag the degraded paths: `no linked terminal, cannot run`, `bad
 A CLI-backed pane is an **App pane**, so the standard inspection commands apply
 (all over `PLEXI_SOCKET`, see `src/cli/pane.rs`):
 ```bash
-plexi pane list # the cli-renderer pane appears as an plugin pane
+plexi pane list # the cli-renderer pane appears as a plugin pane
 plexi pane info # metadata for the current pane
 plexi pane state <id> # the renderer's current UI snapshot
 ```

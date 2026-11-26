@@ -1442,7 +1442,7 @@ impl PlexiApp {
             };
             // Scope is a per-plugin user-facing policy declared in the plugin's
             // manifest.toml. Plugins never set it — the host resolves it once
-            // per notification here. An plugin that omits the field gets
+            // per notification here. A plugin that omits the field gets
             // `DefaultNotifyScope`'s own default (`Window`, the most
             // restrictive), which is a declared per-plugin policy and so does not
             // go through `NotifyScope::default()`.

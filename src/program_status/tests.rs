@@ -542,7 +542,7 @@ fn ps7501_mapping_priority_and_plugin_inheritance() {
     // Tie goes to the most recently updated record.
     let got = mapped(&["state=working:app=old", "state=working:id=b:app=new"]).unwrap();
     assert_eq!(got.agent, "new");
-    // An plugin on the record itself beats the ancestor's.
+    // A plugin on the record itself beats the ancestor's.
     let got = mapped(&["state=idle:app=root", "state=working:id=a:app=own"]).unwrap();
     assert_eq!(got.agent, "own");
 }

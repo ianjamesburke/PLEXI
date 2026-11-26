@@ -1404,7 +1404,7 @@ fn on_launch_always_new_never_dedups() {
         "always_new must always let the caller spawn a fresh instance"
     );
 
-    // An plugin with no [launch] on_launch at all defaults to always_new.
+    // A plugin with no [launch] on_launch at all defaults to always_new.
     let _unset = h.app.add_view_pane_in_window(0, "test");
     assert!(
         h.app
