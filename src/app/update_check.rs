@@ -106,7 +106,7 @@ impl PlexiApp {
         match self.update_status.ready() {
             Some(version) => {
                 log::info!("update: restart to v{version} requested from {source}");
-                self.update_quit_pending = true;
+                self.quit_coordinator.queue_update_restart();
                 // `App::logic` takes the restart; make sure a pass follows
                 // even when nothing else is animating.
                 self.ctx.request_repaint();
@@ -189,7 +189,7 @@ mod tests {
         );
 
         h.app.restart_to_update("test");
-        assert!(h.app.update_quit_pending);
+        assert!(h.app.quit_coordinator.update_restart_queued());
     }
 
     #[test]
@@ -210,7 +210,7 @@ mod tests {
     fn update_check_restart_without_ready_build_does_nothing() {
         let mut h = crate::testing::HostHarness::new();
         h.app.restart_to_update("test");
-        assert!(!h.app.update_quit_pending);
+        assert!(!h.app.quit_coordinator.update_restart_queued());
     }
 
     #[test]

@@ -51,6 +51,7 @@ mod plugin_call;
 pub(crate) mod plugin_migration;
 pub(crate) mod python_env;
 pub(crate) mod quit;
+pub(crate) mod quit_state;
 pub mod registry;
 pub(crate) mod registry_views;
 pub mod registry_watcher;
@@ -238,19 +239,15 @@ pub struct PlexiApp {
     pub(crate) plugin_notice: Option<(String, std::time::Instant)>,
     pub(crate) ui_gallery_normal_buf: String,
     pub(crate) ui_gallery_focused_buf: String,
-    pub(crate) quitting: bool,
-    pub(crate) quit_coordinator: quit::QuitCoordinator,
+    pub(crate) quit_coordinator: quit_state::QuitCoordinator,
     /// Dock Quit, quit Apple events, logout, restart and shutdown, waiting
     /// for the Cmd+Q decision (`service_system_quit`, stint 1538).
     pub(crate) system_quit: crate::platform::system_quit::SystemQuitInbox,
-    pub(crate) quit_press_count: u8,
-    pub(crate) quit_last_press: Option<std::time::Instant>,
-    pub(crate) pending_close: bool,
-    /// The pane a single-pane "Close pane?" dialog asked about (stint 1491).
-    pub(crate) close_confirm_target: Option<CloseConfirmTarget>,
+    /// The open single-pane "Close pane?" dialog and the pane it asks about
+    /// (stint 1491). The quit dialogs are read from `quit_coordinator`.
+    pub(crate) pane_close_dialog: Option<CloseConfirmTarget>,
     /// Confirmed by pane id in the dialog, closed on the next logic pass.
     pub(crate) confirmed_pane_close: Option<PaneId>,
-    pub(crate) pending_quit: bool,
     pub(crate) pending_context_close: Option<ContextCloseState>,
     pub(crate) frame_tick: crate::platform::logging::FrameTick,
     pub(crate) ui_phase: crate::platform::logging::UiPhaseTracker,
@@ -617,12 +614,7 @@ pub struct PlexiApp {
     pub(crate) display_version: String,
     /// What the update check is doing and whether a downloaded build is ready.
     pub(crate) update_status: crate::host::update_status::UpdateStatus,
-    pub(crate) update_quit_pending: bool,
     pub(crate) update_confirm_prompt: bool,
-    /// Set by `HostRequest::Shutdown` (`plexi host stop`'s clean-shutdown
-    /// path). Consumed at the top of the next frame in `update_preamble`,
-    /// which sends `ViewportCommand::Close`. Mirrors `update_quit_pending`.
-    pub(crate) shutdown_requested: bool,
     /// Receiver for HostRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
     pane_ipc_rx: ui_mailbox::MailboxReceiver<socket_caller::PaneIpcMessage>,
@@ -1920,19 +1912,14 @@ impl PlexiApp {
                     plugin_notice: None,
                     ui_gallery_normal_buf: "workspace/search".to_string(),
                     ui_gallery_focused_buf: "Focused field".to_string(),
-                    quitting: false,
-                    quit_coordinator: quit::QuitCoordinator::default(),
+                    quit_coordinator: quit_state::QuitCoordinator::default(),
                     system_quit,
-                    quit_press_count: 0,
-                    quit_last_press: None,
                     config: config.clone(),
                     key_bindings: key_bindings.clone(),
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
                     claimed_host_key_releases: HashSet::new(),
-                    pending_close: false,
-                    close_confirm_target: None,
+                    pane_close_dialog: None,
                     confirmed_pane_close: None,
-                    pending_quit: false,
                     pending_context_close: None,
                     frame_tick,
                     ui_phase: ui_phase.clone(),
@@ -2079,9 +2066,7 @@ impl PlexiApp {
                     last_update_check,
                     display_version: read_display_version(),
                     update_status: update_status.clone(),
-                    update_quit_pending: false,
                     update_confirm_prompt: false,
-                    shutdown_requested: false,
                     pane_ipc_rx,
                     host_subscriptions,
                     resource_leases: None,
@@ -2223,19 +2208,14 @@ impl PlexiApp {
             plugin_notice: None,
             ui_gallery_normal_buf: "workspace/search".to_string(),
             ui_gallery_focused_buf: "Focused field".to_string(),
-            quitting: false,
-            quit_coordinator: quit::QuitCoordinator::default(),
+            quit_coordinator: quit_state::QuitCoordinator::default(),
             system_quit,
-            quit_press_count: 0,
-            quit_last_press: None,
             config,
             binding_table: crate::host::keys::build_binding_table(&key_bindings),
             claimed_host_key_releases: HashSet::new(),
             key_bindings,
-            pending_close: false,
-            close_confirm_target: None,
+            pane_close_dialog: None,
             confirmed_pane_close: None,
-            pending_quit: false,
             pending_context_close: None,
             frame_tick,
             ui_phase,
@@ -2380,9 +2360,7 @@ impl PlexiApp {
             last_update_check,
             display_version: read_display_version(),
             update_status,
-            update_quit_pending: false,
             update_confirm_prompt: false,
-            shutdown_requested: false,
             pane_ipc_rx,
             host_subscriptions,
             resource_leases: None,
@@ -3195,19 +3173,14 @@ impl PlexiApp {
             plugin_notice: None,
             ui_gallery_normal_buf: "workspace/search".to_string(),
             ui_gallery_focused_buf: "Focused field".to_string(),
-            quitting: false,
-            quit_coordinator: quit::QuitCoordinator::default(),
+            quit_coordinator: quit_state::QuitCoordinator::default(),
             system_quit: crate::platform::system_quit::SystemQuitInbox::install(std::sync::Arc::clone(&ui_wake)),
-            quit_press_count: 0,
-            quit_last_press: None,
             config,
             binding_table: crate::host::keys::build_binding_table(&key_bindings),
             claimed_host_key_releases: HashSet::new(),
             key_bindings,
-            pending_close: false,
-            close_confirm_target: None,
+            pane_close_dialog: None,
             confirmed_pane_close: None,
-            pending_quit: false,
             pending_context_close: None,
             frame_tick,
             ui_phase: crate::platform::logging::new_ui_phase_tracker(),
@@ -3354,9 +3327,7 @@ impl PlexiApp {
             last_update_check: std::time::Instant::now(),
             display_version: read_display_version(),
             update_status: crate::host::update_status::UpdateStatus::default(),
-            update_quit_pending: false,
             update_confirm_prompt: false,
-            shutdown_requested: false,
             pane_ipc_rx,
             host_subscriptions,
             resource_leases: None,
@@ -4298,7 +4269,7 @@ impl eframe::App for PlexiApp {
         });
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
         // Cancel the quit toast before the editor or pane can claim Escape.
-        if self.quit_press_count > 0
+        if self.quit_coordinator.keyboard_presses() > 0
             && self.confirm_quit()
             && router_input.consume_key_exact(egui::Modifiers::NONE, egui::Key::Escape)
         {
@@ -4483,7 +4454,9 @@ impl eframe::App for PlexiApp {
             quit::trace("close_request");
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if self.prepare_user_quit()
-                && (self.quitting || !self.confirm_quit() || self.quit_press_count == 0)
+                && (self.quit_coordinator.is_active()
+                    || !self.confirm_quit()
+                    || self.quit_coordinator.keyboard_presses() == 0)
             {
                 self.request_quit(quit::ExitReason::WindowClosed);
             }
@@ -4554,25 +4527,13 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::Exit,
         );
         quit::trace("on_exit_begin");
-        log::info!("quit_phase: on_exit begin");
-        self.flush_ui_scale_persist_now();
-        self.flush_editor_positions_now();
-        self.bank_final_focus_segment();
-        self.flush_admission_summaries();
-        log::info!("quit_phase: on_exit complete");
-        // Backend teardown can call on_exit before destroying its window.
-        // Normal quit never gets here: it hides, yields, and exits from logic.
-        // No dialog can answer here, so a failing save is retried a bounded
-        // number of times and the exit then records the workspace unsaved.
-        let durability = self.persist_for_teardown(std::time::Duration::from_secs(1));
-        self.begin_quit_cleanup();
-        quit::exit_host(
-            self.quit_coordinator
-                .accepted_reason()
-                .unwrap_or(quit::ExitReason::WindowClosed),
-            durability,
-            self.quit_coordinator.stop_reply.take(),
-        );
+        // Last resort: backend teardown can call on_exit before destroying
+        // its window. Normal quit never gets here: it hides, yields, and
+        // exits from logic. No dialog can answer here, so a failing save is
+        // retried a bounded number of times and the exit then records the
+        // workspace unsaved.
+        log::info!("quit_phase: on_exit begin; backend teardown takes the quit");
+        self.exit_from_teardown(std::time::Duration::from_secs(1));
     }
 }
 

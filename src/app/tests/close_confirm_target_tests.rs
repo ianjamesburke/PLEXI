@@ -41,7 +41,7 @@ fn two_panes(h: &mut HostHarness) -> (u64, u64) {
 fn ask_to_close(h: &mut HostHarness) {
     h.press_key(egui::Key::W, command());
     h.run_frames(2);
-    assert!(h.app.pending_close, "the close asks first");
+    assert!(h.app.confirm_close_wanted(), "the close asks first");
 }
 
 /// A deliberate Enter: the dialog has waited out its arm delay (stint 1513).
@@ -92,8 +92,11 @@ fn palette_close_confirm_targets_selected_pane() {
 
     choose_palette_close(&mut h, selected);
 
-    assert!(h.app.pending_close, "palette Close pane must ask first");
-    let target = h.app.close_confirm_target.as_ref().expect("close target");
+    assert!(
+        h.app.confirm_close_wanted(),
+        "palette Close pane must ask first"
+    );
+    let target = h.app.pane_close_dialog.as_ref().expect("close target");
     assert_eq!(target.pane, selected);
     assert_eq!(target.label, h.app.close_confirm_target_for(selected).label);
     assert!(open(&h).contains(&selected));
@@ -113,8 +116,8 @@ fn palette_close_confirm_off_closes_selected_pane_immediately() {
     choose_palette_close(&mut h, selected);
 
     assert_eq!(open(&h), vec![focused]);
-    assert!(!h.app.pending_close);
-    assert!(h.app.close_confirm_target.is_none());
+    assert!(!h.app.confirm_close_wanted());
+    assert!(h.app.pane_close_dialog.is_none());
 }
 
 /// Focus moves to `b` through the command a CLI `pane focus` sends while
@@ -133,7 +136,7 @@ fn confirm_after_focus_moved_closes_nothing_and_says_so() {
     let mut both = vec![a, b];
     both.sort_unstable();
     assert_eq!(open(&h), both, "neither pane was closed");
-    assert!(!h.app.pending_close, "the dialog is gone");
+    assert!(!h.app.confirm_close_wanted(), "the dialog is gone");
     assert!(
         notice_titles(&h).iter().any(|t| t.contains("not closed")),
         "the user is told: {:?}",
@@ -169,7 +172,7 @@ fn confirm_without_focus_change_closes_the_asking_pane() {
     ask_to_close(&mut h);
     let target = h
         .app
-        .close_confirm_target
+        .pane_close_dialog
         .clone()
         .expect("dialog records its pane");
     assert_eq!(target.pane, a);
@@ -178,7 +181,7 @@ fn confirm_without_focus_change_closes_the_asking_pane() {
     confirm(&mut h);
 
     assert_eq!(open(&h), vec![b], "a closed");
-    assert!(h.app.close_confirm_target.is_none());
+    assert!(h.app.pane_close_dialog.is_none());
 }
 
 /// Critic follow-up 1: on an empty extra page there is no pane to name, so
@@ -220,14 +223,17 @@ fn close_on_an_empty_extra_page_removes_it_without_a_dialog() {
     h.press_key(egui::Key::W, command());
     h.run_frames(2);
 
-    assert!(!h.app.pending_close, "no dialog without a pane to name");
-    assert!(h.app.close_confirm_target.is_none());
+    assert!(
+        !h.app.confirm_close_wanted(),
+        "no dialog without a pane to name"
+    );
+    assert!(h.app.pane_close_dialog.is_none());
     assert_eq!(pages(&h), 1, "the empty page was removed");
     assert!(h.app.windows.iter().all(|w| w.window_id != window_id));
 }
 
 /// Critic follow-up 2: resolving a quit dialog drops a recorded close
-/// target with `pending_close`, so it cannot outlive the dialog.
+/// target with the dialog, so it cannot outlive the dialog.
 #[test]
 fn quit_dialog_resolution_clears_the_close_target() {
     let mut h = HostHarness::new();
@@ -236,11 +242,10 @@ fn quit_dialog_resolution_clears_the_close_target() {
         (|h: &mut HostHarness| h.app.resolve_quit_confirmation(false)) as fn(&mut HostHarness),
         |h: &mut HostHarness| h.app.resolve_quit_save_failure(false),
     ] {
-        h.app.close_confirm_target = Some(h.app.close_confirm_target_for(a));
-        h.app.pending_close = true;
+        h.app.pane_close_dialog = Some(h.app.close_confirm_target_for(a));
         resolve(&mut h);
-        assert!(!h.app.pending_close);
-        assert!(h.app.close_confirm_target.is_none());
+        assert!(!h.app.confirm_close_wanted());
+        assert!(h.app.pane_close_dialog.is_none());
     }
 }
 
@@ -252,15 +257,18 @@ fn pane_gone_while_its_dialog_is_up_closes_the_dialog_and_says_so() {
     let mut h = HostHarness::new();
     let (a, b) = two_panes(&mut h);
     ask_to_close(&mut h);
-    let label = h.app.close_confirm_target.clone().unwrap().label;
+    let label = h.app.pane_close_dialog.clone().unwrap().label;
     h.app.notifications_enabled = true;
     h.inject_ipc(HostRequest::ClosePane {
         pane_id: a,
         response_file: None,
     });
     h.run_frames(3);
-    assert!(!h.app.pending_close, "the dialog closed with its pane");
-    assert!(h.app.close_confirm_target.is_none());
+    assert!(
+        !h.app.confirm_close_wanted(),
+        "the dialog closed with its pane"
+    );
+    assert!(h.app.pane_close_dialog.is_none());
     assert_eq!(open(&h), vec![b], "nothing else closed");
     assert!(
         notice_titles(&h)
@@ -330,7 +338,7 @@ fn same_folder_terminals_get_distinct_dialog_titles() {
     h.run_frames(2);
     h.press_key(egui::Key::W, command());
     h.run_frames(3);
-    assert!(h.app.pending_close);
+    assert!(h.app.confirm_close_wanted());
     let png = std::env::temp_dir().join("plexi_same_folder_terminals_close_dialog.png");
     h.render_png(&png).expect("render the dialog");
 }

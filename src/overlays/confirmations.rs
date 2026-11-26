@@ -2,7 +2,7 @@ use super::*;
 
 impl PlexiApp {
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
-        let count = self.quit_press_count;
+        let count = self.quit_coordinator.keyboard_presses();
         crate::ui::toast::ToastShell::bottom("quit_confirm_overlay").show(
             ctx,
             &self.colors,
@@ -51,6 +51,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn draw_confirm_close(&mut self, ctx: &egui::Context) {
+        let agents_quit = self.quit_coordinator.confirming_agents();
         if let Some(cause) = self.quit_coordinator.save_failure().map(str::to_owned) {
             self.draw_quit_save_failure(ctx, &cause);
             return;
@@ -58,7 +59,7 @@ impl PlexiApp {
         let actions = [
             crate::ui::dialog::DialogAction::new(
                 "close",
-                if self.pending_quit {
+                if agents_quit {
                     "Quit Plexi and stop them"
                 } else {
                     "Close"
@@ -83,7 +84,7 @@ impl PlexiApp {
                 egui::Key::Escape,
             )),
         ];
-        let title = if self.pending_quit {
+        let title = if agents_quit {
             let count = self.working_agent_count();
             if count == 1 {
                 "1 agent is working. Quit Plexi and stop them?".to_string()
@@ -91,7 +92,7 @@ impl PlexiApp {
                 format!("{count} agents are working. Quit Plexi and stop them?")
             }
         } else {
-            match &self.close_confirm_target {
+            match &self.pane_close_dialog {
                 Some(target) => format!("Close \u{201c}{}\u{201d}?", target.label),
                 None => "Close pane?".to_string(),
             }
@@ -106,15 +107,15 @@ impl PlexiApp {
                 .destructive_input(
                     self.synthetic_input_frame,
                     (
-                        self.pending_quit,
-                        self.close_confirm_target.as_ref().map(|target| target.pane),
+                        agents_quit,
+                        self.pane_close_dialog.as_ref().map(|target| target.pane),
                     ),
                 )
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &self.colors, |ui| {
                     crate::ui::typography::caption(
                         ui,
-                        if self.pending_quit {
+                        if agents_quit {
                             "Every pane process in this Plexi instance will be stopped."
                         } else {
                             "The running process will be terminated."
@@ -126,19 +127,17 @@ impl PlexiApp {
         let confirmed = response.selected == Some("close");
         let cancelled = response.dismissed || response.selected == Some("cancel");
 
-        if self.pending_quit && (confirmed || cancelled) {
+        if agents_quit && (confirmed || cancelled) {
             self.resolve_quit_confirmation(confirmed);
         } else if confirmed {
-            self.pending_close = false;
             // Taken first: a batch installs the next pane's target, which
             // must survive to name that dialog and key its own arm delay.
-            let asked = self.close_confirm_target.take();
+            let asked = self.pane_close_dialog.take();
             if !self.confirm_close_batch_pane() {
                 self.confirm_single_close(asked);
             }
         } else if cancelled {
-            self.pending_close = false;
-            self.close_confirm_target = None;
+            self.pane_close_dialog = None;
         }
     }
 

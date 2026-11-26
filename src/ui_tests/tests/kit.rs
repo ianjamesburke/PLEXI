@@ -465,8 +465,7 @@ fn screenshot_micro_motion_floating_shells() {
     add_focused_pane(&mut h);
     h.with_app_mut(|app| {
         app.show_ui_gallery = true;
-        app.quit_press_count = 1;
-        app.quit_last_press = None;
+        app.quit_coordinator.hold_keyboard_presses(1);
     });
     h.run_steps(3);
     assert!(h.harness().query_by_label("Host UI Gallery").is_some());

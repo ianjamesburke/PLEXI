@@ -2563,7 +2563,7 @@ fn an_older_host_stop_is_served_to_any_same_user_caller() {
             String::from_utf8_lossy(&ack)
         );
         assert!(
-            h.app.quit_coordinator.stop_reply.is_some(),
+            h.app.quit_coordinator.stop_reply().is_some(),
             "{frame}: stop was not served"
         );
     }

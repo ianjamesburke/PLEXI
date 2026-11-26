@@ -644,14 +644,13 @@ fn screenshot_notes_delete_toast_themes() {
                 .unwrap();
             h.with_app_mut(|app| {
                 app.notes_picker_notice = None;
-                app.quit_press_count = 1;
-                app.quit_last_press = None;
+                app.quit_coordinator.hold_keyboard_presses(1);
             });
             h.run_steps(2);
             h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_quit")))
                 .unwrap();
             h.with_app_mut(|app| {
-                app.quit_press_count = 0;
+                app.quit_coordinator.hold_keyboard_presses(0);
                 app.config_notice = Some((
                     "Reloaded. This repo overrides theme.preset (plexi-night).".into(),
                     std::time::Instant::now(),

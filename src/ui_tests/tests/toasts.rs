@@ -4,8 +4,7 @@ use super::*;
 fn quit_toast_hugs_content_within_bound() {
     let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, 1.0);
     h.with_app_mut(|app| {
-        app.quit_press_count = 1;
-        app.quit_last_press = None;
+        app.quit_coordinator.hold_keyboard_presses(1);
     });
     h.run_steps(3);
     let rect = h.with_app(|app| {
@@ -72,10 +71,9 @@ fn screenshot_toast_shrink_variants() {
                 .unwrap();
             h.with_app_mut(|app| {
                 app.notes_picker_undo = None;
-                app.quit_last_press = None;
             });
             for count in [1, 2] {
-                h.with_app_mut(|app| app.quit_press_count = count);
+                h.with_app_mut(|app| app.quit_coordinator.hold_keyboard_presses(count));
                 h.run_steps(3);
                 h.save_screenshot(&evidence_png!(&format!("_{theme}_quit_{count}")))
                     .unwrap();
