@@ -1685,11 +1685,11 @@ impl PlexiApp {
 
     /// Relaunch a CPython-in-WASM pane while preserving its pane envelope.
     pub(crate) fn reload_view_pane(&mut self, pane_id: PaneId, reason: &str) -> bool {
-        let active = self.active_window;
-        let Some(view_pane) = self.windows[active]
-            .panes
-            .get_mut(&pane_id)
-            .and_then(|pane| pane.as_view_mut())
+        let Some(view_pane) = self
+            .windows
+            .iter_mut()
+            .find_map(|window| window.panes.get_mut(&pane_id))
+            .and_then(Pane::as_view_mut)
         else {
             return false;
         };

@@ -7390,7 +7390,7 @@ fn deleting_a_page_retires_directed_pipes_of_its_panes() {
     use crate::protocol::PipeCloseReason;
     let mut h = HostHarness::new();
     let context_id = h.app.windows[0].context_id;
-    let page = push_pipe_test_page(&mut h, context_id, 1);
+    let page = push_test_page(&mut h, context_id, 1);
     let (survivor, survivor_inbox) = add_pipe_test_pane(&mut h, 0);
     let (doomed, _) = add_pipe_test_pane(&mut h, page);
     let generation =
@@ -7507,15 +7507,15 @@ fn a_covered_pipe_end_is_reached_and_retired_as_itself() {
 }
 
 /// Push an empty page into context `context_id` at grid column `grid_x`,
-/// returning its window index. Windows drain their commands in index order.
-fn push_pipe_test_page(h: &mut HostHarness, context_id: u64, grid_x: u32) -> usize {
+/// returning its window index.
+fn push_test_page(h: &mut HostHarness, context_id: u64, grid_x: u32) -> usize {
     let path = h.app.windows[0].path.clone();
     let window_id = h.app.next_window_id;
     h.app.next_window_id += 1;
     h.app.windows.push(crate::host::context::Window {
         name: String::new(),
         path,
-        tree: egui_tiles::Tree::empty("stint1681_page"),
+        tree: egui_tiles::Tree::empty(egui::Id::new(("test_page", window_id))),
         panes: Default::default(),
         focused_pane: None,
         zoomed_pane: None,
@@ -7539,7 +7539,7 @@ fn a_stale_send_never_reaches_a_reopened_connection_in_either_dispatch_order() {
     for reopen_first in [true, false] {
         let mut h = HostHarness::new();
         let context_id = h.app.windows[0].context_id;
-        let page = push_pipe_test_page(&mut h, context_id, 1);
+        let page = push_test_page(&mut h, context_id, 1);
         let (slot_win, peer_win) = if reopen_first { (0, page) } else { (page, 0) };
         let (slot, replacement_inbox) = add_pipe_test_pane(&mut h, slot_win);
         let (peer, peer_inbox) = add_pipe_test_pane(&mut h, peer_win);
@@ -7584,7 +7584,7 @@ fn a_covered_peers_queued_send_is_dropped_after_reveal_and_reopen() {
     use crate::protocol::PipeCloseReason;
     let mut h = HostHarness::new();
     let context_id = h.app.windows[0].context_id;
-    let page = push_pipe_test_page(&mut h, context_id, 1);
+    let page = push_test_page(&mut h, context_id, 1);
     let (slot, replacement_inbox) = add_pipe_test_pane(&mut h, 0);
     let (peer, peer_inbox) = add_pipe_test_pane(&mut h, page);
     let old_inbox = push_pipe_test_overlay(&mut h, 0, slot);
@@ -7633,7 +7633,7 @@ fn deleting_a_page_tells_each_surviving_end_once_and_no_deleted_end() {
     use crate::protocol::PipeCloseReason;
     let mut h = HostHarness::new();
     let context_id = h.app.windows[0].context_id;
-    let page = push_pipe_test_page(&mut h, context_id, 1);
+    let page = push_test_page(&mut h, context_id, 1);
     let (q1, q1_inbox) = add_pipe_test_pane(&mut h, 0);
     let (q2, q2_inbox) = add_pipe_test_pane(&mut h, 0);
     let (slot, covered_inbox) = add_pipe_test_pane(&mut h, page);
@@ -7775,7 +7775,7 @@ fn moving_an_end_to_another_page_of_its_context_keeps_its_connection() {
         unreachable!()
     };
     let (a, b) = (*a, *b);
-    let page = push_pipe_test_page(&mut h, context_id, 1);
+    let page = push_test_page(&mut h, context_id, 1);
     lay_out_pipe_test_views(&mut h, page, 1);
     h.app.active_window = 0;
     let generation = open_directed_test_pipe(&mut h, a, a_inbox, b, "page-move");
@@ -12609,6 +12609,40 @@ fn hot_reload_serviced_while_window_hidden() {
             .any(|pending| pending.tool == crate::host::plugin_admission::TRUST_FOLDER_TOOL),
         "the refused reload asks for the folder again"
     );
+}
+
+#[test]
+fn reload_view_pane_relaunches_python_guest_in_background_window() {
+    let plugin = tempfile::tempdir().expect("plugin dir");
+    write_hidden_axis_probe(plugin.path(), "v1");
+    let mut h = HostHarness::new();
+    let path = plugin.path().to_string_lossy();
+    h.app.trust_plugin_path_for_test(&path);
+    let pane_id = h
+        .app
+        .launch_view_by_path_with_layout(&path, None, None, &[])
+        .expect("launch the Python plugin")
+        .expect("Python pane id");
+    run_until(&mut h, "the original Python guest to start", &|h| {
+        python_runtime_mut(h, pane_id).display_name() == "v1"
+    });
+
+    let (plugin_window, _) = h
+        .app
+        .find_pane_in_any_window(pane_id)
+        .expect("plugin pane");
+    let context_id = h.app.windows[plugin_window].context_id;
+    let foreground = push_test_page(&mut h, context_id, 1);
+    h.app.active_window = foreground;
+    write_hidden_axis_probe(plugin.path(), "v2");
+    assert!(
+        h.app.reload_view_pane(pane_id, "test edit in background window"),
+        "reload_view_pane must relaunch the Python pane in the background window"
+    );
+    run_until(&mut h, "the edited Python guest to start", &|h| {
+        python_runtime_mut(h, pane_id).display_name() == "v2"
+    });
+    assert_eq!(h.app.active_window, foreground);
 }
 
 /// Stint 0759: a WASM Python pane's first frame commit depends on
