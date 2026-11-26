@@ -2738,6 +2738,26 @@ pub fn agent_report_cli(
     event: Option<&str>,
     blocked_reason: Option<crate::protocol::AgentBlockedReason>,
 ) -> i32 {
+    agent_report(
+        state,
+        agent,
+        detail,
+        session_id,
+        event,
+        blocked_reason,
+        super::CliDiagnostics::Stderr,
+    )
+}
+
+fn agent_report(
+    state: &str,
+    agent: &str,
+    detail: Option<&str>,
+    session_id: Option<&str>,
+    event: Option<&str>,
+    blocked_reason: Option<crate::protocol::AgentBlockedReason>,
+    diagnostics: super::CliDiagnostics,
+) -> i32 {
     log::info!(
         "agent_report:cli: state={state} agent={agent} detail_present={}",
         detail.and_then(non_empty_string).is_some()
@@ -2752,9 +2772,9 @@ pub fn agent_report_cli(
         "completed" => "completed",
         "idle" => "idle",
         other => {
-            eprintln!(
+            diagnostics.print(format_args!(
                 "error: unknown state '{other}'; expected working, blocked, needs_you, interrupted, failed, exited_unreported, completed, or idle"
-            );
+            ));
             return 1;
         }
     };
@@ -2764,7 +2784,10 @@ pub fn agent_report_cli(
     {
         Some(id) => id,
         None => {
-            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
+            log::warn!("agent_report:cli: missing or invalid PLEXI_PANE_ID");
+            diagnostics.print(format_args!(
+                "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane"
+            ));
             return 1;
         }
     };
@@ -2800,7 +2823,7 @@ pub fn agent_report_cli(
     if let Some(reason) = blocked_reason {
         payload["blocked_reason"] = serde_json::json!(reason);
     }
-    let code = super::send_to_socket(payload);
+    let code = super::send_to_socket_with_diagnostics(payload, diagnostics);
     if code == 0 {
         use crate::program_status::State;
         let (state, kind) = match normalized {
@@ -3351,13 +3374,14 @@ pub fn agent_hook_event_cli(agent: Option<&str>) -> i32 {
         .map(str::to_string)
         .or_else(|| std::env::var("PLEXI_AGENT_NAME").ok())
         .unwrap_or_else(|| "claude-code".to_string());
-    let _ = agent_report_cli(
+    let _ = agent_report(
         report.state,
         &agent,
         report.detail.as_deref(),
         report.session_id.as_deref(),
         Some(&report.event),
         None,
+        super::CliDiagnostics::LogOnly,
     );
     0
 }

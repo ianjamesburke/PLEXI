@@ -390,24 +390,7 @@ fn main() -> eframe::Result {
     // Capture Rust panics into the log file so they survive process death.
     // Without this, panics on the UI thread only appear in Console.plugin and are
     // invisible to the Plexi log (the log writer thread is killed mid-write).
-    {
-        let panic_log = crate::platform::logging::log_path();
-        std::panic::set_hook(Box::new(move |info| {
-            let msg = info.to_string();
-            // Best-effort append to the log file directly (logger may be dead).
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&panic_log)
-            {
-                use std::io::Write;
-                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-                let _ = writeln!(f, "[{now}] [ERROR] [plexi::panic] PANIC: {msg}");
-            }
-            // Also print to stderr so crash logs / Console.plugin capture it.
-            eprintln!("PLEXI PANIC: {msg}");
-        }));
-    }
+    install_panic_hook(crate::platform::logging::log_path());
 
     // Handle CLI subcommands before launching the GUI.
     use crate::cli::args::{
@@ -2329,6 +2312,87 @@ fn configure_cli_sigpipe(host_startup: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Best-effort stderr output with the CLI's stdout SIGPIPE policy left intact.
+fn write_stderr_diagnostic(message: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+
+    let line = format!("{message}\n");
+    let mut stderr = std::io::stderr().lock();
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+
+        // Darwin sys/fcntl.h. The locked libc does not export these yet.
+        const F_SETNOSIGPIPE: libc::c_int = 73;
+        const F_GETNOSIGPIPE: libc::c_int = 74;
+        let fd = stderr.as_raw_fd();
+        // SAFETY: fcntl operates on stderr and takes integer arguments here.
+        // Darwin can deliver write-generated SIGPIPE to the process, so
+        // suppress it on the descriptor. Restore the flag for any aliases.
+        unsafe {
+            let previous = libc::fcntl(fd, F_GETNOSIGPIPE);
+            if previous < 0 || (previous == 0 && libc::fcntl(fd, F_SETNOSIGPIPE, 1) < 0) {
+                return;
+            }
+            let _ = stderr.write_all(line.as_bytes());
+            if previous == 0 {
+                let _ = libc::fcntl(fd, F_SETNOSIGPIPE, 0);
+            }
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // SAFETY: signal sets are initialized before use, and the mask applies
+        // to this thread only. A zero timeout consumes a pending SIGPIPE from
+        // our write without waiting. Keep any caller-blocked signal pending.
+        unsafe {
+            let mut set = std::mem::zeroed();
+            let mut previous = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGPIPE);
+            if libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut previous) != 0 {
+                return;
+            }
+            if let Err(error) = stderr.write_all(line.as_bytes()) {
+                if error.kind() == std::io::ErrorKind::BrokenPipe
+                    && libc::sigismember(&previous, libc::SIGPIPE) == 0
+                {
+                    let zero = libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: 0,
+                    };
+                    while libc::sigtimedwait(&set, std::ptr::null_mut(), &zero) < 0
+                        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                    {
+                    }
+                }
+            }
+            let _ = libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = stderr.write_all(line.as_bytes());
+}
+
+fn install_panic_hook(panic_log: std::path::PathBuf) {
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+
+        let msg = info.to_string();
+        // Best-effort append to the log file directly (logger may be dead).
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&panic_log)
+        {
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            let _ = writeln!(f, "[{now}] [ERROR] [plexi::panic] PANIC: {msg}");
+        }
+        // Also print to stderr so crash logs / Console.plugin capture it.
+        write_stderr_diagnostic(format_args!("PLEXI PANIC: {msg}"));
+    }));
+}
+
 /// How this process holds the profile after the launch is classified.
 enum LaunchProfile {
     /// A CLI command, and what its profile initialization did.
@@ -2470,12 +2534,66 @@ mod cli_tests {
     use std::fs;
 
     #[cfg(unix)]
+    fn wait_for_cli_child(mut child: std::process::Child) -> std::process::Output {
+        use std::time::{Duration, Instant};
+
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(30));
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!("CLI child hung: {output:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn panic_hook_logs_first_panic_with_closed_stderr() {
+        use std::process::{Command, Stdio};
+
+        const LOG_PATH: &str = "PLEXI_PANIC_TEST_LOG_PATH";
+        const FIRST_PANIC: &str = "intentional first panic";
+        if let Some(path) = std::env::var_os(LOG_PATH) {
+            super::install_panic_hook(path.into());
+            // libtest ignores SIGPIPE. The closed pipe returns EPIPE even
+            // during the hook, where another panic would abort the process.
+            assert!(std::panic::catch_unwind(|| panic!("{FIRST_PANIC}")).is_err());
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("panic.log");
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cli_tests::panic_hook_logs_first_panic_with_closed_stderr",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(LOG_PATH, &path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(writer)
+            .spawn()
+            .unwrap();
+        let output = wait_for_cli_child(child);
+        let log = fs::read_to_string(path).unwrap();
+        assert!(output.status.success(), "{output:?}: {log}");
+        assert_eq!(log.matches("PANIC:").count(), 1, "{log}");
+        assert!(log.contains(FIRST_PANIC), "{log}");
+    }
+
+    #[cfg(unix)]
     #[test]
     fn cli_closed_stdout_uses_sigpipe() {
         use std::os::fd::{FromRawFd, OwnedFd};
         use std::os::unix::process::{CommandExt, ExitStatusExt};
         use std::process::{Command, Stdio};
-        use std::time::{Duration, Instant};
 
         // The gate builds release before tests (including macOS/Linux CI).
         // Never re-exec libtest: its extra threads can print an EPIPE panic
@@ -2494,7 +2612,7 @@ mod cli_tests {
             binary.display()
         );
         let run = |stdout: Stdio| {
-            let mut child = Command::new(&binary)
+            let child = Command::new(&binary)
                 .arg("--build-info")
                 .stdin(Stdio::null())
                 .stdout(stdout)
@@ -2502,20 +2620,7 @@ mod cli_tests {
                 .process_group(0)
                 .spawn()
                 .unwrap();
-            let deadline =
-                Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(30));
-            loop {
-                if child.try_wait().unwrap().is_some() {
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    child.kill().unwrap();
-                    let output = child.wait_with_output().unwrap();
-                    panic!("CLI child hung: {output:?}");
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            child.wait_with_output().unwrap()
+            wait_for_cli_child(child)
         };
 
         // Reject a stale release executable instead of silently validating

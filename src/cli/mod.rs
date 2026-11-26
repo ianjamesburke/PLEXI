@@ -1189,7 +1189,7 @@ fn send_request_connected(
         serde_json::Value::String(response_file.clone()),
     );
     log::info!("{label}:cli: request sent to reply transport");
-    let stream = send_to_socket_connected(payload)?;
+    let stream = send_to_socket_connected(payload, CliDiagnostics::Stderr)?;
     Ok((response_file, stream))
 }
 
@@ -1701,8 +1701,26 @@ pub(crate) fn await_peer_identity_ack(stream: &mut crate::platform::ipc::IpcStre
     }
 }
 
+#[derive(Clone, Copy)]
+enum CliDiagnostics {
+    Stderr,
+    LogOnly,
+}
+
+impl CliDiagnostics {
+    fn print(self, message: std::fmt::Arguments<'_>) {
+        if matches!(self, Self::Stderr) {
+            crate::write_stderr_diagnostic(message);
+        }
+    }
+}
+
 pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
-    match send_to_socket_connected(payload) {
+    send_to_socket_with_diagnostics(payload, CliDiagnostics::Stderr)
+}
+
+fn send_to_socket_with_diagnostics(payload: serde_json::Value, diagnostics: CliDiagnostics) -> i32 {
+    match send_to_socket_connected(payload, diagnostics) {
         Ok(_) => 0,
         Err(code) => code,
     }
@@ -1723,6 +1741,7 @@ pub(super) fn try_send_to_socket_quiet(payload: serde_json::Value) {
 
 fn send_to_socket_connected(
     payload: serde_json::Value,
+    diagnostics: CliDiagnostics,
 ) -> Result<crate::platform::ipc::IpcStream, i32> {
     let socket_path = match payload["type"].as_str() {
         Some(
@@ -1730,7 +1749,8 @@ fn send_to_socket_connected(
             | "folder_secret_set" | "folder_secret_rm",
         ) => resolve_secret_socket(),
         _ => resolve_command_socket().ok_or_else(|| {
-            eprintln!("{NO_COMMAND_SOCKET}");
+            log::warn!("cli: {NO_COMMAND_SOCKET}");
+            diagnostics.print(format_args!("{NO_COMMAND_SOCKET}"));
             1
         })?,
     };
@@ -1749,8 +1769,11 @@ fn send_to_socket_connected(
         Err(SocketTransportError::Connect(e))
             if e.kind() == std::io::ErrorKind::ConnectionRefused =>
         {
+            log::warn!("cli: socket connect failed path={socket_path:?}: {e}");
             crate::platform::ipc::remove_stale_endpoint(&socket_path);
-            eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
+            diagnostics.print(format_args!(
+                "error: Plexi is not responding (stale socket removed). Is Plexi running?"
+            ));
             Err(1)
         }
         Err(SocketTransportError::ConnectTimeout) => {
@@ -1758,14 +1781,16 @@ fn send_to_socket_connected(
                 "cli: socket connect timed out path={socket_path:?} deadline_ms={}",
                 SOCKET_TRANSPORT_DEADLINE.as_millis()
             );
-            eprintln!(
+            diagnostics.print(format_args!(
                 "error: timed out connecting to PLEXI_SOCKET {socket_path:?}; request was not delivered"
-            );
+            ));
             Err(1)
         }
         Err(SocketTransportError::Connect(e)) => {
             log::warn!("cli: socket connect failed path={socket_path:?}: {e}");
-            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+            diagnostics.print(format_args!(
+                "error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}"
+            ));
             Err(1)
         }
         #[cfg(unix)]
@@ -1776,14 +1801,14 @@ fn send_to_socket_connected(
                 SOCKET_TRANSPORT_DEADLINE.as_millis()
             );
             if bytes_written == 0 {
-                eprintln!(
+                diagnostics.print(format_args!(
                     "error: timed out writing request to PLEXI_SOCKET {socket_path:?}; the incomplete frame was not delivered and is safe to retry"
-                );
+                ));
             } else {
-                eprintln!(
+                diagnostics.print(format_args!(
                     "error: timed out writing request to PLEXI_SOCKET {socket_path:?} after {bytes_written}/{} bytes; the incomplete frame was not delivered and is safe to retry",
                     line.len()
-                );
+                ));
             }
             Err(1)
         }
@@ -1796,12 +1821,12 @@ fn send_to_socket_connected(
                 line.len()
             );
             if bytes_written == 0 {
-                eprintln!("error: could not write request to socket: {source}");
+                diagnostics.print(format_args!("error: could not write request to socket: {source}"));
             } else {
-                eprintln!(
+                diagnostics.print(format_args!(
                     "error: socket write failed after {bytes_written}/{} bytes: {source}; the incomplete frame was not delivered and is safe to retry",
                     line.len()
-                );
+                ));
             }
             Err(1)
         }
