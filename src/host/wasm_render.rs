@@ -958,6 +958,12 @@ struct RowPlacement {
     widths: Vec<f32>,
 }
 
+impl RowPlacement {
+    fn content_width(&self) -> f32 {
+        self.widths.iter().sum::<f32>() + self.gap * self.widths.len().saturating_sub(1) as f32
+    }
+}
+
 /// Place children of the given natural widths along a row `available`
 /// wide; `None` is a grow child. Grow children share the leftover width
 /// equally, whatever their content; without any, `justify` places the
@@ -1479,6 +1485,13 @@ impl RowMeasure {
         }
     }
 
+    fn content_width(&self) -> f32 {
+        match (self.child_rects.first(), self.child_rects.last()) {
+            (Some(first), Some(last)) => last.right() - first.left(),
+            _ => 0.0,
+        }
+    }
+
     /// Width the children after `idx` need, including the gap before them.
     fn reserved_after(&self, idx: usize, gap: f32) -> f32 {
         match (self.child_rects.get(idx + 1), self.child_rects.last()) {
@@ -1599,16 +1612,23 @@ fn measure_row_children(
 /// A horizontal run of a row. `egui` aligns each child against the height the
 /// run has when the child is added, so a run that places its children at the
 /// top or bottom is given the measured row height to place them in.
+/// A compact line gives its parent a width to align while keeping the child
+/// layout left to right. Overfull content keeps the available width for wrapping.
 fn row_line<R>(
     ui: &mut egui::Ui,
     valign: egui::Align,
     height: Option<f32>,
+    content_width: Option<f32>,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    let size = egui::vec2(
-        ui.available_size_before_wrap().x,
-        height.unwrap_or(ui.spacing().interact_size.y),
-    );
+    let available = ui.available_size_before_wrap().x;
+    let width = content_width.map_or(available, |width| width.clamp(0.0, available));
+    if width < available {
+        trace_layout_once(ui, "row follows its parent's right alignment", || {
+            format!("width={width:.0} available={available:.0}")
+        });
+    }
+    let size = egui::vec2(width, height.unwrap_or(ui.spacing().interact_size.y));
     ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(valign), add_contents)
         .inner
 }
@@ -1635,6 +1655,10 @@ fn render_row_node(
     // Guest input: every gap the row lays out with is sanitized.
     let gap = sanitized_gap(r.gap);
     let may_measure = !env.in_row_measure && env.row_depth < MAX_MEASURED_ROW_DEPTH;
+    // Explicit justification places children across the available width. A
+    // default row can shrink to its content when its parent places it at end.
+    let pin_right =
+        r.justify == Justify::Start && available.is_finite() && ui.layout().prefer_right_to_left();
     let env = TreeRenderEnv {
         row_depth: env.row_depth.saturating_add(1),
         ..env
@@ -1663,16 +1687,25 @@ fn render_row_node(
                     lines.len()
                 )
             });
-            ui.vertical(|ui| {
+            let stack_align = if pin_right {
+                egui::Align::Max
+            } else {
+                egui::Align::Min
+            };
+            ui.with_layout(egui::Layout::top_down(stack_align), |ui| {
                 ui.spacing_mut().item_spacing.y = gap;
                 for line in lines {
                     // Each line is placed along the row by `justify`.
                     let natural: Vec<Option<f32>> =
                         widths[line.clone()].iter().copied().map(Some).collect();
                     let placement = place_along_row(&natural, gap, available, r.justify);
+                    let content_width = placement
+                        .as_ref()
+                        .filter(|_| pin_right)
+                        .map(RowPlacement::content_width);
                     // Buttons on a line share one height, so `align` has
                     // nothing to place.
-                    row_line(ui, egui::Align::Center, None, |ui| {
+                    row_line(ui, egui::Align::Center, None, content_width, |ui| {
                         match &placement {
                             Some(placement) => {
                                 ui.spacing_mut().item_spacing.x = placement.gap;
@@ -1682,7 +1715,7 @@ fn render_row_node(
                         }
                         for idx in line.clone() {
                             let child = r.children[idx];
-                            if r.justify == Justify::Start {
+                            if r.justify == Justify::Start && content_width.is_none() {
                                 render_node(ui, env, child, out, depth + 1);
                                 continue;
                             }
@@ -1737,7 +1770,9 @@ fn render_row_node(
                 )
             });
             let line_align = if placed { valign } else { egui::Align::Center };
-            row_line(ui, line_align, placed.then_some(row_h), |ui| {
+            let content_width = pin_right.then(|| placement.content_width());
+            let height = placed.then_some(row_h);
+            row_line(ui, line_align, height, content_width, |ui| {
                 ui.spacing_mut().item_spacing.x = placement.gap;
                 ui.add_space(placement.lead);
                 for (idx, &width) in placement.widths.iter().enumerate() {
@@ -1768,8 +1803,13 @@ fn render_row_node(
         measure = Some(measured);
     }
     let height = measure.as_ref().map(|m| m.height);
+    let content_width = (pin_right && may_measure).then(|| {
+        measure
+            .get_or_insert_with(|| measure_row(ui, env, r, grid_cols, depth))
+            .content_width()
+    });
     let line_align = if placed { valign } else { egui::Align::Center };
-    row_line(ui, line_align, height, |ui| {
+    row_line(ui, line_align, height, content_width, |ui| {
         ui.spacing_mut().item_spacing.x = gap;
         for (idx, child) in r.children.iter().enumerate() {
             let text = find_node(nodes, *child).and_then(|n| match &n.data {
@@ -4128,6 +4168,75 @@ mod tests {
     }
 
     const ROW_PANES: [egui::Vec2; 2] = [egui::vec2(320.0, 240.0), egui::vec2(800.0, 600.0)];
+
+    fn column_with_action_row(align: &str) -> UiTree {
+        wire_tree(&[
+            (
+                0,
+                serde_json::json!({"type": "column", "align": align, "children": [1, 2]}),
+            ),
+            (
+                1,
+                serde_json::json!({"type": "text", "text": "Unsaved changes"}),
+            ),
+            (2, serde_json::json!({"type": "row", "children": [3, 4]})),
+            (3, wire_button("Cancel")),
+            (4, wire_button("Save changes")),
+        ])
+    }
+
+    #[test]
+    fn row_in_column_follows_parent_alignment_in_authored_order() {
+        let profile = tempfile::tempdir().expect("create isolated profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        for pane in ROW_PANES {
+            let (left, right) = content_x(pane);
+            for align in ["start", "center", "end"] {
+                let rects = laid_out(&column_with_action_row(align), pane);
+                let row = rect_of(&rects, 2);
+                let cancel = rect_of(&rects, 3);
+                let save = rect_of(&rects, 4);
+                assert!(
+                    cancel.right() < save.left(),
+                    "{pane:?} {align}: {cancel:?} {save:?}"
+                );
+                // Preserve the existing full-width line under start and center.
+                let (actual, expected) = match align {
+                    "start" | "center" => (row.left(), left),
+                    _ => (row.right(), right),
+                };
+                assert!(
+                    (actual - expected).abs() <= 1.0,
+                    "{pane:?} {align}: row {row:?}, expected edge {expected}"
+                );
+            }
+        }
+
+        let narrow = egui::vec2(210.0, 240.0);
+        let rects = laid_out(&column_with_action_row("end"), narrow);
+        let cancel = rect_of(&rects, 3);
+        let save = rect_of(&rects, 4);
+        assert!(
+            cancel.bottom() < save.top(),
+            "wrapped order: {cancel:?} {save:?}"
+        );
+        let (_, right) = content_x(narrow);
+        for button in [cancel, save] {
+            assert!(
+                (button.right() - right).abs() <= 1.0,
+                "wrapped button {button:?}, expected right edge {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn screenshot_row_in_end_aligned_column() {
+        let profile = tempfile::tempdir().expect("create isolated profile");
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let png = render_ui_tree_to_png(&column_with_action_row("end"), 400.0, 160.0, 2.0)
+            .expect("render action row");
+        std::fs::write(crate::ui_tests::evidence_png!(), png).expect("write action row screenshot");
+    }
 
     /// Stint 1363: a grow `Spacer` in a row added the row's height as
     /// horizontal space. It takes the width the other children leave, so the
