@@ -662,6 +662,11 @@ fn screenshot_command_palette_user_commands() {
     let mut h = PlexiUiHarness::new_sized(1168.0, 1000.0);
     add_focused_pane(&mut h);
     h.with_app_mut(|app| {
+        app.key_bindings
+            .apply_user_keys(Some(&std::collections::HashMap::from([(
+                "cmd+shift+y".into(),
+                "run:build".into(),
+            )])));
         app.palette_commands = vec![
             crate::cli::ResolvedUserCommand {
                 name: "build".to_string(),
@@ -694,14 +699,27 @@ fn screenshot_command_palette_user_commands() {
                 split: false,
             },
         ];
-        app.open_command_palette("");
+        app.open_command_palette("build");
     });
     h.run_steps(3);
+    h.with_app(|app| {
+        let row = app
+            .host
+            .picker(crate::host::picker::PickerId::Palette)
+            .unwrap()
+            .rows()
+            .iter()
+            .find(|row| row.title == "build")
+            .unwrap();
+        let chord = crate::host::keys::parse_chord("cmd+shift+y").unwrap();
+        let shortcut = crate::ui::shortcuts::egui_chord_label(chord);
+        assert!(
+            row.secondary.contains(&shortcut),
+            "saved command should show its configured shortcut, got {:?}",
+            row.secondary
+        );
+    });
     h.save_screenshot(&evidence_png!()).expect("render failed");
-    assert!(
-        h.with_app(|app| app.command_palette_open() && app.palette_commands.len() == 3),
-        "palette should be open with the injected user commands"
-    );
     println!("Screenshot saved to {}", evidence_png!());
 }
 

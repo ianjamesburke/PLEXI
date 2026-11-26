@@ -1,3 +1,5 @@
+use crate::app::registry::RegistrySource;
+use crate::cli::UserCommandScope;
 use crate::config::KeybindingsConfig;
 
 // The command registry defines workspace shortcuts. The input router claims
@@ -129,8 +131,11 @@ pub enum Action {
     CheckForUpdates,
     RestartToUpdate,
     CloseSelectedPanes,
+    /// Open the installed app from the invoking workspace's registry view.
+    LaunchApp(String, RegistrySource),
     /// Run a user-authored command from `commands.toml` (bound via `[keys]` `"<chord>" = "run:<name>"`).
-    RunUserCommand(String),
+    /// A discovered row also carries the scope of the definition it displayed.
+    RunUserCommand(String, Option<UserCommandScope>),
 }
 
 const fn cmd() -> egui::Modifiers {
@@ -177,7 +182,7 @@ const fn cmd_shift_ctrl() -> egui::Modifiers {
 }
 #[path = "command_registry.rs"]
 mod command_registry;
-pub(crate) use command_registry::commands;
+pub(crate) use command_registry::{commands, discover_commands, DiscoveredCommand};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandTarget {
@@ -347,17 +352,28 @@ impl Action {
         })
     }
 
-    pub(crate) fn command_id(&self) -> &'static str {
+    pub(crate) fn command_id(&self) -> std::borrow::Cow<'static, str> {
+        if let Some(id) = self.dynamic_command_id() {
+            return id.into();
+        }
         COMMAND_BINDINGS
             .iter()
             .find(|entry| entry.command == *self)
             .map_or_else(|| self.non_registry_action().0, |entry| entry.id)
+            .into()
+    }
+
+    pub(crate) fn dynamic_command_id(&self) -> Option<String> {
+        match self {
+            Self::LaunchApp(id, _) => Some(format!("view/{id}")),
+            Self::RunUserCommand(name, _) => Some(format!("run/{name}")),
+            _ => None,
+        }
     }
 
     fn non_registry_action(&self) -> (&'static str, &'static str) {
         match self {
             Self::CloseView => ("close_view", "Bare Escape is a focused-view fallback after text input and modal dismissal."),
-            Self::RunUserCommand(_) => ("run_user_command", "User commands resolve dynamically in the invoking workspace and bind through [keys]."),
             _ => ("unregistered", ""),
         }
     }
@@ -491,6 +507,12 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
 
 impl KeyBindings {
     pub(crate) fn chord_for_action(&self, action: &Action) -> Option<Chord> {
+        if let Action::RunUserCommand(name, _) = action {
+            return self
+                .user_commands
+                .iter()
+                .find_map(|(chord, bound_name)| (bound_name == name).then_some(*chord));
+        }
         COMMAND_BINDINGS
             .iter()
             .find(|entry| entry.command == *action)
@@ -722,7 +744,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             exact: true,
             no_repeat: true,
             context: BindingContext::Normal,
-            action: Action::RunUserCommand(cmd_name.clone()),
+            action: Action::RunUserCommand(cmd_name.clone(), None),
         });
     }
 
@@ -1005,12 +1027,20 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let exceptions = [Action::CloseView, Action::RunUserCommand(String::new())];
+        let exceptions = [Action::CloseView];
+        let dynamic = [
+            Action::LaunchApp("sample".into(), RegistrySource::Global),
+            Action::RunUserCommand("sample".into(), Some(UserCommandScope::Global)),
+        ];
+        assert!(dynamic
+            .iter()
+            .all(|action| action.dynamic_command_id().is_some()));
         let mut covered = std::collections::HashSet::new();
         for action in COMMAND_BINDINGS
             .iter()
             .map(|entry| &entry.command)
             .chain(&exceptions)
+            .chain(&dynamic)
         {
             if exceptions.contains(action) {
                 let (id, reason) = action.non_registry_action();

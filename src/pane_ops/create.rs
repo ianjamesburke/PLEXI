@@ -3109,6 +3109,7 @@ impl PlexiApp {
     /// existing instance they are *dropped* — the running plugin never receives
     /// them (delivering relaunch args to a live instance via a bus event is
     /// future work). The drop is logged at `warn` so it is observable.
+    #[cfg(test)]
     pub(crate) fn resolve_on_launch_policy(
         &mut self,
         id: &str,
@@ -3116,9 +3117,18 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<&Path>,
     ) -> Option<PaneId> {
-        let view = self
-            .registries
-            .view_for_context(caller_context_id, &self.router);
+        self.resolve_on_launch_policy_at(id, caller_context_id, args, cwd_override, None)
+    }
+
+    fn resolve_on_launch_policy_at(
+        &mut self,
+        id: &str,
+        caller_context_id: u64,
+        args: &[String],
+        cwd_override: Option<&Path>,
+        registry_root: Option<&Path>,
+    ) -> Option<PaneId> {
+        let view = self.launch_registry(caller_context_id, registry_root);
         let on_launch = view.on_launch_for(id);
         let entry = view.get(id)?.bin_path.clone();
         // A bundled id names the bundled plugin: only a pane admitted as the
@@ -3190,9 +3200,28 @@ impl PlexiApp {
         self.jump_to_context(win_idx, win_id, Some(slot));
     }
 
-    /// Launch an installed plugin by id in the focused pane.
-    pub(crate) fn launch_view_by_id(&mut self, id: &str) {
-        let _ = self.launch_view_by_id_with_layout(id, None, &[], None);
+    /// Launch the app discovered in the palette's workspace registry.
+    pub(crate) fn launch_discovered_app(
+        &mut self,
+        target_win: usize,
+        id: &str,
+        source: crate::app::registry::RegistrySource,
+        workspace: Option<&Path>,
+    ) -> Result<Option<PaneId>, String> {
+        let home = dirs::home_dir();
+        let registry_root = workspace.or(home.as_deref()).unwrap_or(Path::new("/"));
+        self.launch_view_by_id_in_registry(
+            IdViewLaunchOptions {
+                target_win,
+                bypass_on_launch: false,
+                follow_file_browser_cwd: true,
+            },
+            id,
+            None,
+            &[],
+            None,
+            Some((registry_root, source)),
+        )
     }
 
     /// Open a config file (global or workspace) in a Plexi text-editor pane
@@ -3330,11 +3359,31 @@ impl PlexiApp {
         context_id: u64,
         id: &str,
     ) -> Result<String, String> {
+        self.resolve_launch_id_at(context_id, id, None)
+    }
+
+    fn launch_registry(
+        &mut self,
+        context_id: u64,
+        registry_root: Option<&Path>,
+    ) -> &crate::app::registry::PluginRegistry {
+        match registry_root {
+            Some(root) => self.registries.view_for_root(root),
+            None => self.registries.view_for_context(context_id, &self.router),
+        }
+    }
+
+    fn resolve_launch_id_at(
+        &mut self,
+        context_id: u64,
+        id: &str,
+        registry_root: Option<&Path>,
+    ) -> Result<String, String> {
         // A builtin id never resolves to a registry plugin (stint 1733).
         if is_builtin_view_id(id) {
             return Ok(id.to_string());
         }
-        let registry = self.registries.view_for_context(context_id, &self.router);
+        let registry = self.launch_registry(context_id, registry_root);
         let contributes = |plugin: &&crate::app::registry::InstalledPlugin| {
             plugin.contributes.views.iter().any(|view| view.id == id)
         };
@@ -3435,6 +3484,18 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
+        self.launch_view_by_id_in_registry(options, id, layout, args, cwd_override, None)
+    }
+
+    fn launch_view_by_id_in_registry(
+        &mut self,
+        options: IdViewLaunchOptions,
+        id: &str,
+        layout: Option<String>,
+        args: &[String],
+        cwd_override: Option<PathBuf>,
+        discovered: Option<(&Path, crate::app::registry::RegistrySource)>,
+    ) -> Result<Option<PaneId>, String> {
         // A plugin can ask for any id (SpawnView, SpawnPane). No real plugin
         // or view id holds a control, bidi or invisible character, so such a
         // request is refused here, before any log or error repeats it raw
@@ -3460,8 +3521,25 @@ impl PlexiApp {
             follow_file_browser_cwd,
         } = options;
         let context_id = self.windows[target_win].context_id;
+        let registry_root = discovered.map(|(root, _)| root);
         let requested = id;
-        let resolved = self.resolve_launch_id(context_id, id)?;
+        let resolved = self.resolve_launch_id_at(context_id, id, registry_root)?;
+        if let Some((root, source)) = discovered {
+            if resolved != id
+                || self
+                    .registries
+                    .view_for_root(root)
+                    .get(id)
+                    .is_none_or(|app| {
+                        app.source != source
+                            || (source != crate::app::registry::RegistrySource::Global
+                                && app.workspace_root.as_deref() != Some(root))
+                            || !app.plugin_dir.is_dir()
+                    })
+            {
+                return Err("The app is no longer available in the invoking scope".into());
+            }
+        }
         let id = resolved.as_str();
         // Resolve an implicit Explorer caller before on-launch policy can move focus.
         let cwd_override =
@@ -3536,8 +3614,7 @@ impl PlexiApp {
         // (`overlay`). One resolution point so every downstream hint inherits
         // it (#2283). Builtins are not in the registry → None → `overlay`.
         let layout = layout.or_else(|| {
-            self.registries
-                .view_for_context(context_id, &self.router)
+            self.launch_registry(context_id, registry_root)
                 .placement_for(id)
         });
 
@@ -3550,9 +3627,13 @@ impl PlexiApp {
         // plugin whose pane was closed (its process parked in `background_apps`)
         // finds no pane here, falls through, and re-attaches — the two compose.
         if !bypass_on_launch {
-            if let Some(existing_id) =
-                self.resolve_on_launch_policy(id, context_id, args, cwd_override.as_deref())
-            {
+            if let Some(existing_id) = self.resolve_on_launch_policy_at(
+                id,
+                context_id,
+                args,
+                cwd_override.as_deref(),
+                registry_root,
+            ) {
                 return Ok(Some(existing_id));
             }
         }
@@ -3568,11 +3649,11 @@ impl PlexiApp {
 
         // Ensure the registry is up-to-date: rescan if the plugin was added mid-session
         // via `plexi plugin init` and wasn't present at startup.
-        if self
-            .registries
-            .view_for_context(context_id, &self.router)
-            .get(id)
-            .is_none()
+        if discovered.is_none()
+            && self
+                .launch_registry(context_id, registry_root)
+                .get(id)
+                .is_none()
         {
             log::info!(
                 "open_view_by_id: '{id}' not in startup registry — rescanning from disk",
@@ -3591,14 +3672,17 @@ impl PlexiApp {
         // Resolve the id the caller asked for again against the refreshed
         // view: a contributed view whose owner was not yet discovered now
         // resolves to that owner (stint 1398).
-        let refreshed = self.resolve_launch_id(context_id, requested)?;
+        let refreshed = self.resolve_launch_id_at(context_id, requested, registry_root)?;
         let id = refreshed.as_str();
 
         // Pre-flight: check config-level capability requirements before spawning.
-        let missing = self
-            .registries
-            .view_for_context(context_id, &self.router)
-            .check_config_capabilities(id, &self.config);
+        let config = &self.config;
+        let registry = match registry_root {
+            Some(root) => self.registries.view_for_root(root),
+            None => self.registries.view_for_context(context_id, &self.router),
+        };
+        let missing = registry.check_config_capabilities(id, config);
+        let installed = registry.get(id).cloned();
         if !missing.is_empty() {
             log::warn!(
                 "pre-flight: '{id}' cannot launch — missing: {missing:?}",
@@ -3612,11 +3696,6 @@ impl PlexiApp {
         // Query group/hint after any registry reload so metadata reflects the
         // actual registry that found the plugin.
         let hint = layout.or_else(|| Some("overlay".to_string()));
-        let installed = self
-            .registries
-            .view_for_context(context_id, &self.router)
-            .get(id)
-            .cloned();
         if let Some(installed) = &installed {
             if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
                 let workspace_root = installed
@@ -3685,8 +3764,7 @@ impl PlexiApp {
         match installed {
             None => {
                 if let Some(skipped) = self
-                    .registries
-                    .view_for_context(context_id, &self.router)
+                    .launch_registry(context_id, registry_root)
                     .skipped_reason(id)
                 {
                     log::info!(

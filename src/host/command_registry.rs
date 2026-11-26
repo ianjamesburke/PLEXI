@@ -198,3 +198,78 @@ macro_rules! commands {
     };
 }
 pub(crate) use commands;
+
+use super::{palette_commands, Action, PaletteCommandEntry};
+use crate::app::registry::{InstalledPlugin, PluginRegistry, RegistrySource};
+use crate::cli::{ResolvedUserCommand, UserCommandScope};
+use std::{borrow::Cow, path::Path};
+
+/// Search metadata paired with the action that the shared dispatcher runs.
+pub(crate) struct DiscoveredCommand {
+    pub action: Action,
+    pub name: Cow<'static, str>,
+    pub description: Cow<'static, str>,
+    pub search_text: Cow<'static, str>,
+}
+
+impl From<&'static PaletteCommandEntry> for DiscoveredCommand {
+    fn from(entry: &'static PaletteCommandEntry) -> Self {
+        Self {
+            action: entry.command.clone(),
+            name: entry.name.into(),
+            description: entry.description.into(),
+            search_text: entry.search_text.into(),
+        }
+    }
+}
+
+impl DiscoveredCommand {
+    fn launch_app(app: &InstalledPlugin, workspace: Option<&Path>) -> Option<Self> {
+        if app.source != RegistrySource::Global && app.workspace_root.as_deref() != workspace {
+            return None;
+        }
+        let manifest = &app.manifest;
+        Some(Self {
+            action: Action::LaunchApp(manifest.id.clone(), app.source),
+            name: manifest.name.clone().into(),
+            description: manifest.description.clone().into(),
+            search_text: format!("{} {} {}", manifest.name, manifest.id, manifest.description)
+                .to_lowercase()
+                .into(),
+        })
+    }
+
+    fn saved_command(command: &ResolvedUserCommand) -> Self {
+        let description = match (&command.description, &command.run) {
+            (Some(description), _) => description.clone(),
+            (None, Some(run)) => run.clone(),
+            (None, None) if !command.steps.is_empty() => format!("{} steps", command.steps.len()),
+            (None, None) => "global script".to_string(),
+        };
+        let aliases = match command.scope {
+            UserCommandScope::Workspace => "workspace ws",
+            UserCommandScope::Global => "global script",
+        };
+        Self {
+            action: Action::RunUserCommand(command.name.clone(), Some(command.scope)),
+            name: command.name.clone().into(),
+            search_text: format!("{} {description} run {aliases}", command.name)
+                .to_lowercase()
+                .into(),
+            description: description.into(),
+        }
+    }
+}
+
+pub(crate) fn discover_commands<'a>(
+    apps: &'a PluginRegistry,
+    workspace: Option<&'a Path>,
+    saved: &'a [ResolvedUserCommand],
+) -> impl Iterator<Item = DiscoveredCommand> + 'a {
+    // Keep the original declaration order within each palette section.
+    apps.list()
+        .into_iter()
+        .filter_map(move |app| DiscoveredCommand::launch_app(app, workspace))
+        .chain(palette_commands().map(DiscoveredCommand::from))
+        .chain(saved.iter().map(DiscoveredCommand::saved_command))
+}

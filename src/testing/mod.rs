@@ -233,6 +233,15 @@ pub struct HostHarness {
 }
 
 impl HostHarness {
+    pub(crate) fn write_saved_command_fixture(&self, name: &str, definition: toml::Table) {
+        let dir = self.workspace_root().join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).expect("create workspace config");
+        let commands = toml::Table::from_iter([(name.into(), toml::Value::Table(definition))]);
+        let doc = toml::Table::from_iter([("commands".into(), toml::Value::Table(commands))]);
+        std::fs::write(dir.join("commands.toml"), toml::to_string(&doc).unwrap())
+            .expect("write saved command fixture");
+    }
+
     /// Create a harness with an empty `PlexiApp` and a 1280×800 viewport.
     pub fn new() -> Self {
         test_log::install();
