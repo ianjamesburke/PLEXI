@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.6.2] — 2026-11-26
+
+### Changes
+- fix(distribution): stop bundling the Chess Opponent agent (#3368)
+- fix(notes): preserve edit and paste order in Quick Note (#3367)
 ## [0.6.1] — 2026-11-25
 
 ### Changes
