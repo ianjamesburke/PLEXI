@@ -26781,6 +26781,88 @@ fn palette_opens_a_file_with_no_explorer_open() {
     assert_eq!(explorers(&h), 0, "no Explorer was opened to reach it");
 }
 
+/// Stint 1802: Assign shortcut is validated on the pass that activated it,
+/// so a focus change before `App::logic` drains the queued edit still opens
+/// the config file.
+#[test]
+fn palette_assign_shortcut_survives_a_focus_change_after_enter() {
+    let mut h = HostHarness::new();
+    let root = h.workspace_root();
+    // Two real panes, split by the production placement path.
+    for _ in 0..2 {
+        h.app.open_builtin_view_pane(
+            Box::new(crate::file_browser::FileBrowserView::new(root.clone())),
+            crate::app::permissions::PluginPermissions::builtin(),
+            root.clone(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        h.run_frames(1);
+    }
+    let (left, right) = match h.state().open_panes[..] {
+        [left, right] => (left, right),
+        ref panes => panic!("expected two panes, got {panes:?}"),
+    };
+    h.focus_pane(right);
+    h.run_frames(2);
+    let editors = |h: &HostHarness| {
+        h.app
+            .windows
+            .iter()
+            .flat_map(|win| win.panes.values())
+            .filter_map(Pane::as_view)
+            .filter(|view| view.manifest_id == "text-editor")
+            .count()
+    };
+
+    assert_eq!(h.app.focused_pane_id(), Some(right));
+    h.press_key(egui::Key::P, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    frame_with_events(&mut h, vec![egui::Event::Text("changelog".into())]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !h
+        .app
+        .palette_selected_key()
+        .is_some_and(|key| key.contains("changelog"))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Changelog never selected: {:?}",
+            h.app.palette_selected_key()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run_frames(1);
+    }
+    h.press_key(egui::Key::Enter, egui::Modifiers::COMMAND);
+    let assign = |h: &HostHarness| {
+        h.app
+            .host
+            .picker(crate::host::picker::PickerId::Palette)
+            .and_then(|picker| picker.selected_action().map(|action| action.id))
+    };
+    for _ in 0..4 {
+        if assign(&h) == Some("assign_shortcut") {
+            break;
+        }
+        h.press_key(egui::Key::ArrowDown, egui::Modifiers::NONE);
+    }
+    assert_eq!(assign(&h), Some("assign_shortcut"));
+
+    h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(!h.app.command_palette_open(), "Enter ran the action");
+    assert_eq!(editors(&h), 0, "the edit is drained by App::logic");
+    // Focus moves before the drain; the activation was already validated.
+    h.focus_pane(left);
+    assert_eq!(h.app.focused_pane_id(), Some(left));
+    h.run_frames(2);
+    assert_eq!(
+        editors(&h),
+        1,
+        "the config never opened for the binding edit"
+    );
+}
+
 /// Run frames until a text editor holds `doc`; the palette reads the file on
 /// a worker, so this waits on the wall clock.
 fn wait_for_text_editor(h: &mut HostHarness, doc: &std::path::Path) -> PaneId {
