@@ -358,6 +358,7 @@ _pr-prepare number:
       echo "Error: PR #{{number}} has no resolvable head commit."
       exit 1
     fi
+    bash "$_driver_root/scripts/check-pr-install-head.sh" "{{number}}" "$_head_ref" "$_head_oid"
     git -C "$_repo_root" fetch -q origin "refs/pull/{{number}}/head" 2>/dev/null \
       || git -C "$_repo_root" fetch -q origin "$_head_ref" 2>/dev/null || true
     if ! git -C "$_repo_root" cat-file -e "${_head_oid}^{commit}" 2>/dev/null; then
@@ -553,6 +554,7 @@ test-infra-scripts: test-build-inputs
     bash scripts/merge-pr.sh test-resolve-both
     bash scripts/merge-pr.sh test-resolve-partial
     python3 scripts/test_landing_safety.py
+    uv run --no-project python scripts/test_pr_install.py
     bash scripts/pr-install-seed-profile.sh self-test
 
 # Sub-steps for recovery. Call individually to resume a failed merge-pr.
