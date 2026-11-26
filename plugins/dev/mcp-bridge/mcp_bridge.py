@@ -16,7 +16,7 @@ Division of labour with the host:
   initialized`` → ``tools/list`` → schema translation → ``ExposeTools``, then
   ``ToolCall`` → ``tools/call`` → ``ToolResult``.
 
-Usage: ``plexi app open <path-to-mcp-bridge> -- <server-id> [<server-id> ...]``
+Usage: ``plexi view open <path-to-mcp-bridge> -- <server-id> [<server-id> ...]``
 where each id names a ``[servers.<id>]`` entry in ``mcp_servers.toml``.
 """
 
@@ -85,8 +85,8 @@ def init(size, args) -> list:
                 "servers": {},
                 "fatal": (
                     "No MCP server given. Open with the server ids to bridge, "
-                    "each naming a [servers.<id>] entry in mcp_servers.toml — "
-                    "for example: plexi app open <app> -- filesystem"
+                    "each naming a [servers.<id>] entry in mcp_servers.toml. "
+                    "From the Plexi repo, run plexi view open ./plugins/dev/mcp-bridge -- filesystem"
                 ),
             }),
         ]
