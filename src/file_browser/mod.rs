@@ -7521,11 +7521,19 @@ mod tests {
                 path: main_rs.clone(),
             })
         );
+        let open_with_default = FileExplorerIntent::OpenWithDefault {
+            path: main_rs.clone(),
+        };
+        for phrase in ["/default", "open in default app", "open with default app"] {
+            assert_eq!(
+                parse_file_explorer_intent(phrase, &ctx),
+                Some(open_with_default.clone()),
+                "{phrase}"
+            );
+        }
         assert_eq!(
-            parse_file_explorer_intent("/default", &ctx),
-            Some(FileExplorerIntent::OpenWithDefault {
-                path: main_rs.clone(),
-            })
+            open_with_default.preview_chip(&ctx),
+            "Open with default app: main.rs [Enter]"
         );
         assert_eq!(
             parse_file_explorer_intent("/reveal", &ctx),

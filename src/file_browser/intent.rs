@@ -204,7 +204,7 @@ impl FileExplorerIntent {
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("selection");
-                format!("Open with default plugin: {name} [Enter]")
+                format!("Open with default app: {name} [Enter]")
             }
             Self::Reveal { path } => {
                 let name = path
@@ -799,13 +799,13 @@ fn parse_navigation_or_open_nl(
         return Some(FileExplorerIntent::CdTerminal { path });
     }
 
-    // Open with default plugin
+    // Open with default app
     if matches!(
         lower.as_str(),
         "open with default"
             | "open default"
-            | "open in default plugin"
-            | "open with default plugin"
+            | "open in default app"
+            | "open with default app"
             | "open with system default"
     ) {
         let path = ctx.primary_target_path()?;
