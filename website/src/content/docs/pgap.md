@@ -615,11 +615,11 @@ Spawn a configured agent worker pane, optionally into a created or reused child 
 | Field | Type | Required |
 |-------|------|----------|
 | `anchor_pane` | `integer?` | no |
-| `command` | `string` | yes |
+| `command` | `string` | no |
 | `cwd` | `string?` | no |
-| `ephemeral` | `boolean` | no |
+| `ephemeral` | `boolean?` | no |
 | `focus` | `boolean` | no |
-| `harness` | `string` | yes |
+| `harness` | `string` | no |
 | `initial_slots` | `any[][]` | no |
 | `name` | `string?` | no |
 | `response_file` | `string` | yes |
