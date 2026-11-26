@@ -2,14 +2,14 @@
 //! `host.lock` in its profile for its whole life; the operating system drops
 //! the lock when the process exits, so a crashed host leaves nothing to clean
 //! up and the installer's update restart (which waits for the old pid to exit
-//! before relaunching) hands over without help. A second launch on a profile
-//! with a live host is refused before it opens a window or touches the
-//! socket, whichever path launched it.
+//! before relaunching) hands over without help. A second launch can hand off
+//! to the lock holder once its socket answers. Only a launch that claims the
+//! profile can start another host.
 use plexi_distribution::host_presence::LOCK_FILE;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Exit status of a launch refused because a host already runs.
 pub(crate) const ALREADY_RUNNING_EXIT: i32 = 3;
@@ -17,16 +17,15 @@ pub(crate) const ALREADY_RUNNING_EXIT: i32 = 3;
 /// How long the socket probe waits for a pre-guard host to answer.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// How long a launch waits for a held lock's host to answer a round trip
-/// before treating it as on its way out (stint 1543).
+/// Maximum time for one readiness round trip to a host holding the lock.
 const LIVE_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// How long a launch waits for a live host to open its path.
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long a launch waits for a lock that is being released. An exiting
-/// host removes its socket just before the process ends, and `plexi host
-/// restart` may start the next host as soon as the socket is gone.
+/// How long a launch waits for the lock holder to answer or release the lock.
+/// An exiting host can remove its socket before `plexi host restart` starts
+/// the next host, while the old process still holds the lock.
 const EXIT_GRACE: Duration = Duration::from_secs(3);
 
 /// What a launch is, decided before anything claims the profile.
@@ -69,9 +68,14 @@ pub(crate) enum Refusal {
         pid: Option<u32>,
         endpoint: PathBuf,
     },
-    /// Another host held the lock for the whole grace with no socket
-    /// answering; `pid` is what it recorded, if readable.
-    LockHeld { lock: PathBuf, pid: Option<u32> },
+    /// Another host held the lock for the whole grace. `socket_timed_out`
+    /// distinguishes readiness polling from waiting for a lock release
+    /// after a failed handoff.
+    LockHeld {
+        lock: PathBuf,
+        pid: Option<u32>,
+        socket_timed_out: bool,
+    },
     /// The lock was free but the socket answered: a host from a build before
     /// this guard is running and owns it.
     SocketLive { endpoint: PathBuf },
@@ -85,22 +89,38 @@ impl Refusal {
     pub(crate) fn is_another_host(&self) -> bool {
         !matches!(self, Self::LockUnavailable(_))
     }
+
+    pub(crate) fn launch_diagnostic(&self, forward: Option<&Path>) -> String {
+        match (self, forward) {
+            (
+                Self::LockHeld {
+                    socket_timed_out, ..
+                },
+                Some(path),
+            ) if *socket_timed_out => {
+                format!(
+                    "{self}. Requested path {} was not delivered.",
+                    path.display()
+                )
+            }
+            _ => self.to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::HostLive { lock, pid, .. } | Self::LockHeld { lock, pid } => {
+            Self::HostLive { lock, pid, .. } | Self::LockHeld { lock, pid, .. } => {
                 let profile = lock.parent().unwrap_or(lock).display();
-                match pid {
-                    Some(pid) => write!(
-                        f,
-                        "Plexi is already running on this profile ({profile}, pid {pid}); use that window"
-                    ),
-                    None => write!(
-                        f,
-                        "Plexi is already running on this profile ({profile}); use that window"
-                    ),
+                write!(f, "Plexi is already running on this profile ({profile}")?;
+                if let Some(pid) = pid {
+                    write!(f, ", pid {pid}")?;
+                }
+                if matches!(self, Self::LockHeld { socket_timed_out, .. } if *socket_timed_out) {
+                    f.write_str("); host socket did not answer before the startup deadline")
+                } else {
+                    f.write_str("); use that window")
                 }
             }
             Self::SocketLive { endpoint } => write!(
@@ -125,12 +145,10 @@ pub(crate) enum Launch {
 }
 
 /// Become the host for the profile at `profile_dir`, whose socket is
-/// `endpoint`, or hand the launch to a live host (stint 1543). A host counts
-/// as live only if it answers a round trip and acknowledges the launch: open
-/// the path (`forward`) when present, otherwise show the running window. Any
-/// failure falls back to waiting on the lock, so a host that is quitting is
-/// replaced, never reported as running. Never
-/// removes or binds the socket while another process holds the lock.
+/// `endpoint`, or hand the launch to a host whose socket answers within the
+/// grace. The host must acknowledge opening `forward` or showing its window.
+/// After a failed handoff, wait for the lock release so a quitting host can
+/// be replaced. Only the lock holder may remove or bind the socket.
 pub(crate) fn claim(
     profile_dir: &Path,
     endpoint: &Path,
@@ -141,7 +159,9 @@ pub(crate) fn claim(
         endpoint,
         forward,
         EXIT_GRACE,
-        &|endpoint| crate::cli::host::host_answers(endpoint, profile_dir, LIVE_PROBE_TIMEOUT),
+        &|endpoint, remaining| {
+            crate::cli::host::host_answers(endpoint, profile_dir, LIVE_PROBE_TIMEOUT.min(remaining))
+        },
         &|endpoint, root| {
             crate::cli::host::forward_host_launch(endpoint, profile_dir, root, FORWARD_TIMEOUT)
         },
@@ -151,6 +171,7 @@ pub(crate) fn claim(
     )
 }
 
+type ReadinessProbe<'a> = dyn Fn(&Path, Duration) -> bool + 'a;
 type HandOffResult = Result<(), String>;
 
 fn claim_or_hand_off_with(
@@ -158,11 +179,11 @@ fn claim_or_hand_off_with(
     endpoint: &Path,
     forward: Option<&Path>,
     grace: Duration,
-    live: &dyn Fn(&Path) -> bool,
+    live: &ReadinessProbe<'_>,
     open: &dyn Fn(&Path, Option<&Path>) -> HandOffResult,
     yield_activation: &dyn Fn(u32),
 ) -> Result<Launch, Refusal> {
-    let refusal = match claim_within(profile_dir, endpoint, grace, live) {
+    let refusal = match claim_within(profile_dir, endpoint, grace, Some(live)) {
         Ok(instance) => return Ok(Launch::Host(instance)),
         Err(refusal) => refusal,
     };
@@ -188,7 +209,7 @@ fn claim_or_hand_off_with(
             log::warn!(
                 "host_startup: the live host did not take the launch ({error}); waiting on the lock"
             );
-            claim_within(profile_dir, endpoint, grace, &|_| false).map(Launch::Host)
+            claim_within(profile_dir, endpoint, grace, None).map(Launch::Host)
         }
     }
 }
@@ -197,7 +218,7 @@ fn claim_within(
     profile_dir: &Path,
     endpoint: &Path,
     grace: Duration,
-    live: &dyn Fn(&Path) -> bool,
+    live: Option<&ReadinessProbe<'_>>,
 ) -> Result<HostInstance, Refusal> {
     let path = profile_dir.join(LOCK_FILE);
     std::fs::create_dir_all(profile_dir).map_err(|error| {
@@ -238,37 +259,37 @@ fn claim_within(
             .ok()
             .and_then(|text| text.trim().parse().ok())
     };
-    // A held lock whose host answers a round trip is a live host: say so at
-    // once instead of spending the grace (stint 1543). A host that does not
-    // answer (quitting, or still starting) gets the grace. `live` never
-    // removes the socket: another process holds the lock.
-    if matches!(file.try_lock(), Err(TryLockError::WouldBlock)) && live(endpoint) {
-        return Err(Refusal::HostLive {
-            pid: read_pid(&path),
-            lock: path,
-            endpoint: endpoint.to_path_buf(),
-        });
-    }
-    let deadline = std::time::Instant::now() + grace;
-    let locked = loop {
+    // A held lock can belong to a starting or quitting host. Poll for a
+    // readiness reply and retry the lock until either succeeds or time runs out.
+    let deadline = Instant::now() + grace;
+    loop {
         match file.try_lock() {
-            Err(TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(Refusal::LockHeld {
+                        pid: read_pid(&path),
+                        lock: path,
+                        socket_timed_out: live.is_some(),
+                    });
+                }
+                if live.is_some_and(|probe| probe(endpoint, remaining)) {
+                    return Err(Refusal::HostLive {
+                        pid: read_pid(&path),
+                        lock: path,
+                        endpoint: endpoint.to_path_buf(),
+                    });
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(remaining.min(Duration::from_millis(50)));
             }
-            other => break other,
-        }
-    };
-    match locked {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            let pid = read_pid(&path);
-            return Err(Refusal::LockHeld { lock: path, pid });
-        }
-        Err(TryLockError::Error(error)) => {
-            return Err(Refusal::LockUnavailable(format!(
-                "lock {}: {error}",
-                path.display()
-            )));
+            Err(TryLockError::Error(error)) => {
+                return Err(Refusal::LockUnavailable(format!(
+                    "lock {}: {error}",
+                    path.display()
+                )));
+            }
         }
     }
     if matches!(
@@ -318,7 +339,7 @@ mod tests {
                 std::fs::hard_link(&other, &lock).unwrap();
             }
             let endpoint = endpoint_in(&profile);
-            let refusal = claim_within(&profile, &endpoint, Duration::ZERO, &|_| false)
+            let refusal = claim_within(&profile, &endpoint, Duration::ZERO, None)
                 .err()
                 .unwrap_or_else(|| panic!("{link}: a linked lock was claimed"));
             assert!(
@@ -340,8 +361,8 @@ mod tests {
             profile.path(),
             &endpoint,
             None,
-            Duration::ZERO,
-            &|_| true,
+            EXIT_GRACE,
+            &|_, _| true,
             &|_, root| {
                 assert!(root.is_none());
                 events.borrow_mut().push(("show", 4242));
@@ -370,7 +391,8 @@ mod tests {
         assert!(!Refusal::LockUnavailable("lock host.lock: ENOLCK".into()).is_another_host());
         assert!(Refusal::LockHeld {
             lock: PathBuf::from("/p/host.lock"),
-            pid: None
+            pid: None,
+            socket_timed_out: true,
         }
         .is_another_host());
         assert!(Refusal::SocketLive {
@@ -384,7 +406,7 @@ mod tests {
     /// lock file, the lock mode or the profile layout.
     #[test]
     fn a_claimed_host_is_running_to_the_installers_presence_probe() {
-        use plexi_distribution::host_presence::{Evidence, Presence, probe};
+        use plexi_distribution::host_presence::{probe, Evidence, Presence};
         let profile = tempfile::tempdir().unwrap();
         let endpoint = endpoint_in(profile.path());
         let _host = claim_host(profile.path(), &endpoint).unwrap();
@@ -407,16 +429,16 @@ mod tests {
 
     /// Become the host, for a test that needs one holding the lock.
     fn claim_host(profile_dir: &Path, endpoint: &Path) -> Result<HostInstance, Refusal> {
-        claim_within(profile_dir, endpoint, EXIT_GRACE, &|endpoint| {
-            crate::cli::host::host_answers(endpoint, profile_dir, LIVE_PROBE_TIMEOUT)
-        })
+        claim_within(profile_dir, endpoint, EXIT_GRACE, None)
     }
 
     /// A liveness probe with half the grace, not the production 300 ms, so a
     /// loaded runner's slow stand-in still counts as live; it still ends
     /// inside the grace (stint 1574).
-    fn live_within_grace(profile_dir: &Path) -> impl Fn(&Path) -> bool + '_ {
-        |endpoint| crate::cli::host::host_answers(endpoint, profile_dir, EXIT_GRACE / 2)
+    fn live_within_grace(profile_dir: &Path) -> impl Fn(&Path, Duration) -> bool + '_ {
+        |endpoint, remaining| {
+            crate::cli::host::host_answers(endpoint, profile_dir, remaining.min(EXIT_GRACE / 2))
+        }
     }
 
     fn endpoint_in(dir: &Path) -> PathBuf {
@@ -539,8 +561,8 @@ mod tests {
             profile.path(),
             &endpoint,
             None,
-            Duration::ZERO,
-            &|_| true,
+            EXIT_GRACE,
+            &|_, _| true,
             &|target, root| {
                 assert_eq!(target, endpoint);
                 assert!(root.is_none());
@@ -661,26 +683,26 @@ mod tests {
         });
 
         let started = std::time::Instant::now();
-        let probe_gave_up = std::sync::atomic::AtomicBool::new(false);
+        let first_probe_finished = std::cell::OnceCell::new();
         let launch = claim_or_hand_off_with(
             profile.path(),
             &endpoint,
             None,
             Duration::from_secs(5),
-            &|endpoint| {
-                let live =
-                    crate::cli::host::host_answers(endpoint, profile.path(), LIVE_PROBE_TIMEOUT);
-                probe_gave_up.store(
-                    started.elapsed() < LIVE_PROBE_TIMEOUT * 3,
-                    std::sync::atomic::Ordering::SeqCst,
+            &|endpoint, remaining| {
+                let live = crate::cli::host::host_answers(
+                    endpoint,
+                    profile.path(),
+                    LIVE_PROBE_TIMEOUT.min(remaining),
                 );
+                first_probe_finished.get_or_init(|| started.elapsed());
                 live
             },
             &|_, _| unreachable!("no path"),
             &|_| {},
         );
         assert!(
-            probe_gave_up.load(std::sync::atomic::Ordering::SeqCst),
+            first_probe_finished.into_inner().unwrap() < LIVE_PROBE_TIMEOUT * 3,
             "the probe must give up within its bound"
         );
         assert!(
@@ -729,6 +751,60 @@ mod tests {
         drop(first);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_starting_host_receives_the_path_when_its_socket_answers() {
+        let profile = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let endpoint = endpoint_in(profile.path());
+        let _first = claim_host(profile.path(), &endpoint).expect("the first launch is the host");
+        let grace = crate::testing::load_aware_timeout(EXIT_GRACE);
+        let host = std::cell::RefCell::new(None);
+
+        let started = std::time::Instant::now();
+        let launch = claim_or_hand_off_with(
+            profile.path(),
+            &endpoint,
+            Some(&root),
+            grace,
+            &|endpoint, remaining| {
+                let live = crate::cli::host::host_answers(
+                    endpoint,
+                    profile.path(),
+                    remaining.min(grace / 2),
+                );
+                if host.borrow().is_none() {
+                    assert!(!live, "the first probe must miss the starting host");
+                    *host.borrow_mut() = Some(answering_host(endpoint, 2, None));
+                }
+                live
+            },
+            &|endpoint, root| {
+                crate::cli::host::forward_host_launch(endpoint, profile.path(), root, grace / 2)
+            },
+            &|_| {},
+        );
+        let elapsed = started.elapsed();
+        let line = match launch {
+            Ok(Launch::HandedOff(line)) => line,
+            Ok(Launch::Host(_)) => panic!("the newcomer unexpectedly took the lock"),
+            Err(refusal) => panic!("the starting host lost the path after {elapsed:?}: {refusal}"),
+        };
+        assert!(
+            elapsed < grace,
+            "the handoff spent the full grace: {elapsed:?}"
+        );
+        assert_eq!(
+            host.into_inner().unwrap().join().unwrap(),
+            std::slice::from_ref(&root)
+        );
+        assert_eq!(
+            line,
+            format!("Opened {} in the running Plexi.", root.display())
+        );
+    }
+
     /// A live host that does not take the path never ends the launch as a
     /// success: the launch falls back to waiting on the lock.
     #[cfg(unix)]
@@ -773,35 +849,45 @@ mod tests {
         }
     }
 
-    /// Guard (passes before stint 1543 too): a held lock whose host never
-    /// answers waits the grace, then refuses with a named reason.
     #[test]
-    fn a_held_lock_without_a_socket_waits_the_grace_then_refuses() {
+    fn a_starting_host_that_never_answers_reports_the_undelivered_path() {
         let profile = tempfile::tempdir().unwrap();
         let endpoint = endpoint_in(profile.path());
-        let first = claim_host(profile.path(), &endpoint).expect("the first launch is the host");
-        let grace = Duration::from_millis(300);
+        let _first = claim_host(profile.path(), &endpoint).expect("the first launch is the host");
+        let forward = profile.path().join("workspace");
+        let grace = crate::testing::load_aware_timeout(Duration::from_millis(300));
 
         let started = std::time::Instant::now();
-        let refusal = match claim_within(profile.path(), &endpoint, grace, &|_| false) {
-            Ok(_) => panic!("a held lock must refuse"),
-            Err(refusal) => refusal,
-        };
+        let refusal = claim_or_hand_off_with(
+            profile.path(),
+            &endpoint,
+            Some(&forward),
+            grace,
+            &live_within_grace(profile.path()),
+            &|_, _| panic!("a host without a socket cannot accept a handoff"),
+            &|_| panic!("a host without a socket is not ready for activation"),
+        )
+        .err()
+        .expect("a held lock without readiness must refuse");
+        let elapsed = started.elapsed();
         assert!(
-            started.elapsed() >= grace,
-            "a held lock with no socket must wait the grace"
+            (grace..grace * 2).contains(&elapsed),
+            "wait took {elapsed:?}"
         );
         assert_eq!(
             refusal,
             Refusal::LockHeld {
                 lock: profile.path().join(LOCK_FILE),
                 pid: Some(std::process::id()),
+                socket_timed_out: true,
             }
         );
-        assert!(refusal
-            .to_string()
-            .contains("already running on this profile"));
-        drop(first);
+        let diagnostic = refusal.launch_diagnostic(Some(&forward));
+        assert!(diagnostic.contains("host socket did not answer before the startup deadline"));
+        assert!(diagnostic.contains(&format!(
+            "Requested path {} was not delivered.",
+            forward.display()
+        )));
     }
 
     /// A host from a build before this guard takes no lock, but its socket
@@ -839,15 +925,13 @@ mod tests {
     fn a_host_finishing_its_exit_hands_over_within_the_grace() {
         let profile = tempfile::tempdir().unwrap();
         let endpoint = endpoint_in(profile.path());
-        let old = claim_within(profile.path(), &endpoint, Duration::ZERO, &|_| false).unwrap();
+        let old = claim_within(profile.path(), &endpoint, Duration::ZERO, None).unwrap();
         let exiting = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
             drop(old);
         });
-        claim_within(profile.path(), &endpoint, Duration::from_secs(3), &|_| {
-            false
-        })
-        .expect("the lock is released while the new host waits");
+        claim_within(profile.path(), &endpoint, Duration::from_secs(3), None)
+            .expect("the lock is released while the new host waits");
         exiting.join().unwrap();
     }
 

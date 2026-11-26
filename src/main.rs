@@ -283,15 +283,14 @@ fn main() -> eframe::Result {
             );
             (None, Some(host))
         }
-        // A second launch on a live host hands it the canonical path main
-        // resolved above (before the chdir) and exits 0 (stint 1543).
+        // A second launch hands off the canonical path and exits 0 once
+        // the existing host accepts it.
         LaunchProfile::Host(profile_init_lock) => {
+            let forward = crate::config::adopted_context_path().or_else(|| adopted_root.clone());
             let instance = match app::host_instance::claim(
                 &config::config_dir(),
                 &crate::platform::ipc::endpoint_path(),
-                crate::config::adopted_context_path()
-                    .or_else(|| adopted_root.clone())
-                    .as_deref(),
+                forward.as_deref(),
             ) {
                 Ok(app::host_instance::Launch::Host(instance)) => instance,
                 Ok(app::host_instance::Launch::HandedOff(line)) => {
@@ -302,7 +301,7 @@ fn main() -> eframe::Result {
                 Err(refusal) if refusal.is_another_host() => {
                     log::info!("host_startup: refused second host: {refusal}");
                     log::logger().flush();
-                    eprintln!("{refusal}");
+                    eprintln!("{}", refusal.launch_diagnostic(forward.as_deref()));
                     std::process::exit(app::host_instance::ALREADY_RUNNING_EXIT);
                 }
                 Err(failure) => {
