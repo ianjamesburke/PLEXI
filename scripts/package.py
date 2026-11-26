@@ -173,7 +173,10 @@ def assemble(args):
     shutil.copytree(REPO / "plugins/calc", resources / "smoke-app", ignore=ignore)
     shutil.copy2(REPO / "assets/app-icon.png", resources)
     shutil.copy2(REPO / "scripts/default-config.toml", resources / "default-config.toml")
-    for source, destination in [("agents", "agents"), ("skills", "skills"), ("scripts/default-scripts", "scripts")]:
+    agents = REPO / "agents"
+    if agents.is_dir():
+        shutil.copytree(agents, resources / "agents", ignore=ignore)
+    for source, destination in [("skills", "skills"), ("scripts/default-scripts", "scripts")]:
         shutil.copytree(REPO / source, resources / destination, ignore=ignore)
     if channel == "alpha" or channel.startswith("pr-"):
         for manifest in (REPO / "plugins").glob("*/manifest.toml"):
