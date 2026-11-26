@@ -232,7 +232,7 @@ pub(crate) struct PaletteAnswer {
 #[derive(Default)]
 pub(crate) struct PaletteSources {
     invocation: Option<PaletteInvocation>,
-    queued_binding_edit: Option<(PaletteCommand, PaletteInvocation)>,
+    queued_binding_edit: Option<PaletteCommand>,
     files: Option<FileIndex>,
     /// The context root this session's Files stop lists, fixed at its first
     /// Files query.
@@ -1630,10 +1630,8 @@ impl PlexiApp {
     /// every later pass so live rows (pane state, context pips, update ready)
     /// stay current. Serviced from `App::logic`, never from drawing.
     pub(crate) fn refresh_command_palette(&mut self) {
-        if let Some((command, invocation)) = self.palette_sources.queued_binding_edit.take() {
-            if self.revalidate_palette_invocation(command.command_id(), &invocation) {
-                self.open_binding_config(&command);
-            }
+        if let Some(command) = self.palette_sources.queued_binding_edit.take() {
+            self.open_binding_config(&command);
         }
         self.drain_palette_opens();
         self.palette_sources.usage.poll();
@@ -2565,8 +2563,15 @@ impl PlexiApp {
                 self.run_palette_selection_with_input(id, invocation, input);
             }
             PaletteTarget::AssignShortcut(command) => {
-                if let Some(invocation) = invocation {
-                    self.palette_sources.queued_binding_edit = Some((command, invocation.clone()));
+                // Validated here, on the activating pass, then only queued,
+                // so a focus change before `App::logic` drains it cannot
+                // drop the edit (stint 1802).
+                let Some(invocation) = invocation else {
+                    return;
+                };
+                if self.revalidate_palette_invocation(command.command_id(), invocation) {
+                    log::info!("palette: queued binding edit id={}", command.command_id());
+                    self.palette_sources.queued_binding_edit = Some(command);
                     self.ctx.request_repaint();
                 }
             }
