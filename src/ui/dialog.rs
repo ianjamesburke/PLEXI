@@ -210,6 +210,20 @@ fn destructive_guards_slot() -> egui::Id {
     egui::Id::new("plexi_action_modal_destructive_guards")
 }
 
+#[cfg(test)]
+fn destructive_frame_epoch_slot() -> egui::Id {
+    egui::Id::new("plexi_action_modal_destructive_frame_epoch")
+}
+
+/// Test hook: drive the arm delay from egui input time on this context.
+/// Set this before the dialog first draws so the guard uses one time domain.
+#[cfg(test)]
+pub(crate) fn use_destructive_frame_clock_for_test(ctx: &egui::Context) {
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_insert_with(destructive_frame_epoch_slot(), std::time::Instant::now);
+    });
+}
+
 /// Test hook: every destructive dialog on screen has waited out the arm
 /// delay, so the next real press is a deliberate one.
 #[cfg(test)]
@@ -292,7 +306,14 @@ impl<'a> ActionModal<'a> {
         ctx: &egui::Context,
     ) -> Option<crate::broker::consent::ConsentInput> {
         let (synthetic, request) = self.destructive_request?;
+        #[cfg(not(test))]
         let now = std::time::Instant::now();
+        #[cfg(test)]
+        let now = ctx
+            .data(|d| d.get_temp::<std::time::Instant>(destructive_frame_epoch_slot()))
+            .map_or_else(std::time::Instant::now, |epoch| {
+                epoch + std::time::Duration::from_secs_f64(ctx.input(|i| i.time))
+            });
         let pass = ctx.cumulative_pass_nr();
         let (input, remaining) = ctx.data_mut(|d| {
             let guard = d
