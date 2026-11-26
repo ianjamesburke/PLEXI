@@ -17,6 +17,11 @@ fi
 case "$(uname -s)" in Darwin) os=macos ;; Linux) os=linux ;; *) echo 'Source packaging requires macOS or Linux.' >&2; exit 1 ;; esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64) arch=x64 ;; *) echo 'Unsupported architecture.' >&2; exit 1 ;; esac
 if [[ "$channel" =~ ^pr-[0-9]+$ ]]; then export PLEXI_BUILD_TEST_CHANNEL="$channel"; else unset PLEXI_BUILD_TEST_CHANNEL; fi
+if [[ "$channel" == alpha && -z "${PLEXI_BUILD_TAG:-}" ]]; then
+  PLEXI_BUILD_TAG="$(bash scripts/local-alpha-tag.sh)"
+  export PLEXI_BUILD_TAG
+  echo "install: local alpha build $PLEXI_BUILD_TAG"
+fi
 metadata="$(cargo metadata --format-version=1 --no-deps)"
 target="$(printf '%s' "$metadata" | uv run --no-project --python 3.11 python -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
 if [[ "${PLEXI_REUSE_RELEASE_BUILD:-}" == 1 && -n "${PLEXI_BUILD_TEST_CHANNEL:-}" && -x "$target/release/plexi" ]]; then

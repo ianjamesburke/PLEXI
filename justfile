@@ -571,8 +571,8 @@ changelog:
 bump bump="patch":
     bash scripts/release-version.sh "{{bump}}"
 
-# beta: start the nightly beta release now instead of waiting for the schedule
-# (CI builds origin/alpha's head and, if it passes, tags and publishes it).
+# beta: fast-forward the beta branch to origin/alpha; the nightly run tests and
+# publishes it. The push itself publishes nothing.
 # main: fast-forward main to the newest beta tag's commit; that push publishes.
 # Refuses a non-fast-forward.
 #   just promote beta | just promote main
@@ -580,7 +580,7 @@ promote to:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{to}}" in
-        beta) exec gh workflow run release.yml --ref alpha -f nightly=true ;;
+        beta) git fetch -q origin alpha; exec git push origin "$(git rev-parse origin/alpha):refs/heads/beta" ;;
         main) ;;
         *) echo "error: just promote beta|main (got '{{to}}')" >&2; exit 1 ;;
     esac

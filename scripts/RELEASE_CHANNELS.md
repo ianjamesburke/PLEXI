@@ -74,15 +74,17 @@ finishes.
 
 | Branch | Publishes | Tag |
 |---|---|---|
-| `alpha` | nothing; install from source with `just channel-install alpha` | none |
+| `alpha` | nothing; install from source with `just install` on alpha | `vX.Y.Z-alpha.N`, counted locally |
 | `beta` | one scheduled nightly run (03:00 UTC-7) | `vX.Y.Z-beta.N` |
 | `main` | a push, made by `just promote main` | `vX.Y.Z` |
 
-The nightly run does nothing when alpha has no commits since the last beta tag.
-Otherwise it builds, tests and packages alpha's head commit; only if everything
-passes it tags that exact commit (never a newer alpha tip) and publishes the
-next beta, then fast-forwards the `beta` branch to that commit. `just promote beta` starts the same run
-by hand.
+`just promote beta` fast-forwards the `beta` branch to `origin/alpha`; that push
+publishes nothing. The nightly run does nothing when beta has no commits since
+the last beta tag. Otherwise it builds, tests and packages beta's head commit;
+only if everything passes it tags that exact commit and publishes the next beta.
+
+A source install of alpha is tagged by `scripts/local-alpha-tag.sh`: N counts
+up on every install and restarts when `X.Y.Z` changes.
 
 Per-push alpha releases cost about 55 hosted minutes each and served no one but
 the owner. The full suite now gates the nightly beta instead of each merge.
@@ -98,7 +100,7 @@ on stable tags only.
 ```sh
 just changelog       # preview unreleased commits
 just bump            # on alpha: version + CHANGELOG commit (minor|major optional); push it
-just promote beta    # optional: start the nightly beta release now; CI publishes vX.Y.Z-beta.N
+just promote beta    # fast-forward beta to alpha; the nightly run publishes vX.Y.Z-beta.N
 just promote main    # fast-forward main to the newest beta tag's commit; CI publishes vX.Y.Z
 ```
 
