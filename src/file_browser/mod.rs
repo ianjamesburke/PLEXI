@@ -1,5 +1,6 @@
 pub(crate) mod helpers;
 mod icons;
+mod preview;
 pub mod intent;
 
 /// Re-exported so the host open resolver (`plugin::canvas_bindings`) can use the
@@ -25,14 +26,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use helpers::{
-    format_modified, format_size, is_text_preview_candidate, read_text_preview, sort_entries,
+    format_modified, format_size, is_text_preview_candidate, sort_entries,
     ColumnConfig, ColumnModel, DirStats, TextPreview,
 };
 use icons::paint_entry_icon;
+use preview::PreviewTask;
 
 const DETAILS_TABLE_MIN_WIDTH: f32 = 560.0;
 const INSPECTOR_MIN_WIDTH: f32 = 920.0;
-const DIR_PREVIEW_CAP: usize = 500;
 const DETAILS_HEADER_H: f32 = style::TABLE_HEADER_H;
 const DETAILS_ROW_H: f32 = style::LIST_ROW_DENSE_H;
 const FONT_SIZE_DEFAULT: f32 = style::TEXT_HINT;
@@ -473,13 +474,17 @@ pub struct FileBrowserView {
     preview_texture_path: Option<PathBuf>,
     preview_size: Option<[usize; 2]>,
     preview_error: Option<String>,
+    image_preview_task: PreviewTask<egui::ColorImage>,
+    image_preview_ctx: Option<egui::Context>,
     // Dir preview
     dir_preview_path: Option<PathBuf>,
     dir_preview_stats: Option<DirStats>,
+    dir_preview_task: PreviewTask<DirStats>,
     // Text preview
     text_preview_path: Option<PathBuf>,
     text_preview: Option<TextPreview>,
     text_preview_error: Option<String>,
+    text_preview_task: PreviewTask<TextPreview>,
     inspector_open: bool,
     inspector_width: f32,
     quick_look_open: bool,
@@ -733,11 +738,15 @@ impl FileBrowserView {
             preview_texture_path: None,
             preview_size: None,
             preview_error: None,
+            image_preview_task: PreviewTask::default(),
+            image_preview_ctx: None,
             dir_preview_path: None,
             dir_preview_stats: None,
+            dir_preview_task: PreviewTask::default(),
             text_preview_path: None,
             text_preview: None,
             text_preview_error: None,
+            text_preview_task: PreviewTask::default(),
             inspector_open: false,
             inspector_width: INSPECTOR_DEFAULT_WIDTH,
             quick_look_open: false,
@@ -1527,76 +1536,66 @@ impl FileBrowserView {
         self.preview_size = None;
         self.preview_error = None;
 
-        let rgba = match helpers::decode_image_preview(path) {
-            Ok(rgba) => rgba,
-            Err(error) => {
-                self.preview_error = Some(error);
-                return;
-            }
-        };
-        let size = [rgba.width() as usize, rgba.height() as usize];
-        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-        let texture = ctx.load_texture(
-            format!("fb-preview:{}", path.display()),
-            color_image,
-            egui::TextureOptions::LINEAR,
-        );
-        self.preview_size = Some(size);
-        self.preview_texture = Some(texture);
+        self.image_preview_ctx = Some(ctx.clone());
+        self.image_preview_task.request(path);
+        ctx.request_repaint();
     }
 
-    fn ensure_dir_preview(&mut self, path: &Path) {
+    fn ensure_dir_preview(&mut self, ctx: &egui::Context, path: &Path) {
         if self.dir_preview_path.as_deref() == Some(path) {
             return;
         }
         self.dir_preview_path = Some(path.to_path_buf());
-        let mut file_count = 0usize;
-        let mut dir_count = 0usize;
-        let mut total_bytes = 0u64;
-        let mut truncated = false;
-        if let Ok(entries) = fs::read_dir(path) {
-            for e in entries.flatten() {
-                if file_count + dir_count >= DIR_PREVIEW_CAP {
-                    truncated = true;
-                    break;
-                }
-                let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                if is_dir {
-                    dir_count += 1;
-                } else {
-                    file_count += 1;
-                    if let Ok(m) = e.metadata() {
-                        total_bytes += m.len();
-                    }
-                }
-            }
-        }
-        self.dir_preview_stats = Some(DirStats {
-            file_count,
-            dir_count,
-            total_bytes,
-            truncated,
-        });
+        self.dir_preview_stats = None;
+        self.dir_preview_task.request(path);
+        ctx.request_repaint();
     }
 
-    fn ensure_text_preview(&mut self, path: &Path) {
+    fn ensure_text_preview(&mut self, path: &Path) -> bool {
         if self.text_preview_path.as_deref() == Some(path) {
-            return;
+            return false;
         }
         self.text_preview_path = Some(path.to_path_buf());
         self.text_preview = None;
         self.text_preview_error = None;
+        self.text_preview_task.request(path);
+        true
+    }
 
-        match read_text_preview(path) {
-            Ok(preview) => self.text_preview = Some(preview),
-            Err(err) => {
-                log::warn!(
-                    "file_browser: text preview failed for '{}': {err}",
-                    path.display()
-                );
-                self.text_preview_error = Some(err.to_string());
+    fn service_previews(
+        &mut self,
+        wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
+    ) -> bool {
+        let mut changed = false;
+        if let Some(result) = self.image_preview_task.service(wake, preview::read_image) {
+            let ctx = self.image_preview_ctx.take();
+            match result {
+                Ok(image) => {
+                    if let (Some(ctx), Some(path)) = (ctx, &self.preview_texture_path) {
+                        self.preview_size = Some(image.size);
+                        self.preview_texture = Some(ctx.load_texture(
+                            format!("fb-preview:{}", path.display()),
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+                Err(error) => self.preview_error = Some(error),
             }
+            changed = true;
         }
+        if let Some(result) = self.dir_preview_task.service(wake, preview::read_dir) {
+            self.dir_preview_stats = result.ok();
+            changed = true;
+        }
+        if let Some(result) = self.text_preview_task.service(wake, preview::read_text) {
+            match result {
+                Ok(preview) => self.text_preview = Some(preview),
+                Err(error) => self.text_preview_error = Some(error),
+            }
+            changed = true;
+        }
+        changed
     }
 
     fn toggle_inspector(&mut self) {
@@ -2830,7 +2829,7 @@ impl FileBrowserView {
 
     fn draw_dir_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
         let path = entry.path.clone();
-        self.ensure_dir_preview(&path);
+        self.ensure_dir_preview(ui.ctx(), &path);
         let stats = self.dir_preview_stats;
 
         egui::Frame::new()
@@ -2875,7 +2874,9 @@ impl FileBrowserView {
 
     fn draw_text_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
         let path = entry.path.clone();
-        self.ensure_text_preview(&path);
+        if self.ensure_text_preview(&path) {
+            ui.ctx().request_repaint();
+        }
 
         egui::Frame::new()
             .fill(colors.bg_sidebar)
@@ -3145,7 +3146,7 @@ impl FileBrowserView {
     }
 
     fn draw_quick_look_folder(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
-        self.ensure_dir_preview(&entry.path);
+        self.ensure_dir_preview(ui.ctx(), &entry.path);
         ui.label(
             egui::RichText::new(entry.path.display().to_string())
                 .size(style::TEXT_HINT)
@@ -3175,7 +3176,9 @@ impl FileBrowserView {
     }
 
     fn draw_quick_look_text(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
-        self.ensure_text_preview(&entry.path);
+        if self.ensure_text_preview(&entry.path) {
+            ui.ctx().request_repaint();
+        }
         ui.label(
             egui::RichText::new(entry.path.display().to_string())
                 .size(style::TEXT_HINT)
@@ -3848,6 +3851,7 @@ impl View for FileBrowserView {
         if changed && self.in_search {
             self.apply_search_results_update();
         }
+        changed |= self.service_previews(wake);
         if self.watch.as_ref().map(|(dir, _)| dir) != Some(&self.cwd) {
             self.watch = None;
             match crate::host::path_watch::PathWatch::new(
@@ -5776,6 +5780,37 @@ mod tests {
         });
         harness.run_frames(2);
         assert_eq!(browser_selected(&mut harness), 0);
+    }
+
+    #[test]
+    fn text_preview_request_defers_the_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = dir.path().join("first.txt");
+        let second = dir.path().join("second.txt");
+        fs::write(&first, "First preview").expect("write first preview");
+        fs::write(&second, "Second preview").expect("write second preview");
+        let mut browser = FileBrowserView::new(dir.path().to_path_buf());
+        browser.ensure_text_preview(&first);
+        assert!(
+            browser.text_preview.is_none(),
+            "request read the file synchronously"
+        );
+
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+        browser.service_external(&wake);
+        browser.ensure_text_preview(&second);
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        loop {
+            browser.service_external(&wake);
+            if let Some(preview) = &browser.text_preview {
+                assert_eq!(preview.body, "Second preview");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no preview was delivered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -7826,6 +7861,7 @@ mod tests {
         });
         tap_key(&mut h, Key::Enter, Modifiers::NONE);
         h.run_frames(2);
+        h.app.wait_for_file_opens_for_test();
 
         let hello_path = dir.path().join("hello.rs");
         assert!(hello_path.is_file(), "hello.rs must exist on disk");
@@ -7983,6 +8019,8 @@ mod tests {
             response_file: None,
         });
         h.run_frames(3);
+        h.app.wait_for_file_opens_for_test();
+        h.run_frames(1);
 
         assert_eq!(h.pane_count(), before);
         let (_, browser) = explorer_in_harness(&mut h);
@@ -8007,6 +8045,8 @@ mod tests {
         let before = h.pane_count();
 
         h.press_key(Key::Enter, Modifiers::NONE).run_frames(2);
+        h.app.wait_for_file_opens_for_test();
+        h.run_frames(1);
 
         assert_eq!(h.pane_count(), before);
         assert_painted_open_refusal(&h, [&resolved, &folder]);
@@ -8042,6 +8082,8 @@ mod tests {
         );
 
         h.press_key(Key::Enter, Modifiers::NONE).run_frames(2);
+        h.app.wait_for_file_opens_for_test();
+        h.run_frames(1);
 
         let editor = h.app.windows[0]
             .panes

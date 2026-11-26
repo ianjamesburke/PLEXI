@@ -18,8 +18,7 @@ pub(crate) fn is_image_extension(ext: &str) -> bool {
 }
 
 /// Decode `path` for a preview, downscaled to `IMAGE_PREVIEW_MAX_EDGE`.
-/// Slow for large files: callers off the UI thread only, or the Explorer's
-/// existing synchronous path.
+/// Slow for large files. Call from a worker.
 pub(crate) fn decode_image_preview(path: &Path) -> Result<image::RgbaImage, String> {
     let decoded = image::open(path).map_err(|e| format!("Unable to decode image: {e}"))?;
     let decoded = if decoded.width().max(decoded.height()) > IMAGE_PREVIEW_MAX_EDGE {

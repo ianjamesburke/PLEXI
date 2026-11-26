@@ -307,6 +307,8 @@ pub(crate) struct TextEditorRead {
 
 impl TextEditorRead {
     pub(crate) fn read(path: &Path, cwd: &Path) -> Self {
+        #[cfg(test)]
+        crate::app::file_open::prepared_on::record_body_read(path);
         Self {
             read: std::fs::read_to_string(path),
             workspace_root: crate::cli::resolve_commands_workspace_root(cwd)

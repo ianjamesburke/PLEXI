@@ -22,10 +22,11 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use super::file_handlers::FileHandler;
 use super::PlexiApp;
-use crate::protocol::OpenPlacement;
+use crate::protocol::{ArtifactOpenMode, OpenPlacement};
 use crate::spatial::tiling::PaneId;
 
 /// The operation id both CLI spellings and every in-host entry point share.
@@ -252,6 +253,8 @@ pub(crate) fn classify_open_target(
             matched_by,
         })
     };
+    #[cfg(test)]
+    prepared_on::record(target);
     // Gate on the file type first, before any association can pick a
     // handler that would read it: a FIFO, device or socket is never opened.
     let meta = std::fs::metadata(target).map_err(|error| {
@@ -337,6 +340,10 @@ pub(crate) struct PreparedOpen {
 /// Do the disk half of opening `request.target`: stat, content sample, and
 /// the text editor's read. Never touches host state.
 pub(crate) fn prepare_open(request: OpenRequest) -> PreparedOpen {
+    prepare_open_for(request, true)
+}
+
+fn prepare_open_for(request: OpenRequest, allow_manifest_fallback: bool) -> PreparedOpen {
     let OpenRequest {
         target,
         mut associations,
@@ -346,33 +353,49 @@ pub(crate) fn prepare_open(request: OpenRequest) -> PreparedOpen {
     let classified = classify_open_target(&target, &associations);
     // The cascade without the manifest handler, read now so a failed
     // manifest launch needs no second trip to the disk.
-    let fallback = associations
-        .manifest_handler
-        .take()
-        .map(|_| classify_open_target(&target, &associations));
-    let edits = |result: &Result<Classified, FileOpenError>| {
-        matches!(
-            result,
-            Ok(Classified {
-                handler: OpenHandler::TextEditor,
-                ..
-            })
-        )
+    let fallback = if allow_manifest_fallback && associations.manifest_handler.take().is_some() {
+        Some(classify_open_target(&target, &associations))
+    } else {
+        None
     };
-    let text = (!editor_open && (edits(&classified) || fallback.as_ref().is_some_and(edits)))
-        .then(|| crate::pane_ops::create::TextEditorRead::read(&target, &cwd));
-    #[cfg(test)]
-    prepared_on::record(&target);
-    PreparedOpen {
+    let mut prepared = PreparedOpen {
         target,
         cwd,
         classified,
         fallback,
-        text,
+        text: None,
+    };
+    if !editor_open && prepared.needs_text_read() {
+        prepared = prepared.read_text();
+    }
+    prepared
+}
+
+impl PreparedOpen {
+    fn needs_text_read(&self) -> bool {
+        let edits = |result: &Result<Classified, FileOpenError>| {
+            matches!(
+                result,
+                Ok(Classified {
+                    handler: OpenHandler::TextEditor,
+                    ..
+                })
+            )
+        };
+        self.text.is_none()
+            && (edits(&self.classified) || self.fallback.as_ref().is_some_and(edits))
+    }
+
+    fn read_text(mut self) -> Self {
+        self.text = Some(crate::pane_ops::create::TextEditorRead::read(
+            &self.target,
+            &self.cwd,
+        ));
+        self
     }
 }
 
-/// Which thread prepared each open, for tests that keep disk reads off the
+/// Which thread classified each open, for tests that keep disk reads off the
 /// UI thread. Keyed by target so parallel tests do not see each other.
 #[cfg(test)]
 pub(crate) mod prepared_on {
@@ -381,6 +404,24 @@ pub(crate) mod prepared_on {
     use std::thread::ThreadId;
 
     static PREPARED: Mutex<Vec<(PathBuf, ThreadId)>> = Mutex::new(Vec::new());
+    static BODY_READS: Mutex<Vec<(PathBuf, ThreadId)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn record_body_read(target: &Path) {
+        BODY_READS
+            .lock()
+            .unwrap()
+            .push((target.to_path_buf(), std::thread::current().id()));
+    }
+
+    pub(crate) fn body_reads(target: &Path) -> Vec<ThreadId> {
+        BODY_READS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(path, _)| path == target)
+            .map(|(_, thread)| *thread)
+            .collect()
+    }
 
     pub(super) fn record(target: &Path) {
         if let Ok(mut prepared) = PREPARED.lock() {
@@ -497,10 +538,52 @@ pub(super) struct FileOpenRequest<'a> {
     pub(super) no_focus: bool,
 }
 
+struct CliOpen {
+    path: String,
+    cwd: Option<PathBuf>,
+    from_pane_id: Option<PaneId>,
+    placement: Option<OpenPlacement>,
+    no_focus: bool,
+    caller: &'static str,
+    anchor: PaneId,
+    context_id: u64,
+    response_file: String,
+}
+
+enum OpenSource {
+    Artifact { sender: PaneId, path: String },
+    Cli(CliOpen),
+}
+
+enum OpenStage {
+    Resolved(PathBuf),
+    ArtifactDirectory(PathBuf),
+    ArtifactDenied,
+    Prepared(Box<PreparedOpen>),
+}
+
+pub(super) struct FileOpenTask {
+    source: OpenSource,
+    result: Receiver<Result<OpenStage, FileOpenError>>,
+}
+
 /// What `serve_file_open` delivered.
 struct Delivered {
     status: &'static str,
     pane_id: Option<PaneId>,
+}
+
+impl CliOpen {
+    fn reply(&self, reply: Result<serde_json::Value, FileOpenError>) {
+        let reply = reply.unwrap_or_else(|error| {
+            log::info!(
+                "{OPERATION_ID}: refused path={:?} cwd={:?} caller={} from={:?} error_code={} error={error}",
+                self.path, self.cwd, self.caller, self.from_pane_id, error.code()
+            );
+            error.reply()
+        });
+        crate::rpc::write_json_response(&self.response_file, reply);
+    }
 }
 
 impl PlexiApp {
@@ -522,50 +605,49 @@ impl PlexiApp {
         }
     }
 
-    /// Serve `HostRequest::FileOpen` and write its one receipt.
-    ///
-    /// One pipeline, in order: identify the caller, choose the anchor,
-    /// resolve the canonical target, authorize it, classify it, deliver it.
-    /// Nothing reads the target's content or launches a handler before the
-    /// canonical path is authorized, and that path is the only one classified
-    /// and delivered.
+    /// Resolve the literal path on a worker. The host authorizes the
+    /// canonical target before a worker classifies it or reads its content.
     pub(super) fn serve_file_open(
         &mut self,
         request: &FileOpenRequest<'_>,
         origin: &crate::broker::caller::RequestOrigin,
         response_file: &str,
     ) {
-        let reply = match self.file_open(request, origin) {
-            Ok(receipt) => receipt,
+        let (anchor, context_id) = match self.file_open_anchor(request.from_pane_id, origin) {
+            Ok(anchor) => anchor,
             Err(error) => {
                 log::info!(
-                    "{OPERATION_ID}: refused path={:?} cwd={:?} caller={} from={:?} \
-                     error_code={} error={error}",
-                    request.path,
-                    request.cwd,
-                    origin.class(),
-                    request.from_pane_id,
-                    error.code()
+                    "{OPERATION_ID}: refused path={:?} cwd={:?} caller={} from={:?} error_code={} error={error}",
+                    request.path, request.cwd, origin.class(), request.from_pane_id, error.code()
                 );
-                error.reply()
+                crate::rpc::write_json_response(response_file, error.reply());
+                return;
             }
         };
-        crate::rpc::write_json_response(response_file, reply);
+        let cli = CliOpen {
+            path: request.path.to_owned(),
+            cwd: request.cwd.map(Path::to_path_buf),
+            from_pane_id: request.from_pane_id,
+            placement: request.placement,
+            no_focus: request.no_focus,
+            caller: origin.class(),
+            anchor,
+            context_id,
+            response_file: response_file.to_owned(),
+        };
+        let path = cli.path.clone();
+        let cwd = cli.cwd.clone();
+        self.start_file_open_task(OpenSource::Cli(cli), move || {
+            resolve_open_target(&path, cwd.as_deref()).map(OpenStage::Resolved)
+        });
     }
 
-    fn file_open(
-        &mut self,
-        request: &FileOpenRequest<'_>,
+    fn file_open_anchor(
+        &self,
+        from_pane_id: Option<PaneId>,
         origin: &crate::broker::caller::RequestOrigin,
-    ) -> Result<serde_json::Value, FileOpenError> {
+    ) -> Result<(PaneId, u64), FileOpenError> {
         use crate::broker::caller::{RequestOrigin, SocketCaller};
-        let FileOpenRequest {
-            path,
-            cwd,
-            from_pane_id,
-            placement,
-            no_focus,
-        } = *request;
         let window_of = |app: &Self, pane| {
             app.find_pane_in_any_window(pane)
                 .map(|(window, _)| window)
@@ -608,23 +690,267 @@ impl PlexiApp {
             (None, None) => return Err(FileOpenError::NoAnchor),
         };
         window_of(self, anchor)?;
-        let root = self
-            .context_authority_root(context_id)
-            .ok_or(FileOpenError::AnchorNotFound { pane: anchor })?;
+        Ok((anchor, context_id))
+    }
 
-        let target = resolve_open_target(path, cwd)?;
+    pub(super) fn queue_artifact_file_open(
+        &mut self,
+        sender: PaneId,
+        path: String,
+        workspace_root: Option<PathBuf>,
+    ) {
+        let literal = path.clone();
+        self.start_file_open_task(OpenSource::Artifact { sender, path }, move || {
+            let Some(target) = super::canvas_bindings::resolve_artifact_target(
+                sender,
+                &literal,
+                workspace_root.as_deref(),
+            ) else {
+                return Ok(OpenStage::ArtifactDenied);
+            };
+            if target.is_dir() {
+                Ok(OpenStage::ArtifactDirectory(target))
+            } else {
+                Ok(OpenStage::Resolved(target))
+            }
+        });
+    }
+
+    fn start_file_open_task(
+        &mut self,
+        source: OpenSource,
+        work: impl FnOnce() -> Result<OpenStage, FileOpenError> + Send + 'static,
+    ) {
+        let (done, result) = mpsc::channel();
+        let wake = std::sync::Arc::clone(&self.ui_wake);
+        let spawned = std::thread::Builder::new()
+            .name("plexi-file-open".to_owned())
+            .spawn(move || {
+                if done.send(work()).is_ok() {
+                    wake.wake("file_open");
+                }
+            });
+        match spawned {
+            Ok(_) => self
+                .pending_file_opens
+                .push(FileOpenTask { source, result }),
+            Err(error) => self.fail_file_open_task(source, error.to_string()),
+        }
+    }
+
+    pub(super) fn drain_file_opens(&mut self) {
+        for task in std::mem::take(&mut self.pending_file_opens) {
+            match task.result.try_recv() {
+                Ok(Ok(stage)) => self.finish_file_open_stage(task.source, stage),
+                Ok(Err(error)) => {
+                    if let OpenSource::Cli(cli) = task.source {
+                        cli.reply(Err(error));
+                    }
+                }
+                Err(TryRecvError::Empty) => self.pending_file_opens.push(task),
+                Err(TryRecvError::Disconnected) => {
+                    self.fail_file_open_task(
+                        task.source,
+                        "file reader exited without an answer".into(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_for_file_opens_for_test(&mut self) {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
+        while !self.pending_file_opens.is_empty() {
+            self.drain_file_opens();
+            assert!(Instant::now() < deadline, "file opens did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn fail_file_open_task(&mut self, source: OpenSource, reason: String) {
+        match source {
+            OpenSource::Artifact { sender, path } => {
+                log::warn!("OpenArtifact: pane {sender} could not prepare {path:?}: {reason}");
+            }
+            OpenSource::Cli(cli) => {
+                let path = PathBuf::from(&cli.path);
+                cli.reply(Err(FileOpenError::Unreadable { path, reason }));
+            }
+        }
+    }
+
+    fn finish_file_open_stage(&mut self, source: OpenSource, stage: OpenStage) {
+        match (source, stage) {
+            (OpenSource::Artifact { sender, path }, OpenStage::ArtifactDenied) => {
+                self.report_artifact_guard_to_explorer(
+                    sender,
+                    &path,
+                    ArtifactOpenMode::OpenInPane,
+                    false,
+                );
+            }
+            (OpenSource::Artifact { sender, path }, OpenStage::ArtifactDirectory(target)) => {
+                log::info!("OpenArtifact: path={path:?} target={target:?} mode=OpenInPane");
+                self.open_file_browser_at(target);
+                self.report_artifact_guard_to_explorer(
+                    sender,
+                    &path,
+                    ArtifactOpenMode::OpenInPane,
+                    true,
+                );
+                self.ctx.request_repaint();
+            }
+            (source, OpenStage::Resolved(target)) => {
+                let request = match &source {
+                    OpenSource::Artifact { sender, path } => {
+                        log::info!("OpenArtifact: path={path:?} target={target:?} mode=OpenInPane");
+                        self.report_artifact_guard_to_explorer(
+                            *sender,
+                            path,
+                            ArtifactOpenMode::OpenInPane,
+                            true,
+                        );
+                        self.open_request(*sender, &target)
+                    }
+                    OpenSource::Cli(cli) => match self.cli_open_request(cli, target) {
+                        Ok(request) => Some(request),
+                        Err(error) => {
+                            cli.reply(Err(error));
+                            return;
+                        }
+                    },
+                };
+                if let Some(request) = request {
+                    let allow_manifest_fallback = matches!(source, OpenSource::Artifact { .. });
+                    self.start_file_open_task(source, move || {
+                        Ok(OpenStage::Prepared(Box::new(prepare_open_for(
+                            request,
+                            allow_manifest_fallback,
+                        ))))
+                    });
+                }
+            }
+            (source, OpenStage::Prepared(prepared)) => {
+                let prepared = *prepared;
+                // An editor can close after the worker skipped its body read.
+                // Reuse the classification and read it on the worker too.
+                if prepared.needs_text_read()
+                    && !self.open_source_editor_exists(&source, &prepared.target)
+                {
+                    self.start_file_open_task(source, move || {
+                        Ok(OpenStage::Prepared(Box::new(prepared.read_text())))
+                    });
+                    return;
+                }
+                match source {
+                    OpenSource::Artifact { sender, .. } => {
+                        self.finish_artifact_open(sender, prepared)
+                    }
+                    OpenSource::Cli(cli) => cli.reply(self.finish_cli_file_open(&cli, prepared)),
+                }
+                self.ctx.request_repaint();
+            }
+            (OpenSource::Cli(cli), OpenStage::ArtifactDenied | OpenStage::ArtifactDirectory(_)) => {
+                let path = PathBuf::from(&cli.path);
+                cli.reply(Err(FileOpenError::Unreadable {
+                    path,
+                    reason: "unexpected file reader result".into(),
+                }));
+            }
+        }
+    }
+
+    fn open_source_editor_exists(&self, source: &OpenSource, target: &Path) -> bool {
+        match source {
+            OpenSource::Artifact { .. } => {
+                self.find_open_text_editor_pane_any_window(target).is_some()
+            }
+            OpenSource::Cli(cli) => self
+                .file_open_editor_in_context(cli.context_id, target)
+                .is_some(),
+        }
+    }
+
+    fn file_open_editor_in_context(&self, context_id: u64, target: &Path) -> Option<PaneId> {
+        self.windows
+            .iter()
+            .enumerate()
+            .filter(|(_, window)| window.context_id == context_id)
+            .find_map(|(idx, _)| self.find_open_text_editor_tile(idx, target))
+            .map(|(_, pane)| pane)
+    }
+
+    fn validate_cli_anchor(&self, cli: &CliOpen) -> Result<(), FileOpenError> {
+        let (window, _) = self
+            .find_pane_in_any_window(cli.anchor)
+            .ok_or(FileOpenError::AnchorNotFound { pane: cli.anchor })?;
+        if self.windows[window].context_id != cli.context_id {
+            return Err(FileOpenError::AnchorOutsideContext { pane: cli.anchor });
+        }
+        Ok(())
+    }
+
+    fn cli_open_request(
+        &mut self,
+        cli: &CliOpen,
+        target: PathBuf,
+    ) -> Result<OpenRequest, FileOpenError> {
+        self.validate_cli_anchor(cli)?;
+        let root = self
+            .context_authority_root(cli.context_id)
+            .ok_or(FileOpenError::AnchorNotFound { pane: cli.anchor })?;
         // The receipt names the target, so it must have an exact string form.
         handler_arg(&target, "the receipt")?;
         if !self.scope_may_access(&root, &target) {
             return Err(FileOpenError::OutsideAuthority { root, path: target });
         }
-        let associations = self.open_associations(context_id, &target);
+        let context_id = cli.context_id;
+        Ok(OpenRequest {
+            associations: self.open_associations(context_id, &target),
+            cwd: self.launch_cwd(context_id, None),
+            editor_open: self
+                .file_open_editor_in_context(context_id, &target)
+                .is_some(),
+            target,
+        })
+    }
+
+    fn finish_cli_file_open(
+        &mut self,
+        cli: &CliOpen,
+        prepared: PreparedOpen,
+    ) -> Result<serde_json::Value, FileOpenError> {
+        self.validate_cli_anchor(cli)?;
+        let PreparedOpen {
+            target,
+            cwd,
+            classified,
+            text,
+            ..
+        } = prepared;
         let Classified {
             handler,
             matched_by,
-        } = classify_open_target(&target, &associations)?;
-
-        let delivered = self.deliver_file_open(&target, &handler, anchor, placement, no_focus)?;
+        } = classified?;
+        let CliOpen {
+            context_id,
+            anchor,
+            placement,
+            no_focus,
+            path,
+            caller,
+            ..
+        } = cli;
+        let delivered = self.deliver_file_open(
+            &target,
+            &handler,
+            *anchor,
+            *placement,
+            *no_focus,
+            text.map(|read| (cwd, read)),
+        )?;
         let focused = delivered
             .pane_id
             .is_some_and(|pane| self.pane_is_shown_focused(pane));
@@ -641,7 +967,7 @@ impl PlexiApp {
             target.display(),
             handler.id(),
             matched_by.as_str(),
-            origin.class(),
+            caller,
             delivered.pane_id,
         );
         Ok(serde_json::json!({
@@ -685,6 +1011,7 @@ impl PlexiApp {
         anchor: PaneId,
         placement: Option<OpenPlacement>,
         no_focus: bool,
+        text: Option<(PathBuf, crate::pane_ops::create::TextEditorRead)>,
     ) -> Result<Delivered, FileOpenError> {
         // Every handler gets a fresh instance carrying the target: a plugin's
         // `[launch] on_launch` reuse cannot deliver arguments to a running
@@ -699,7 +1026,7 @@ impl PlexiApp {
                 });
             }
             OpenHandler::Explorer => (EXPLORER, Vec::new(), Some(target.to_path_buf())),
-            OpenHandler::TextEditor => (TEXT_EDITOR, vec![handler_arg(target, TEXT_EDITOR)?], None),
+            OpenHandler::TextEditor => (TEXT_EDITOR, Vec::new(), None),
             OpenHandler::View(id) => (id.as_str(), vec![handler_arg(target, id)?], None),
         };
         let (anchor_window, anchor_tile) = self
@@ -730,11 +1057,7 @@ impl PlexiApp {
 
         // One writable buffer per file and context.
         if *handler == OpenHandler::TextEditor {
-            let existing = (0..self.windows.len())
-                .filter(|idx| self.windows[*idx].context_id == context_id)
-                .find_map(|idx| self.find_open_text_editor_tile(idx, target))
-                .map(|(_, pane)| pane);
-            if let Some(existing_pane_id) = existing {
+            if let Some(existing_pane_id) = self.file_open_editor_in_context(context_id, target) {
                 // A buffer that never loaded this file is not the file.
                 if let Some(Err(reason)) = self
                     .find_pane_in_any_window(existing_pane_id)
@@ -781,17 +1104,32 @@ impl PlexiApp {
         // the person made: they record no history. The one recorded step is
         // the final navigation below, from where focus really was.
         let recording = std::mem::replace(&mut self.navigating_history, true);
-        let launched = self.launch_view_by_id_with_layout_at(
-            crate::pane_ops::create::IdViewLaunchOptions {
-                target_win: target_window,
-                bypass_on_launch: true,
-                follow_file_browser_cwd: false,
-            },
-            id,
-            Some(placement.layout_hint().to_string()),
-            &args,
-            cwd_override,
-        );
+        let layout = Some(placement.layout_hint().to_string());
+        let launched = if id == TEXT_EDITOR {
+            match text {
+                Some((cwd, read)) => self
+                    .open_built_text_editor(
+                        target_window,
+                        layout,
+                        crate::pane_ops::create::text_editor_from_read(target.to_path_buf(), read),
+                        cwd,
+                    )
+                    .map(|_| None),
+                None => Err("file reader did not prepare the editor buffer".into()),
+            }
+        } else {
+            self.launch_view_by_id_with_layout_at(
+                crate::pane_ops::create::IdViewLaunchOptions {
+                    target_win: target_window,
+                    bypass_on_launch: true,
+                    follow_file_browser_cwd: false,
+                },
+                id,
+                layout,
+                &args,
+                cwd_override,
+            )
+        };
         self.navigating_history = recording;
         let unavailable = |reason: String| FileOpenError::HandlerUnavailable {
             handler: id.to_string(),

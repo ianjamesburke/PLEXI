@@ -704,6 +704,7 @@ fn file_handler_config_routes_extension_to_plugin() {
     std::fs::write(&path, "# note").expect("write note");
     let path = path.to_string_lossy().to_string();
     app.dispatch_open_artifact(0, path, crate::protocol::ArtifactOpenMode::OpenInPane);
+    app.wait_for_file_opens_for_test();
 
     let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
     assert_eq!(
@@ -746,6 +747,7 @@ fn stable_routes_only_images_to_native_viewer_apps() {
         let path = path.to_string_lossy().to_string();
 
         app.dispatch_open_artifact(0, path, crate::protocol::ArtifactOpenMode::OpenInPane);
+        app.wait_for_file_opens_for_test();
 
         let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
         if opens_pane {
@@ -812,6 +814,7 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
         selected_path.to_string_lossy().to_string(),
         crate::protocol::ArtifactOpenMode::OpenInPane,
     );
+    app.wait_for_file_opens_for_test();
 
     let viewer_tile = app.windows[0].focused_pane.expect("viewer focused");
     assert_ne!(
@@ -1735,11 +1738,14 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
                     )
                     .unwrap();
             }
-            "artifact" => h.app.dispatch_open_artifact(
-                sender,
-                directory.display().to_string(),
-                crate::protocol::ArtifactOpenMode::OpenInPane,
-            ),
+            "artifact" => {
+                h.app.dispatch_open_artifact(
+                    sender,
+                    directory.display().to_string(),
+                    crate::protocol::ArtifactOpenMode::OpenInPane,
+                );
+                h.app.wait_for_file_opens_for_test();
+            }
             "generic" => {
                 h.app
                     .launch_view_by_id_with_layout(

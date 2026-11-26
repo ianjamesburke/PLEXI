@@ -894,6 +894,7 @@ fn file_browser_search_discoverable_and_interactive_in_harness() {
         modifiers: egui::Modifiers::default(),
     });
     h.run_steps(2);
+    h.with_app_mut(|app| app.wait_for_file_opens_for_test());
 
     let search_state = h.with_app_mut(|app| {
         app.windows[app.active_window]

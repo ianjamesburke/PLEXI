@@ -380,6 +380,7 @@ pub struct PlexiApp {
     pub(crate) palette_answer: Option<crate::overlays::command_palette::PaletteAnswer>,
     /// The palette's background sources: Files index, previews, usage.
     pub(crate) palette_sources: crate::overlays::command_palette::PaletteSources,
+    pending_file_opens: Vec<file_open::FileOpenTask>,
     pub(crate) palette_agents: palette_agents::PaletteAgents,
     pub(crate) palette_agent_activation: Option<palette_agents::AgentActivation>,
     /// The palette's input owner: its ordered field, last presented hit
@@ -1991,6 +1992,7 @@ impl PlexiApp {
                     palette_commands: Vec::new(),
                     palette_answer: None,
                     palette_sources: Default::default(),
+                    pending_file_opens: Vec::new(),
                     palette_agents: Default::default(),
                     palette_agent_activation: None,
                     palette_input: Default::default(),
@@ -2294,6 +2296,7 @@ impl PlexiApp {
             palette_commands: Vec::new(),
             palette_answer: None,
             palette_sources: Default::default(),
+            pending_file_opens: Vec::new(),
             palette_agents: Default::default(),
             palette_agent_activation: None,
             palette_input: Default::default(),
@@ -3265,6 +3268,7 @@ impl PlexiApp {
             palette_commands: Vec::new(),
             palette_answer: None,
             palette_sources: Default::default(),
+            pending_file_opens: Vec::new(),
             palette_agents: Default::default(),
             palette_agent_activation: None,
             palette_input: Default::default(),
@@ -4049,6 +4053,7 @@ impl eframe::App for PlexiApp {
         crate::platform::logging::time_drain("service_view_commands", || {
             self.service_plugin_commands(ctx)
         });
+        self.drain_file_opens();
         // A zoom, tab switch or focus move this pass ends a selection it hid.
         self.reconcile_pane_selections();
         self.resolve_auto_context_names();

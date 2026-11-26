@@ -1,6 +1,7 @@
 //! `file.open` from a pane: caller authentication, path resolution, handler
 //! choice, placement, focus and the receipt (`src/app/file_open.rs`).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use egui_tiles::{Container, LinearDir, Tile};
@@ -58,9 +59,8 @@ impl<'a> Open<'a> {
             response_file: token.to_string_lossy().into_owned(),
         };
         let line = serde_json::to_string(&request).unwrap();
-        let (mut server, client) = std::os::unix::net::UnixStream::pair().unwrap();
-        let token = token.to_string_lossy().into_owned();
-        crate::rpc::register_client_stream(token.clone(), client);
+        let (mut server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+        client.set_nonblocking(true).unwrap();
         crate::app::handle_socket_line_in(
             &crate::config::config_dir(),
             &line,
@@ -69,10 +69,19 @@ impl<'a> Open<'a> {
             &mut server,
         );
         drop(server);
-        h.run_frames(1);
-        let body =
-            crate::rpc::poll_string(&token, Some(std::time::Duration::from_secs(2))).unwrap();
-        serde_json::from_str(&body).unwrap()
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        let mut body = Vec::new();
+        loop {
+            h.hidden_frame();
+            match client.read_to_end(&mut body) {
+                Ok(_) => return serde_json::from_slice(&body).unwrap(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("file.open receipt: {error}"),
+            }
+            assert!(std::time::Instant::now() < deadline, "file.open never replied");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 }
 
@@ -169,6 +178,31 @@ fn plexi_open_justfile_and_readme_open_the_editor_right_of_the_caller() {
             "{name} opens right of the caller"
         );
     }
+}
+
+#[test]
+fn cli_large_file_open_reads_off_the_host_thread() {
+    let (mut h, caller, pid) = caller();
+    let root = h.workspace_root();
+    let doc = root.join("large");
+    let contents = "A large document with no file extension.\n".repeat(24_000);
+    std::fs::write(&doc, &contents).expect("seed file");
+    let doc = doc.canonicalize().expect("canonical file");
+
+    let reply = Open::new("large", &root, caller).send(&mut h, &[pid]);
+    assert_eq!(reply["matched_by"], "content", "{reply}");
+    assert_eq!(reply["focused"], true, "{reply}");
+    let pane = reply["pane_id"].as_u64().expect("editor pane");
+    assert_eq!(editor_buffer(&mut h, pane), (doc.clone(), contents));
+    let threads = crate::app::file_open::prepared_on::threads(&doc);
+    assert!(!threads.is_empty(), "the target was classified");
+    assert!(
+        threads.iter().all(|thread| *thread != std::thread::current().id()),
+        "CLI classified the target on the host thread: {threads:?}"
+    );
+    let readers = crate::app::file_open::prepared_on::body_reads(&doc);
+    assert_eq!(readers.len(), 1, "the editor body was read once");
+    assert_ne!(readers[0], std::thread::current().id(), "the body read ran on the host thread");
 }
 
 #[test]
@@ -383,6 +417,7 @@ fn open_artifact_checks_and_opens_the_root_joined_path_from_a_background_window(
         "../escape.md".into(),
         crate::protocol::ArtifactOpenMode::OpenInPane,
     );
+    h.app.wait_for_file_opens_for_test();
     assert_eq!(pane_count(&h), before, "a path outside the root is refused");
 
     h.app.dispatch_open_artifact(
@@ -390,6 +425,7 @@ fn open_artifact_checks_and_opens_the_root_joined_path_from_a_background_window(
         "inside.md".into(),
         crate::protocol::ArtifactOpenMode::OpenInPane,
     );
+    h.app.wait_for_file_opens_for_test();
     let editor = h
         .app
         .windows
@@ -484,6 +520,7 @@ fn open_artifact_opens_the_canonical_file_it_checked() {
         "sub/../x.md".into(),
         crate::protocol::ArtifactOpenMode::OpenInPane,
     );
+    h.app.wait_for_file_opens_for_test();
     let editor = h
         .app
         .windows
@@ -740,6 +777,7 @@ fn explorer_falls_through_a_failed_manifest_handler_to_the_editor() {
         "notes.md".into(),
         crate::protocol::ArtifactOpenMode::OpenInPane,
     );
+    h.app.wait_for_file_opens_for_test();
     let editor = h
         .app
         .windows
