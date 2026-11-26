@@ -615,8 +615,8 @@ def test_app_harness_search_snippets_open_article_and_navigate_back():
         h.run(1)
 
         # Enter a search query and submit.
-        h.text_submit("wiki-query", "Alan Turing")
-        h.ui_action("wiki-submit")
+        h.text_change("wiki-query", "Alan Turing")
+        h.text_submit("wiki-submit")
         h.run(1)
 
         http_reqs = [e for e in h._events_seen if e.get("type") == "http_request"]

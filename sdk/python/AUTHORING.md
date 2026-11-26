@@ -82,8 +82,8 @@ def view():
   `Resize(width, height)` when either changes by more than half a point. A
   pane that starts before it is first painted gets `(800, 600)` and then a
   `Resize` with the real size. `plexi plugin check` and `plexi view render`
-  pass the size they render at. `PluginHarness` sends no size, so `init` sees
-  `(0, 0)` there.
+  pass the size they render at. `PluginHarness` passes its `width` and `height`
+  to `init` and uses the same dimensions for rendering.
 - Persisted and seeded state is already in `plexi_sdk.state` when `init` runs.
   A `SetState` returned from `init` is merged on top, so it replaces a restored
   or seeded value for the same key. Read with `state.get("key", default)`
@@ -384,8 +384,9 @@ Widget selection rules:
   id. Enter arrives as `UiAction(handler_id)` with its `on_submit` id and
   carries no text, so keep the latest `UiValueChange.value` in state and read
   it on submit. Both ids default to the field's `id`; tell the two events apart
-  by type. `FormField` behaves the same. In tests, `h.text_submit(id, value)`
-  delivers the `UiValueChange` and `h.ui_action(id)` delivers the Enter.
+  by type. `FormField` behaves the same. In tests, call
+  `h.text_change(on_change, value)` to edit and `h.text_submit(on_submit)` to
+  press Enter.
 - **Long content:** `Scrollable(child)` takes one child, so wrap a list in a
   `Column`: `Column([SurfaceHeader(...), Scrollable(Column(rows)),
   FooterKeys(...)], grow=True)`. A body taller than the pane then scrolls

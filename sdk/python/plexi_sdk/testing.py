@@ -379,7 +379,8 @@ class PluginHarness:
 
         # Handshake
         self._send({"type": "init", "protocol": PROTOCOL_VERSION, "plugin_id": "test-harness",
-                    "workspace_root": "/tmp", "capabilities": [], "feature_flags": []})
+                    "workspace_root": "/tmp", "capabilities": [], "feature_flags": [],
+                    "size": [float(self._width), float(self._height)]})
         ev = self._wait_for(lambda e: e.get("type") == "ready")
         if ev is None:
             stderr = self._proc.stderr.read() if self._proc.stderr else ""
@@ -548,9 +549,13 @@ class PluginHarness:
         """Inject a synthetic key event."""
         self._send({"type": "key", "key": key, "modifiers": modifiers or {}})
 
-    def text_submit(self, id: str, value: str) -> None:
-        """Inject a synthetic text_submitted event (user pressed Enter in a TextInput)."""
-        self._send({"type": "text_submitted", "id": id, "value": value})
+    def text_change(self, handler_id: str, value: str) -> None:
+        """Deliver an edit as ``UiValueChange`` to the TextInput's ``on_change`` handler."""
+        self._send({"type": "text_submitted", "id": handler_id, "value": value})
+
+    def text_submit(self, handler_id: str) -> None:
+        """Deliver Enter as a payload-free ``UiAction`` to the TextInput's ``on_submit`` handler."""
+        self.ui_action(handler_id)
 
     def ui_action(self, handler_id: str) -> None:
         """Inject a synthetic UI action — a button/tab/node click by handler id."""
