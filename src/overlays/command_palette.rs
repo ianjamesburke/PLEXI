@@ -1457,9 +1457,6 @@ impl PlexiApp {
     /// here, read it on a worker, and finish the open once the read is in.
     fn drain_palette_opens(&mut self) {
         for (path, invocation) in std::mem::take(&mut self.palette_sources.queued_opens) {
-            if !self.revalidate_palette_invocation("file.open", &invocation) {
-                continue;
-            }
             let Some(request) =
                 self.open_request(invocation.focus.pane_id.unwrap_or_default(), &path)
             else {
@@ -1482,9 +1479,7 @@ impl PlexiApp {
         for (invocation, prepared) in std::mem::take(&mut self.palette_sources.preparing) {
             match prepared.try_recv() {
                 Ok(prepared) => {
-                    if self.revalidate_palette_invocation("file.open", &invocation) {
-                        self.finish_open(invocation.focus.pane_id.unwrap_or_default(), prepared);
-                    }
+                    self.finish_open(invocation.focus.pane_id.unwrap_or_default(), prepared);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
                     self.palette_sources.preparing.push((invocation, prepared));
@@ -2580,9 +2575,14 @@ impl PlexiApp {
                 if let Some(key) = crate::host::picker::files::file_key(&path) {
                     palette_test_log::activated(key);
                 }
-                // Only queued here: the open reads the disk, so it is
-                // resolved in `App::logic` and read on a worker.
-                if let Some(invocation) = invocation {
+                // Validated here, on the activating pass, then only queued:
+                // the open reads the disk, so it is resolved in `App::logic`
+                // and read on a worker, and keeps its anchor pane even if
+                // focus moves before then (stint 1392).
+                let Some(invocation) = invocation else {
+                    return;
+                };
+                if self.revalidate_palette_invocation("file.open", invocation) {
                     log::info!("palette: queued file.open pane={:?}", invocation.focus.pane_id);
                     self.palette_sources.queued_opens.push((path, invocation.clone()));
                     self.ctx.request_repaint();
