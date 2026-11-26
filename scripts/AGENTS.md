@@ -44,6 +44,8 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 - **`scripts/install.sh` derives `REPO_ROOT` from `${BASH_SOURCE[0]}/..`** — it installs whatever tree it lives in. Never call it directly for a PR build; `just pr-install <N>` resolves the PR's head into the right worktree and runs the script from there (safe from any cwd).
 - **Login bash does not read `~/.bashrc`.** Host panes exec `bash -i -l` (`apply_initial_cmd`). Bash completion registration has to land on the login file in `prepare_path_registration`; a `.bashrc`-only snippet never reaches a pane. See `scripts/DISTRIBUTION.md`.
 - **`just merge-pr` must run from the canonical alpha checkout.** Stint state lives in ignored `.stint/` files that feature worktrees may not have. If a PR body references stint IDs, running merge closeout from a feature worktree can fail before merge with missing `.stint/tasks`; rerun `just merge-pr` from the main checkout on `alpha`.
+- **Auto-committing scripts:** `cargo run -p gen_config_docs > website/src/content/docs/config.md` to regenerate config docs without `just`'s auto-commit/push.
+- **Runtime topology & channels:** Agent panes run under `plexi-beta`. To target a specific channel, always use the channel-named shim (`plexi-alpha`, `plexi-pr-<N>`) or explicit `env PLEXI_CHANNEL=<ch> plexi ...` — never rely on bare `plexi` or inherited `PLEXI_SOCKET`.
 
 ## Child DOX Index
 
