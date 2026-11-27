@@ -18,9 +18,10 @@ jobs:
   test:
     name: test
     runs-on: macos-latest
-    # A warm-cache run took 26.8 min on 2026-11-01 (release build, test build,
-    # 6 min of tests); 30 left no headroom for a cold cache.
-    timeout-minutes: 45
+    # A warm-cache run took 26.8 min on 2026-11-01. Cold-cache runs on
+    # 2026-11-26 and 2026-11-27 spent 31 min building and were cut off at 45
+    # mid-suite, so the limit leaves room for a cold build plus the full suite.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
         with:
