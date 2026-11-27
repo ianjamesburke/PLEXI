@@ -225,8 +225,8 @@ top_tags() {
 }
 
 # Mirrors release::resolve (crates/distribution/src/release.rs). Stable is
-# GitHub's latest release. Alpha ranks alpha, then beta, then stable tags; beta
-# ranks beta and stable tags by SemVer. The best ranked tags are looked up one
+# GitHub's latest release. Alpha and beta each rank only their own lane's tags
+# by SemVer. The best ranked tags are looked up one
 # at a time and the first published release with the installer wins.
 select_channel_tag() {
   local want="$1" tags ranked tag found count=0
@@ -235,15 +235,7 @@ select_channel_tag() {
     return
   fi
   tags="$(fetch_tags)" || return 1
-  if [[ "$want" == alpha ]]; then
-    ranked="$(
-      printf '%s\n' "$tags" | lane_tags alpha | top_tags $((max_tag_lookups + 1))
-      printf '%s\n' "$tags" | lane_tags beta | top_tags $((max_tag_lookups + 1))
-      printf '%s\n' "$tags" | lane_tags stable | top_tags $((max_tag_lookups + 1))
-    )"
-  else
-    ranked="$({ printf '%s\n' "$tags" | lane_tags beta; printf '%s\n' "$tags" | lane_tags stable; } | top_tags $((max_tag_lookups + 1)))"
-  fi
+  ranked="$(printf '%s\n' "$tags" | lane_tags "$want" | top_tags $((max_tag_lookups + 1)))"
   while IFS= read -r tag; do
     [[ -z "$tag" ]] && continue
     if (( count == max_tag_lookups )); then

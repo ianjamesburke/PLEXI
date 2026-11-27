@@ -39,34 +39,16 @@ fn send_event(mailbox: &UiMailbox<UpdateEvent>, event: UpdateEvent) {
 
 fn run_check(cache_dir: &Path, mode: CheckMode, mailbox: &UiMailbox<UpdateEvent>) -> UpdateEvent {
     if let Ok(Some(receipt)) = crate::distribution::installed() {
-        if discards_active_generation(&receipt, env!("PLEXI_BUILD_ID")) {
-            log::info!(
-                "update check: discarding installed {} on channel {}: it leaves the alpha lane of the running {}; restoring the running build",
-                receipt.active.tag,
-                receipt.channel,
-                receipt.previous.as_ref().map_or("", |p| p.tag.as_str()),
-            );
-            if let Err(error) = plexi_distribution::transaction::rollback(&receipt.root) {
-                let reason = format!(
-                    "could not discard installed {}: {error}",
-                    receipt.active.tag
-                );
-                log::warn!("update check: {reason}");
-                return UpdateEvent::Failed { reason };
-            }
-        } else if receipt.active.build_id != env!("PLEXI_BUILD_ID") {
+        if receipt.active.build_id != env!("PLEXI_BUILD_ID") {
             log::info!("update check: running and installed builds differ; restart available");
             return UpdateEvent::Ready {
                 version: receipt.active.tag.trim_start_matches('v').to_string(),
             };
         }
     }
-    if let Some(build_channel) =
-        crate::config::build_channel().filter(|c| c != "alpha" && c != "beta")
-    {
-        return UpdateEvent::Unavailable {
-            reason: format!("{build_channel} builds do not check for updates"),
-        };
+    if let Err(reason) = channel_checks_for_updates(crate::config::build_channel().as_deref()) {
+        log::info!("update check: skipped: {reason}");
+        return UpdateEvent::Unavailable { reason };
     }
     let cache_path = cache_dir.join("update_cache.json");
     let current_raw = installed_version();
@@ -156,24 +138,17 @@ fn check_and_install(
     }
 }
 
-/// The active generation is waiting for a restart, but the channel policy no
-/// longer allows it as an update from the running build (an earlier updater
-/// moved an alpha to a same-series beta or stable). The running build is the
-/// retained previous generation, so a rollback returns the installation to it.
-/// A rollback the user made (an older alpha active) is not touched.
-fn discards_active_generation(
-    receipt: &plexi_distribution::transaction::Receipt,
-    running_build: &str,
-) -> bool {
-    receipt.active.build_id != running_build
-        && receipt.previous.as_ref().is_some_and(|previous| {
-            previous.build_id == running_build
-                && plexi_distribution::release::leaves_alpha_lane(
-                    &receipt.channel,
-                    &previous.tag,
-                    &receipt.active.tag,
-                )
-        })
+/// Only channels with a release feed of their own check for updates: stable
+/// (no build channel) and beta. Alpha and `pr-*` builds are installed from
+/// source (`just install`, `just pr-install`) and never self-update; a
+/// published release is never theirs to install.
+pub(crate) fn channel_checks_for_updates(build_channel: Option<&str>) -> Result<(), String> {
+    match build_channel {
+        None | Some("beta") => Ok(()),
+        Some(channel) => Err(format!(
+            "{channel} builds install from source and do not check for updates"
+        )),
+    }
 }
 
 pub(crate) fn update_cache_fresh(cache_dir: &Path) -> bool {
@@ -320,7 +295,7 @@ mod tests {
 
     fn published(tag: &str) -> plexi_distribution::release::Release {
         let platform = plexi_distribution::release::platform().expect("supported test platform");
-        let asset = plexi_distribution::release::archive_name(&platform, "alpha");
+        let asset = plexi_distribution::release::archive_name(&platform, "beta");
         serde_json::from_value(serde_json::json!({
             "tag_name": tag,
             "prerelease": tag.contains('-'),
@@ -350,7 +325,7 @@ mod tests {
     }
 
     /// Runs the check thread's whole decision as a scheduled launch check on
-    /// the alpha channel against `tags`, published through the production
+    /// the beta channel against `tags`, published through the production
     /// resolution policy.
     fn launch_check(current: &str, tags: &[&str]) -> (UpdateEvent, Vec<UpdateEvent>, Vec<String>) {
         let source = Listed(tags.iter().map(|tag| published(tag)).collect());
@@ -358,7 +333,7 @@ mod tests {
             let platform = plexi_distribution::release::platform().map_err(|e| e.to_string())?;
             let chosen = plexi_distribution::release::resolve(
                 &source,
-                UpdateChannel::Alpha.key(),
+                UpdateChannel::Beta.key(),
                 &platform,
                 Some(&current.raw),
             )
@@ -368,7 +343,7 @@ mod tests {
     }
 
     /// The same launch check with a cache an older build left behind that
-    /// names v0.5.0-beta.1. Returns the outcome, every event sent before it,
+    /// names v0.6.2-beta.9. Returns the outcome, every event sent before it,
     /// and the tags handed to the installer.
     fn launch_check_with(
         current: &str,
@@ -377,11 +352,11 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("plexi-update-check-test-{}", uuid::Uuid::new_v4()));
         let now = 1_000_000;
-        write_cache(&dir, now - 60, "alpha", "older-build", "v0.5.0-beta.1");
+        write_cache(&dir, now - 60, "beta", "older-build", "v0.6.2-beta.9");
         let cache_path = dir.join("update_cache.json");
         let check = Check {
             cache_path: &cache_path,
-            channel: UpdateChannel::Alpha,
+            channel: UpdateChannel::Beta,
             current_raw: current,
             build_id: "this-build",
             now,
@@ -412,7 +387,7 @@ mod tests {
             detail: "GET https://api.github.com/x: status code 504 after 3 attempts".into(),
         };
         let (outcome, events, installed) =
-            launch_check_with("v0.5.0-alpha.6", |_| Err(slow.to_string()));
+            launch_check_with("v0.6.2-beta.1", |_| Err(slow.to_string()));
         assert_eq!(
             outcome,
             UpdateEvent::Failed {
@@ -423,9 +398,22 @@ mod tests {
     }
 
     #[test]
-    fn update_check_launch_on_alpha_ignores_a_same_series_beta() {
-        let (outcome, events, installed) =
-            launch_check("v0.5.0-alpha.6", &["v0.5.0-alpha.6", "v0.5.0-beta.1"]);
+    fn update_check_runs_only_on_channels_with_a_release_feed() {
+        assert_eq!(channel_checks_for_updates(None), Ok(()));
+        assert_eq!(channel_checks_for_updates(Some("beta")), Ok(()));
+        assert_eq!(
+            channel_checks_for_updates(Some("alpha")),
+            Err("alpha builds install from source and do not check for updates".into())
+        );
+        assert!(channel_checks_for_updates(Some("pr-3398")).is_err());
+    }
+
+    #[test]
+    fn update_check_launch_on_beta_never_takes_an_alpha_or_stable() {
+        let (outcome, events, installed) = launch_check(
+            "v0.6.2-beta.1",
+            &["v0.6.2-beta.1", "v0.6.3-alpha.1", "v0.6.2"],
+        );
         assert_eq!(
             outcome,
             UpdateEvent::UpToDate {
@@ -437,84 +425,26 @@ mod tests {
     }
 
     #[test]
-    fn update_check_launch_on_alpha_installs_the_next_alpha() {
+    fn update_check_launch_on_beta_installs_the_next_beta() {
         let (outcome, events, installed) = launch_check(
-            "v0.5.0-alpha.6",
-            &["v0.5.0-alpha.6", "v0.5.0-alpha.7", "v0.5.0-beta.1"],
+            "v0.6.2-beta.1",
+            &["v0.6.2-beta.1", "v0.6.2-beta.2", "v0.6.3-alpha.1"],
         );
         assert_eq!(
             events,
             vec![UpdateEvent::Downloading {
-                version: "0.5.0-alpha.7".into()
+                version: "0.6.2-beta.2".into()
             }]
         );
-        assert_eq!(installed, vec!["v0.5.0-alpha.7".to_string()]);
+        assert_eq!(installed, vec!["v0.6.2-beta.2".to_string()]);
         assert_eq!(
             outcome,
             UpdateEvent::Ready {
-                version: "0.5.0-alpha.7".into()
+                version: "0.6.2-beta.2".into()
             }
         );
     }
-
-    #[test]
-    fn update_check_launch_on_a_stuck_beta_returns_to_the_newest_alpha() {
-        let (outcome, _, installed) = launch_check(
-            "v0.5.0-beta.1",
-            &["v0.5.0-alpha.6", "v0.5.0-alpha.7", "v0.5.0-beta.1"],
-        );
-        assert_eq!(installed, vec!["v0.5.0-alpha.7".to_string()]);
-        assert!(matches!(outcome, UpdateEvent::Ready { .. }));
-    }
-
-    fn receipt(
-        channel: &str,
-        active: (&str, &str),
-        previous: (&str, &str),
-    ) -> plexi_distribution::transaction::Receipt {
-        let generation = |(build, tag): (&str, &str)| plexi_distribution::transaction::Generation {
-            path: Path::new("/generations").join(build),
-            build_id: build.into(),
-            tag: tag.into(),
-            executable: "plexi".into(),
-        };
-        plexi_distribution::transaction::Receipt {
-            schema: 1,
-            channel: channel.into(),
-            root: "/root".into(),
-            bin_dir: "/bin".into(),
-            applications_dir: "/Applications".into(),
-            active: generation(active),
-            previous: Some(generation(previous)),
-            integrations: vec![],
-            path_edits: vec![],
-            windows_path_added: false,
-        }
-    }
-
-    #[test]
-    fn update_check_discards_an_installed_same_series_beta_for_a_running_alpha() {
-        let staged = receipt("alpha", ("b1", "v0.5.0-beta.1"), ("a6", "v0.5.0-alpha.6"));
-        assert!(discards_active_generation(&staged, "a6"));
-        // After a restart into it there is nothing waiting to discard.
-        assert!(!discards_active_generation(&staged, "b1"));
-        let stable = receipt("alpha", ("s", "v0.5.0"), ("a6", "v0.5.0-alpha.6"));
-        assert!(discards_active_generation(&stable, "a6"));
-    }
-
-    #[test]
-    fn update_check_keeps_allowed_and_user_chosen_active_builds() {
-        let newer_alpha = receipt("alpha", ("a7", "v0.5.0-alpha.7"), ("a6", "v0.5.0-alpha.6"));
-        assert!(!discards_active_generation(&newer_alpha, "a6"));
-        let rolled_back = receipt("alpha", ("a6", "v0.5.0-alpha.6"), ("a7", "v0.5.0-alpha.7"));
-        assert!(!discards_active_generation(&rolled_back, "a7"));
-        let next_series = receipt("alpha", ("b", "v0.6.0-beta.1"), ("a6", "v0.5.0-alpha.6"));
-        assert!(!discards_active_generation(&next_series, "a6"));
-        let beta_promotion = receipt("beta", ("s", "v0.5.0"), ("b1", "v0.5.0-beta.1"));
-        assert!(!discards_active_generation(&beta_promotion, "b1"));
-    }
 }
-
 /// `resolve` errors are already worded for people ("GitHub is slow, try
 /// again"); their status detail is in the log.
 fn resolve_and_cache(

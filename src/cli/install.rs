@@ -681,6 +681,8 @@ fn run_self_update() -> Result<String, String> {
     let binary_name = binary_name.as_str();
 
     let build_channel = crate::config::build_channel();
+    super::updater::channel_checks_for_updates(build_channel.as_deref())
+        .map_err(|reason| format!("error: {reason}"))?;
     let suffix = build_channel
         .as_deref()
         .map(|c| format!("-{c}"))
