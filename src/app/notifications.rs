@@ -918,6 +918,22 @@ impl PlexiApp {
         self.sorted_notification_ids().into_iter().next()
     }
 
+    /// Revalidate the pinned queue id whenever the modal is about to render.
+    /// A context/window switch can leave a still-existing id outside the
+    /// current visibility scope; existence alone is not a valid selection.
+    #[cfg(test)]
+    pub(crate) fn revalidate_notification_selection(&mut self) {
+        let current_is_visible = self.current_notify_id.as_ref().is_some_and(|id| {
+            self.pending_notifications
+                .iter()
+                .find(|notification| notification.notify_id == *id)
+                .is_some_and(|notification| self.notification_is_visible(notification))
+        });
+        if !current_is_visible {
+            self.current_notify_id = self.select_next_notification();
+        }
+    }
+
     /// Check every pending notification for expiry. For each that has exceeded
     /// its `timeout_secs`, deliver a `NotifyAction` dismiss event and remove it.
     /// Also wakes snoozed notifications whose `deliver_after` has elapsed and
@@ -1035,6 +1051,26 @@ impl PlexiApp {
         }
         self.save_notifications();
         self.sync_attention_queue();
+    }
+
+    /// Count of window- or context-scoped notifications whose source_context_id == the id of ctx_idx.
+    /// Used for per-context sidebar badges on inactive contexts. Global notifications
+    /// are excluded — they already appear everywhere via notification_is_visible.
+    /// Returns 0 for parked contexts — they produce no visual noise.
+    #[cfg(test)]
+    pub(crate) fn context_notification_count(&self, ctx_idx: usize) -> usize {
+        let ctx = self.router.get(ctx_idx);
+        if ctx.parked {
+            return 0;
+        }
+        let ctx_id = ctx.context_id;
+        self.pending_notifications
+            .iter()
+            .filter(|n| {
+                !self.notification_is_snoozed(n)
+                    && notification_counts_toward_context(n.scope, n.source_context_id, ctx_id)
+            })
+            .count()
     }
 
     /// Recursively sum notification count for a context and all its descendants.

@@ -61,7 +61,6 @@ fn paint_outside_chip(ui: &mut egui::Ui, item: &Item, backdrop: Color32) {
 
 pub(crate) struct PaneHeader {
     pub text: Rect,
-    pub outside: Option<Rect>,
     items: Vec<Item>,
 }
 
@@ -133,12 +132,10 @@ impl PaneHeader {
             log::info!("ui: insufficient pane header space");
             return Self {
                 text: Rect::from_min_size(bar.min, egui::Vec2::ZERO),
-                outside: None,
                 items: Vec::new(),
             };
         };
         let mut items = Vec::new();
-        let mut outside_rect = None;
         for slot in row.slots {
             if slot.presentation == bounded::Presentation::Hidden {
                 continue;
@@ -165,9 +162,6 @@ impl PaneHeader {
             } else {
                 rect
             };
-            if slot.id == "outside" {
-                outside_rect = Some(rect);
-            }
             items.push(Item {
                 id: slot.id,
                 rect,
@@ -177,9 +171,13 @@ impl PaneHeader {
         }
         Self {
             text: row.text,
-            outside: outside_rect,
             items,
         }
+    }
+
+    #[cfg(test)]
+    pub fn outside(&self) -> Option<Rect> {
+        self.items.iter().find(|item| item.id == "outside").map(|item| item.rect)
     }
 
     pub fn record_slots(&self, capture: &mut super::layout_report::Capture) {
