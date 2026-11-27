@@ -2728,7 +2728,7 @@ impl PlexiApp {
             return;
         }
         match command {
-            PaletteCommand::UiUpcycle(binary) => match crate::cli::registry::lookup(binary, None) {
+            PaletteCommand::UiUpcycle(binary) => match crate::cli::registry::lookup(binary) {
                 Ok(descriptor) => {
                     let root = invocation
                         .commands_workspace

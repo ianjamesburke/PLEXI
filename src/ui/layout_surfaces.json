@@ -263,10 +263,6 @@
       ]
     },
     {
-      "id": "src/render/view_chrome.rs",
-      "gap": "Unresolved: view_chrome has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
-    },
-    {
       "id": "src/render/view_pane.rs",
       "gap": "Unresolved: view_pane has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },

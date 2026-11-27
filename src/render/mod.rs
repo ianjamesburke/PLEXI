@@ -13,7 +13,6 @@ pub mod headless_renderer;
 pub mod minimap;
 pub mod portal_pane;
 pub mod terminal_pane;
-pub mod view_chrome;
 pub mod view_pane;
 
 pub mod mcp_descriptor;

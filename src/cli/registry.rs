@@ -6,7 +6,7 @@
 //!    `--plexi`. Owned by issue #188 / `plexi_descriptor`.
 //! 2. **Tier 2** — *this module*. The Plexi binary ships a registry of
 //!    hand-authored descriptors for popular CLIs that haven't (yet) opted in
-//!    to the `--plexi` standard. Looked up by `(cli_name, version)`.
+//!    to the `--plexi` standard. Looked up by `cli_name`.
 //! 3. **Tier 3** — fallback `--help` crawl. Owned by issue #78.
 //!
 //! The registry baked into the binary at build time lives at `registry/` in
@@ -15,8 +15,7 @@
 //! `~/.plexi-<channel>/registry/`. Override wins. This lets users hand-author
 //! or patch a descriptor locally without rebuilding Plexi.
 //!
-//! Lookup contract: `lookup("gh", None)` → `gh/latest.json`.
-//! `lookup("gh", Some("2.40.0"))` → `gh/2.40.0.json`.
+//! Lookup contract: `lookup("gh")` → `gh/latest.json`.
 
 use crate::app::plexi_descriptor::{self, DescriptorError, PlexiDescriptor};
 #[cfg(test)]
@@ -56,17 +55,17 @@ pub enum RegistryError {
 /// exist primarily so unit tests can supply a temp dir without monkey-patching
 /// `dirs::home_dir()`.
 pub trait RegistryBackend {
-    /// Return the raw JSON text for `<cli>/<version>.json`, or `None` if the
+    /// Return the raw JSON text for `<cli>/latest.json`, or `None` if the
     /// path doesn't exist in this backend.
-    fn read(&self, cli: &str, version: &str) -> std::io::Result<Option<String>>;
+    fn read(&self, cli: &str) -> std::io::Result<Option<String>>;
 }
 
 /// The compile-time `include_dir!`-baked registry.
 pub struct EmbeddedBackend;
 
 impl RegistryBackend for EmbeddedBackend {
-    fn read(&self, cli: &str, version: &str) -> std::io::Result<Option<String>> {
-        let path = format!("{cli}/{version}.json");
+    fn read(&self, cli: &str) -> std::io::Result<Option<String>> {
+        let path = format!("{cli}/latest.json");
         match EMBEDDED_REGISTRY.get_file(&path) {
             Some(file) => match file.contents_utf8() {
                 Some(s) => Ok(Some(s.to_string())),
@@ -94,8 +93,8 @@ impl FilesystemBackend {
 }
 
 impl RegistryBackend for FilesystemBackend {
-    fn read(&self, cli: &str, version: &str) -> std::io::Result<Option<String>> {
-        let path = self.root.join(cli).join(format!("{version}.json"));
+    fn read(&self, cli: &str) -> std::io::Result<Option<String>> {
+        let path = self.root.join(cli).join("latest.json");
         match std::fs::read_to_string(&path) {
             Ok(s) => Ok(Some(s)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -110,20 +109,17 @@ pub fn user_override_dir() -> Option<PathBuf> {
     Some(crate::config::config_dir().join("registry"))
 }
 
-/// Look up a descriptor for `(cli_name, version)`. When `version` is `None`,
-/// the lookup uses `latest.json`.
+/// Look up the `latest.json` descriptor for `cli_name`.
 ///
 /// Resolution order: user-override → embedded. The first backend that has a
 /// matching file wins, even if it's malformed (we surface the parse error
 /// rather than silently falling through — a malformed override is a bug the
 /// user wants to know about).
-pub fn lookup(cli_name: &str, version: Option<&str>) -> Result<PlexiDescriptor, RegistryError> {
-    let version_key = version.unwrap_or("latest");
-
+pub fn lookup(cli_name: &str) -> Result<PlexiDescriptor, RegistryError> {
     // 1. User override.
     if let Some(override_root) = user_override_dir() {
         let backend = FilesystemBackend::new(override_root);
-        match read_and_parse(&backend, cli_name, version_key) {
+        match read_and_parse(&backend, cli_name) {
             Ok(Some(d)) => return Ok(d),
             Ok(None) => { /* fall through */ }
             Err(e) => return Err(e),
@@ -131,11 +127,11 @@ pub fn lookup(cli_name: &str, version: Option<&str>) -> Result<PlexiDescriptor, 
     }
 
     // 2. Embedded.
-    match read_and_parse(&EmbeddedBackend, cli_name, version_key) {
+    match read_and_parse(&EmbeddedBackend, cli_name) {
         Ok(Some(d)) => Ok(d),
         Ok(None) => Err(RegistryError::NotFound {
             cli: cli_name.to_string(),
-            version: version_key.to_string(),
+            version: "latest".to_string(),
         }),
         Err(e) => Err(e),
     }
@@ -148,11 +144,9 @@ pub fn lookup(cli_name: &str, version: Option<&str>) -> Result<PlexiDescriptor, 
 pub fn lookup_with_backends(
     backends: &[&dyn RegistryBackend],
     cli_name: &str,
-    version: Option<&str>,
 ) -> Result<PlexiDescriptor, RegistryError> {
-    let version_key = version.unwrap_or("latest");
     for backend in backends {
-        match read_and_parse(*backend, cli_name, version_key) {
+        match read_and_parse(*backend, cli_name) {
             Ok(Some(d)) => return Ok(d),
             Ok(None) => continue,
             Err(e) => return Err(e),
@@ -160,17 +154,16 @@ pub fn lookup_with_backends(
     }
     Err(RegistryError::NotFound {
         cli: cli_name.to_string(),
-        version: version_key.to_string(),
+        version: "latest".to_string(),
     })
 }
 
 fn read_and_parse(
     backend: &dyn RegistryBackend,
     cli: &str,
-    version: &str,
 ) -> Result<Option<PlexiDescriptor>, RegistryError> {
-    let path_repr = format!("{cli}/{version}.json");
-    let raw = backend.read(cli, version).map_err(|e| RegistryError::Io {
+    let path_repr = format!("{cli}/latest.json");
+    let raw = backend.read(cli).map_err(|e| RegistryError::Io {
         cli: cli.to_string(),
         path: path_repr.clone(),
         source: e,
@@ -305,10 +298,10 @@ fn parse_all_embedded() -> Result<usize, RegistryError> {
 }
 
 #[cfg(test)]
-fn write_descriptor(root: &Path, cli: &str, version: &str, json: &str) {
+fn write_descriptor(root: &Path, cli: &str, json: &str) {
     let dir = root.join(cli);
     std::fs::create_dir_all(&dir).expect("mkdir");
-    std::fs::write(dir.join(format!("{version}.json")), json).expect("write descriptor");
+    std::fs::write(dir.join("latest.json"), json).expect("write descriptor");
 }
 
 #[cfg(test)]
@@ -328,14 +321,14 @@ mod tests {
     fn lookup_returns_descriptor_for_known_cli() {
         // gh ships seeded into the embedded registry. The public `lookup` is
         // OK to call here — no override dir is created in the test sandbox.
-        let d = lookup("gh", None).expect("gh latest in embedded registry");
+        let d = lookup("gh").expect("gh latest in embedded registry");
         assert_eq!(d.name, "gh");
         assert!(!d.commands.is_empty());
     }
 
     #[test]
     fn lookup_returns_none_for_unknown_cli() {
-        let err = lookup("nonexistent-cli-zzz", None).expect_err("unknown CLI must NotFound");
+        let err = lookup("nonexistent-cli-zzz").expect_err("unknown CLI must NotFound");
         match err {
             RegistryError::NotFound { cli, .. } => assert_eq!(cli, "nonexistent-cli-zzz"),
             other => panic!("expected NotFound, got {other:?}"),
@@ -343,22 +336,12 @@ mod tests {
     }
 
     #[test]
-    fn lookup_with_explicit_version_picks_that_file() {
-        let tmp = TempDir::new().unwrap();
-        write_descriptor(tmp.path(), "fake", "9.9.9", FAKE_DESCRIPTOR);
-        let backend = FilesystemBackend::new(tmp.path().to_path_buf());
-        let d = lookup_with_backends(&[&backend], "fake", Some("9.9.9"))
-            .expect("explicit version found");
-        assert_eq!(d.version, "9.9.9");
-    }
-
-    #[test]
     fn lookup_without_version_picks_latest() {
         let tmp = TempDir::new().unwrap();
-        write_descriptor(tmp.path(), "fake", "latest", FAKE_DESCRIPTOR);
+        write_descriptor(tmp.path(), "fake", FAKE_DESCRIPTOR);
         let backend = FilesystemBackend::new(tmp.path().to_path_buf());
-        let d = lookup_with_backends(&[&backend], "fake", None)
-            .expect("default version maps to latest.json");
+        let d =
+            lookup_with_backends(&[&backend], "fake").expect("default version maps to latest.json");
         assert_eq!(d.version, "9.9.9");
     }
 
@@ -373,9 +356,9 @@ mod tests {
             "version": "0.0.0",
             "commands": []
         }"#;
-        write_descriptor(tmp.path(), "gh", "latest", overridden_json);
+        write_descriptor(tmp.path(), "gh", overridden_json);
         let override_backend = FilesystemBackend::new(tmp.path().to_path_buf());
-        let d = lookup_with_backends(&[&override_backend, &EmbeddedBackend], "gh", None)
+        let d = lookup_with_backends(&[&override_backend, &EmbeddedBackend], "gh")
             .expect("override should resolve");
         assert_eq!(d.name, "gh-overridden");
     }
@@ -383,15 +366,9 @@ mod tests {
     #[test]
     fn malformed_descriptor_in_registry_errors_clearly() {
         let tmp = TempDir::new().unwrap();
-        write_descriptor(
-            tmp.path(),
-            "fake",
-            "latest",
-            r#"{ "this": "is not a descriptor" }"#,
-        );
+        write_descriptor(tmp.path(), "fake", r#"{ "this": "is not a descriptor" }"#);
         let backend = FilesystemBackend::new(tmp.path().to_path_buf());
-        let err =
-            lookup_with_backends(&[&backend], "fake", None).expect_err("malformed JSON must error");
+        let err = lookup_with_backends(&[&backend], "fake").expect_err("malformed JSON must error");
         match err {
             RegistryError::Malformed { cli, path, .. } => {
                 assert_eq!(cli, "fake");
@@ -405,10 +382,7 @@ mod tests {
     fn embedded_registry_round_trips_through_parser() {
         // Guard against hand-edit drift: every shipped descriptor must parse.
         let n = parse_all_embedded().expect("all embedded descriptors must parse");
-        assert!(
-            n >= 6,
-            "expected ≥6 descriptors (3 CLIs × 2 files), got {n}"
-        );
+        assert!(n >= 6, "expected ≥6 descriptors, got {n}");
     }
 
     #[test]
