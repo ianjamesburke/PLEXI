@@ -2470,7 +2470,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Write text to a terminal PTY or a plugin's input path (`plexi pane send`).\n`\\n` in text (literal backslash-n) is interpreted as Enter unless\n`paste` requests a literal plugin paste event.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not\nsupported on view panes.",
+          "description": "Write text to a terminal PTY or a plugin's input path (`plexi pane send`).\n`\\n` in text (literal backslash-n) is interpreted as Enter unless\n`paste` requests a literal plugin paste event.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see `PendingSubmit` (host `app::pane_wait`). `submit` is not\nsupported on view panes.",
           "properties": {
             "generated_operation_id": {
               "default": false,
@@ -5009,7 +5009,7 @@
           "type": "object"
         },
         "ContextState": {
-          "description": "Rolled-up status for a single context. Stub for lib target.",
+          "description": "Rolled-up status for a single context, including recursive children.",
           "properties": {
             "active_agents": {
               "format": "uint32",
@@ -5057,6 +5057,7 @@
           "type": "object"
         },
         "ContextStatus": {
+          "description": "Overall status of a context, derived from its pane summaries and child contexts.\nPrecedence: `NeedsYou > Blocked > Error > Working > Idle`.",
           "enum": [
             "Idle",
             "Working",
@@ -5145,6 +5146,7 @@
           "type": "string"
         },
         "PaneSummary": {
+          "description": "Summary of a single pane within a context.",
           "properties": {
             "label": {
               "type": "string"
@@ -5166,6 +5168,7 @@
           "type": "object"
         },
         "PaneSummaryStatus": {
+          "description": "Status of an individual pane.\nPrecedence: `NeedsYou > Blocked > Error > Active > Idle`.",
           "enum": [
             "Idle",
             "Active",

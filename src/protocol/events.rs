@@ -189,7 +189,7 @@ pub enum PlexiEvent {
     },
     /// Response to `HostRequest::QueryContextState` (#1518).
     ContextStateResponse {
-        state: crate::host::context_state::ContextState,
+        state: ContextState,
     },
     /// Binary pipe opened — plugin connects to `socket_path` as a unix socket client.
     PipeOpened {

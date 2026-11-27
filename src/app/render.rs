@@ -239,7 +239,7 @@ impl PlexiApp {
             })
             .collect();
         for (win_idx, pid, child_ctx_id) in targets {
-            let state = crate::host::context_state::ContextState::compute(
+            let state = crate::host::context_state::compute_context_state(
                 child_ctx_id,
                 self.router.as_slice(),
                 &self.windows,
@@ -466,7 +466,7 @@ impl PlexiApp {
                                 })
                             })
                             .collect();
-                        let computed_state = crate::host::context_state::ContextState::compute(
+                        let computed_state = crate::host::context_state::compute_context_state(
                             child_ctx_id,
                             self.router.as_slice(),
                             &self.windows,
@@ -480,7 +480,7 @@ impl PlexiApp {
                             && computed_state.pane_count == 0
                             && matches!(
                                 computed_state.status,
-                                crate::host::context_state::ContextStatus::Idle
+                                crate::protocol::ContextStatus::Idle
                             ) {
                             existing_state.cloned().unwrap_or(computed_state)
                         } else {
@@ -516,7 +516,7 @@ impl PlexiApp {
                 // the active window has no portal panes.
                 crate::platform::ui_profile::time("portal_state", || {
                     for &(pid, child_ctx_id) in &portal_panes {
-                        let computed = crate::host::context_state::ContextState::compute(
+                        let computed = crate::host::context_state::compute_context_state(
                             child_ctx_id,
                             self.router.as_slice(),
                             &self.windows,
@@ -530,7 +530,7 @@ impl PlexiApp {
                                 && computed.pane_count == 0
                                 && matches!(
                                     computed.status,
-                                    crate::host::context_state::ContextStatus::Idle
+                                    crate::protocol::ContextStatus::Idle
                                 )
                                 && portal.context_state.is_some()
                             {

@@ -1,7 +1,7 @@
 //! Activity dot widget and semantic escalation colors for agent panes,
 //! `PortalPane` summary cards, and context sidebar indicators.
 
-use crate::host::context_state::ContextStatus;
+use crate::protocol::ContextStatus;
 use crate::protocol::AgentState;
 use crate::ui::theme::Colors;
 

@@ -23,3 +23,13 @@ pub struct MidiPortInfo {
     pub name: String,
     pub default: bool,
 }
+
+impl From<MidiPortInfo> for crate::protocol::MidiPortWire {
+    fn from(info: MidiPortInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            default: info.default,
+        }
+    }
+}

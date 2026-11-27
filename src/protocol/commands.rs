@@ -984,7 +984,7 @@ pub enum HostRequest {
     /// With `submit`, the host owns the whole type-and-enter sequence for a
     /// terminal pane: it waits for the pane's output to settle, presses Enter,
     /// and holds the reply until it has confirmed the prompt left the input
-    /// line — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not
+    /// line — see `PendingSubmit` (host `app::pane_wait`). `submit` is not
     /// supported on view panes.
     SendToPane {
         pane_id: u64,

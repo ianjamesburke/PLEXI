@@ -496,7 +496,7 @@ fn select_terminal_agent<'a>(
 pub struct PortalPane {
     pub pane_id: PaneId,
     pub target_context_id: u64,
-    pub context_state: Option<crate::host::context_state::ContextState>,
+    pub context_state: Option<crate::protocol::ContextState>,
 }
 
 impl Pane {
@@ -845,7 +845,7 @@ pub struct TerminalPane {
     pub backend: TerminalBackend,
     pub exited: bool,
     /// Observed PTY exit status (`Code`, `Signal`, or `Unknown`), recorded in
-    /// `drain_pty_events` or `AgentDone` so `ContextState::compute` and crash
+    /// `drain_pty_events` or `AgentDone` so `compute_context_state` and crash
     /// retention can distinguish exit 0 from non-zero/signal failures.
     pub(crate) exit_status: Option<crate::host::pane_lifecycle::ExitStatus>,
     pub name: Option<String>,

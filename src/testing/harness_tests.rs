@@ -59,7 +59,7 @@ fn terminal_process_activity_is_not_agent_activity() {
     pane.as_terminal_mut().unwrap().activity = Some(AgentState::Working);
     assert!(pane.agent().is_none());
     assert_eq!(pane.effective_activity(), None);
-    let state = crate::host::context_state::ContextState::compute(
+    let state = crate::host::context_state::compute_context_state(
         h.app.windows[0].context_id,
         h.app.router.as_slice(),
         &h.app.windows,
@@ -81,7 +81,7 @@ fn terminal_process_activity_is_not_agent_activity() {
             session_id: None,
         }));
         assert_eq!(pane.effective_activity(), Some(&agent_state));
-        let state = crate::host::context_state::ContextState::compute(
+        let state = crate::host::context_state::compute_context_state(
             h.app.windows[0].context_id,
             h.app.router.as_slice(),
             &h.app.windows,
@@ -128,7 +128,7 @@ fn foreground_and_background_programs_are_not_agents() {
             if pane.as_terminal().unwrap().activity == Some(AgentState::Working) {
                 assert!(pane.agent().is_none());
                 assert_eq!(pane.effective_activity(), None);
-                let state = crate::host::context_state::ContextState::compute(
+                let state = crate::host::context_state::compute_context_state(
                     h.app.windows[0].context_id,
                     h.app.router.as_slice(),
                     &h.app.windows,
@@ -16838,7 +16838,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::host::context_state::ContextStatus::Working
+            crate::protocol::ContextStatus::Working
         );
 
         // 1. Invalid result payload is rejected synchronously by schema validation.
@@ -16970,7 +16970,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::host::context_state::ContextStatus::Error,
+            crate::protocol::ContextStatus::Error,
             "crashed worker must roll up Error status onto parent PortalPane"
         );
     }
@@ -17059,7 +17059,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::host::context_state::ContextStatus::Blocked
+            crate::protocol::ContextStatus::Blocked
         );
 
         let fleet_reply = temp_response(dir.path(), "fleet");
@@ -17109,7 +17109,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::host::context_state::ContextStatus::NeedsYou
+            crate::protocol::ContextStatus::NeedsYou
         );
     }
 
@@ -17185,7 +17185,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::host::context_state::ContextStatus::Blocked
+            crate::protocol::ContextStatus::Blocked
         );
         assert_eq!(
             portal_state.status_summary_badge().as_deref(),
@@ -17229,7 +17229,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::host::context_state::ContextStatus::NeedsYou
+            crate::protocol::ContextStatus::NeedsYou
         );
         assert_eq!(
             portal_state.status_summary_badge().as_deref(),
@@ -17276,7 +17276,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::host::context_state::ContextStatus::Error
+            crate::protocol::ContextStatus::Error
         );
         assert_eq!(
             portal_state.status_summary_badge().as_deref(),
@@ -18704,7 +18704,7 @@ mod agent_state_restoration_tests {
         };
         assert_eq!(
             portal_state.status,
-            crate::host::context_state::ContextStatus::Blocked,
+            crate::protocol::ContextStatus::Blocked,
             "Standby child pane's Blocked state must roll up onto parent PortalPane immediately on restore"
         );
 
@@ -22905,7 +22905,7 @@ mod program_status_agent {
             let p = &h.app.windows[0].panes[&pane];
             assert!(p.agent().is_none(), "{payload} must not identify an agent");
             assert!(p.effective_activity().is_none());
-            let state = crate::host::context_state::ContextState::compute(
+            let state = crate::host::context_state::compute_context_state(
                 h.app.windows[0].context_id,
                 h.app.router.as_slice(),
                 &h.app.windows,
