@@ -6070,7 +6070,7 @@ impl PlexiApp {
                 if let Some(reply) = response_file {
                     // Every caller needs an answer to avoid a timeout followed
                     // by forced termination. Keep the first caller's token.
-                    if self.quit_coordinator.stop_reply.is_some()
+                    if self.quit_coordinator.stop_reply_pending()
                         || self.quit_coordinator.is_active()
                     {
                         log::info!(
@@ -6086,13 +6086,13 @@ impl PlexiApp {
                         );
                         return;
                     }
-                    self.quit_coordinator.stop_reply = Some(reply.clone());
                 }
                 log::info!(
                     "pane_ipc: kind=shutdown reply={} — queued for shutdown check",
                     response_file.is_some()
                 );
-                self.shutdown_requested = true;
+                self.quit_coordinator
+                    .queue_host_stop(response_file.clone(), false);
             }
             _ => {
                 log::warn!("pane_ipc: unsupported command kind, dropping");

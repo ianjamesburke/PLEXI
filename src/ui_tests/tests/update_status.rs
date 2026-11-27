@@ -88,7 +88,7 @@ fn screenshot_changelog_update_status_line() {
     );
     h.harness().get_by_label("Restart to v0.5.1");
     assert!(
-        h.with_app(|app| !app.update_quit_pending),
+        h.with_app(|app| !app.quit_coordinator.update_restart_queued()),
         "showing the confirm never restarts"
     );
     h.save_screenshot(&evidence_png!("_confirm")).expect("render failed");

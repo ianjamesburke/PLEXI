@@ -22,6 +22,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use super::quit_state::{AcceptedQuit, QuitState, SaveStage, UserQuitConfirmation, WindowHide};
+
 /// Schedules the relaunch into the installed build for an update restart.
 /// Production uses [`schedule_installed_restart`]; headless hosts use
 /// `test_restart_scheduler::record`, which never reads an installed receipt.
@@ -56,102 +58,9 @@ pub(crate) mod test_restart_scheduler {
         REQUESTS.with(|requests| requests.replace(0))
     }
 }
-
-#[derive(Clone, Copy)]
-enum UserQuitConfirmation {
-    Keyboard,
-    WorkingAgents,
-    Accepted,
-}
-
-#[derive(Clone, Copy, Default)]
-enum QuitPhase {
-    #[default]
-    Idle,
-    AwaitingEditor {
-        pane: u64,
-        confirmation: UserQuitConfirmation,
-    },
-    ConfirmingAgents,
-    Accepted,
-}
-
-#[derive(Default)]
-pub(crate) struct QuitCoordinator {
-    /// The reason survives confirmation and is used when the quit is accepted.
-    pub(crate) reason: Option<ExitReason>,
-    phase: QuitPhase,
-    saved: bool,
-    retry_at: Option<Instant>,
-    hide_requested: bool,
-    /// The hide was confirmed or handed to the backend; false after a failed
-    /// native hide, so the watchdog reports a visible stall as `[FREEZE]`.
-    window_hidden: bool,
-    restart_scheduled: bool,
-    /// Consecutive failed final saves since the last success.
-    save_failures: u32,
-    /// Set once failures reach [`MAX_QUIT_SAVE_ATTEMPTS`]: the cause shown in
-    /// the "Quit without saving" dialog. While set, no retry runs.
-    save_failure: Option<String>,
-    /// The save is skipped for the rest of this quit: the user chose "Quit
-    /// without saving", or `host stop` spent its retries (stint 1540). The
-    /// file on disk is not rewritten.
-    save_waived: bool,
-    /// `plexi host stop`'s reply token: answered by `exit_host` with the
-    /// process's real exit outcome (stint 1430).
-    pub(crate) stop_reply: Option<String>,
-    restart_requested: bool,
-    /// Stop is accepted. Hold pane cleanup until the CLI detaches its relaunch.
-    restart_handoff: Option<Receiver<std::io::Result<()>>>,
-}
-
 /// Failed final saves tolerated (one per second) before asking the user, or,
 /// for `host stop`, before exiting unsaved (stint 1540).
 pub(crate) const MAX_QUIT_SAVE_ATTEMPTS: u32 = 5;
-
-impl QuitCoordinator {
-    fn enter(&mut self, phase: QuitPhase, reason: ExitReason) {
-        self.phase = phase;
-        self.reason = Some(reason);
-    }
-
-    pub(crate) fn accepted_reason(&self) -> Option<ExitReason> {
-        self.reason
-            .filter(|_| matches!(self.phase, QuitPhase::Accepted))
-    }
-
-    fn pending_editor(&self) -> Option<u64> {
-        match self.phase {
-            QuitPhase::AwaitingEditor { pane, .. } => Some(pane),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn is_active(&self) -> bool {
-        self.accepted_reason().is_some()
-    }
-
-    pub(crate) fn blocks_input(&self) -> bool {
-        self.is_active() && self.retry_at.is_none() && self.save_failure.is_none()
-    }
-
-    /// Test seam: whether a failed save scheduled a retry, and making that
-    /// retry due now.
-    #[cfg(test)]
-    pub(crate) fn retry_pending(&self) -> bool {
-        self.retry_at.is_some()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn make_retry_due(&mut self) {
-        self.retry_at = Some(Instant::now());
-    }
-
-    /// The validation message of the save that exhausted the retry budget.
-    pub(crate) fn save_failure(&self) -> Option<&str> {
-        self.save_failure.as_deref()
-    }
-}
 
 /// Process-local monotonic clock, plus wall-clock milliseconds so a quit can
 /// be lined up with the system log (stint 1541). Input reception is the
@@ -239,17 +148,16 @@ fn await_restart_coordinator(mut stream: crate::platform::ipc::IpcStream) -> std
     let mut ready = [0];
     stream.read_exact(&mut ready)?;
     if ready != crate::rpc::RESTART_READY {
-        return Err(std::io::Error::other("invalid restart coordinator acknowledgement"));
+        return Err(std::io::Error::other(
+            "invalid restart coordinator acknowledgement",
+        ));
     }
     Ok(())
 }
 
 impl super::PlexiApp {
     pub(super) fn queue_restart_shutdown(&mut self, response_file: &str) {
-        if self.quit_coordinator.stop_reply.is_some()
-            || self.quit_coordinator.is_active()
-            || self.shutdown_requested
-        {
+        if self.quit_coordinator.host_stop_queued() || self.quit_coordinator.is_active() {
             crate::rpc::write_json_response(
                 response_file,
                 serde_json::json!({
@@ -260,16 +168,15 @@ impl super::PlexiApp {
             );
             return;
         }
-        self.quit_coordinator.stop_reply = Some(response_file.to_owned());
-        self.quit_coordinator.restart_requested = true;
-        self.shutdown_requested = true;
+        self.quit_coordinator
+            .queue_host_stop(Some(response_file.to_owned()), true);
     }
 
     fn start_restart_handoff(&mut self) {
         let result = self
             .quit_coordinator
-            .stop_reply
-            .take()
+            .accepted_mut()
+            .and_then(|quit| quit.stop_reply.take())
             .and_then(|token| crate::rpc::ReplyRegistry::take(&token))
             .ok_or_else(|| std::io::Error::other("missing reply connection"))
             .and_then(|stream| {
@@ -286,30 +193,52 @@ impl super::PlexiApp {
                 Ok(rx)
             });
         match result {
-            Ok(handoff) => self.quit_coordinator.restart_handoff = Some(handoff),
+            Ok(handoff) => {
+                if let Some(quit) = self.quit_coordinator.accepted_mut() {
+                    quit.restart_handoff = Some(handoff);
+                }
+            }
             Err(error) => self.cancel_restart_shutdown(&error),
         }
     }
 
     fn cancel_restart_shutdown(&mut self, error: &impl std::fmt::Display) {
         log::warn!("quit: restart cancelled during coordinator handoff: {error}");
-        self.quit_coordinator = QuitCoordinator::default();
-        self.quitting = false;
+        self.quit_coordinator
+            .go(QuitState::Idle, "restart handoff failed");
     }
 
     /// Acceptance freezes further UI/IPC mutation. The next logic pass takes
     /// the final snapshot, after the accepting UI pass has finished.
     pub(crate) fn request_quit(&mut self, reason: ExitReason) {
-        if !self.quit_coordinator.is_active() {
-            let restart = reason == ExitReason::HostStop
-                && std::mem::take(&mut self.quit_coordinator.restart_requested);
-            if reason == ExitReason::HostStop && self.refuse_host_stop_for_unsaved_editor() {
-                return;
+        self.accept_quit(reason, None, false);
+    }
+
+    /// `plexi host stop`, taken from the queue by the logic pass.
+    pub(crate) fn request_host_stop(&mut self, reply: Option<String>, restart: bool) {
+        self.accept_quit(ExitReason::HostStop, reply, restart);
+    }
+
+    fn accept_quit(&mut self, reason: ExitReason, stop_reply: Option<String>, restart: bool) {
+        if let Some(quit) = self.quit_coordinator.accepted_mut() {
+            // A stop queued in the same pass another quit was accepted is
+            // answered by that quit's exit.
+            if quit.stop_reply.is_none() {
+                quit.stop_reply = stop_reply;
+            }
+        } else {
+            if reason == ExitReason::HostStop {
+                if let Some(files) = self.unsaved_editor_files() {
+                    refuse_host_stop_for_unsaved_editor(stop_reply, &files);
+                    return;
+                }
             }
             trace("quit_accepted");
             log::info!("quit: coordinator accepted reason={}", reason.label());
-            self.quit_coordinator.enter(QuitPhase::Accepted, reason);
-            self.quitting = true;
+            self.quit_coordinator.go(
+                QuitState::Accepted(AcceptedQuit::new(reason, stop_reply)),
+                "quit accepted",
+            );
             if restart {
                 self.start_restart_handoff();
             }
@@ -321,7 +250,7 @@ impl super::PlexiApp {
 
     /// Workspace snapshots only remember the editor's file and view state.
     /// Host stop has no one to answer a save prompt, so keep dirty buffers live.
-    fn refuse_host_stop_for_unsaved_editor(&mut self) -> bool {
+    fn unsaved_editor_files(&self) -> Option<String> {
         let dirty_files: Vec<_> = self
             .windows
             .iter()
@@ -330,85 +259,77 @@ impl super::PlexiApp {
             .filter(|buffer| buffer.dirty)
             .map(|buffer| format!("{:?}", buffer.path))
             .collect();
-        if dirty_files.is_empty() {
-            return false;
-        }
-        let files = dirty_files.join(", ");
-        log::info!("quit: host stop refused for unsaved editors: {files}");
-        if let Some(reply) = self.quit_coordinator.stop_reply.take() {
-            crate::rpc::write_json_response(
-                &reply,
-                serde_json::json!({
-                    "ok": false,
-                    "error_code": "unsaved_editor_changes",
-                    "error": format!("Save or discard the editor changes in {files} before stopping the host"),
-                }),
-            );
-        }
-        true
+        (!dirty_files.is_empty()).then(|| dirty_files.join(", "))
     }
 
     pub(crate) fn persist_quit_state(&mut self) -> bool {
-        if self.quit_coordinator.saved && !self.workspace_dirty {
-            trace("save_reused");
-            return true;
-        }
-        if self.quit_coordinator.save_waived {
-            trace("save_waived");
-            log::warn!(
-                "quit: continuing without saving the workspace ({})",
-                if self.quit_coordinator.accepted_reason() == Some(ExitReason::HostStop) {
-                    "host stop has nobody to ask"
-                } else {
-                    "the user chose to quit without saving"
-                }
-            );
-            return true;
-        }
+        let Some(quit) = self.quit_coordinator.accepted() else {
+            log::error!("quit: final save requested with no accepted quit");
+            return false;
+        };
+        let reason = quit.reason;
+        let failures = match &quit.save {
+            SaveStage::Saved if !self.workspace_dirty => {
+                trace("save_reused");
+                return true;
+            }
+            SaveStage::Waived { .. } => {
+                trace("save_waived");
+                log::warn!(
+                    "quit: continuing without saving the workspace ({})",
+                    if reason == ExitReason::HostStop {
+                        "host stop has nobody to ask"
+                    } else {
+                        "the user chose to quit without saving"
+                    }
+                );
+                return true;
+            }
+            save => save.failures(),
+        };
         trace("save_begin");
         let result = self.save_workspace_result();
         let saved = result.is_ok();
         trace(if saved { "save_ok" } else { "save_failed" });
         self.workspace_dirty = !saved;
-        self.quit_coordinator.saved = saved;
-        match result {
-            Ok(()) => self.quit_coordinator.save_failures = 0,
+        let next = match result {
+            Ok(()) => SaveStage::Saved,
             Err(error) => {
-                self.quit_coordinator.save_failures += 1;
-                // `plexi host stop` has nobody to answer a dialog, and a
-                // boot-time block never clears. The file stays as found and
-                // the exit reports the workspace unsaved.
-                if self.workspace_load_failure.is_some()
-                    && self.quit_coordinator.accepted_reason() == Some(ExitReason::HostStop)
-                {
+                let failures = failures + 1;
+                if self.workspace_load_failure.is_some() && reason == ExitReason::HostStop {
+                    // `plexi host stop` has nobody to answer a dialog, and a
+                    // boot-time block never clears. The file stays as found
+                    // and the exit reports the workspace unsaved.
                     log::error!(
                         "quit: host stop exits without saving; the session never restored its workspace: {error}"
                     );
-                    self.quit_coordinator.save_waived = true;
-                    return true;
-                }
-                // `plexi host stop` has nobody to answer the dialog either:
-                // once the bounded retries are spent it exits unsaved and
-                // says so in its reply (stint 1540).
-                if self.quit_coordinator.accepted_reason() == Some(ExitReason::HostStop)
-                    && self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS
-                {
+                    SaveStage::Waived { failures }
+                } else if reason == ExitReason::HostStop && failures >= MAX_QUIT_SAVE_ATTEMPTS {
+                    // `plexi host stop` has nobody to answer the dialog either:
+                    // once the bounded retries are spent it exits unsaved and
+                    // says so in its reply (stint 1540).
                     log::error!(
-                        "quit: host stop exits without saving after {} failed saves: {error}",
-                        self.quit_coordinator.save_failures
+                        "quit: host stop exits without saving after {failures} failed saves: {error}"
                     );
-                    self.quit_coordinator.save_waived = true;
-                    return true;
-                }
-                // A boot-time block cannot clear by retrying: ask at once.
-                if self.workspace_load_failure.is_some()
-                    || self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS
+                    SaveStage::Waived { failures }
+                } else if self.workspace_load_failure.is_some()
+                    || failures >= MAX_QUIT_SAVE_ATTEMPTS
                 {
-                    self.quit_coordinator.save_failure = Some(error.to_string());
+                    // A boot-time block cannot clear by retrying: ask at once.
+                    SaveStage::AskingUser {
+                        failures,
+                        cause: error.to_string(),
+                    }
+                } else {
+                    SaveStage::Pending { failures }
                 }
             }
+        };
+        let done = matches!(next, SaveStage::Saved | SaveStage::Waived { .. });
+        if let Some(quit) = self.quit_coordinator.accepted_mut() {
+            quit.save = next;
         }
-        saved
+        done
     }
 
     /// The final save for a backend teardown (`on_exit`: Dock Quit, logout),
@@ -418,6 +339,7 @@ impl super::PlexiApp {
     /// hold the latest changes (a failed attempt can already have rotated the
     /// `.prev` copy or renamed a new file in). Returns what the exit records.
     pub(crate) fn persist_for_teardown(&mut self, retry_delay: Duration) -> WorkspaceDurability {
+        self.accept_teardown();
         // At most MAX_QUIT_SAVE_ATTEMPTS tries and one fewer delays.
         let mut saved = false;
         for attempt in 1..=MAX_QUIT_SAVE_ATTEMPTS {
@@ -444,10 +366,34 @@ impl super::PlexiApp {
         self.quit_workspace_durability()
     }
 
+    /// A backend teardown is a quit nobody can veto: one already accepted
+    /// keeps its reason and progress, anything else is accepted as a window
+    /// close.
+    fn accept_teardown(&mut self) {
+        if self.quit_coordinator.is_active() {
+            return;
+        }
+        self.quit_coordinator.go(
+            QuitState::Accepted(AcceptedQuit::new(ExitReason::WindowClosed, None)),
+            "backend teardown",
+        );
+    }
+
+    /// `on_exit`: the logged last resort. Saves within its bound, then leaves
+    /// through the same flush list and exit as the coordinated quit.
+    pub(crate) fn exit_from_teardown(&mut self, retry_delay: Duration) -> ! {
+        self.persist_for_teardown(retry_delay);
+        self.finish_exit()
+    }
+
     /// Whether the workspace this process is about to exit with is on disk.
     /// Only a successful final save counts; a waived save does not.
     pub(crate) fn quit_workspace_durability(&self) -> WorkspaceDurability {
-        if self.quit_coordinator.saved {
+        if self
+            .quit_coordinator
+            .accepted()
+            .is_some_and(|quit| quit.save == SaveStage::Saved)
+        {
             WorkspaceDurability::Saved
         } else {
             WorkspaceDurability::Unsaved
@@ -458,22 +404,26 @@ impl super::PlexiApp {
     /// the save (the file on disk is left as it is); otherwise the quit is
     /// cancelled and the window stays.
     pub(crate) fn resolve_quit_save_failure(&mut self, quit_anyway: bool) {
-        self.pending_close = false;
-        self.close_confirm_target = None;
+        self.pane_close_dialog = None;
         if quit_anyway {
-            log::warn!(
-                "quit: user chose Quit without saving after {} failed saves: {}",
-                self.quit_coordinator.save_failures,
-                self.quit_coordinator.save_failure().unwrap_or("unknown")
-            );
-            self.quit_coordinator.save_waived = true;
-            self.quit_coordinator.save_failure = None;
-            self.quit_coordinator.retry_at = None;
+            if let Some(quit) = self.quit_coordinator.accepted_mut() {
+                log::warn!(
+                    "quit: user chose Quit without saving after {} failed saves: {}",
+                    quit.save.failures(),
+                    match &quit.save {
+                        SaveStage::AskingUser { cause, .. } => cause.as_str(),
+                        _ => "unknown",
+                    }
+                );
+                quit.save = SaveStage::Waived {
+                    failures: quit.save.failures(),
+                };
+            }
             self.ui_wake.wake("quit_without_saving");
         } else {
             log::info!("quit: user cancelled after save failures; keeping the window");
-            self.quit_coordinator = QuitCoordinator::default();
-            self.quitting = false;
+            self.quit_coordinator
+                .go(QuitState::Idle, "save failure dialog cancelled");
             self.ctx
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
@@ -492,19 +442,23 @@ impl super::PlexiApp {
     ) -> bool {
         if let Some(pane) = self.quit_coordinator.pending_editor() {
             if !self.windows.iter().any(|w| w.panes.contains_key(&pane)) {
-                self.quit_coordinator = QuitCoordinator::default();
+                self.quit_coordinator
+                    .go(QuitState::Idle, "awaited editor pane closed");
                 log::info!("quit: editor pane={pane} closed while awaiting an answer");
             }
             return false;
         }
-        let Some(reason) = self.quit_coordinator.accepted_reason() else {
+        let Some(quit) = self.quit_coordinator.accepted() else {
             return false;
         };
-        if let Some(handoff) = &self.quit_coordinator.restart_handoff {
-            match handoff.try_recv() {
+        let reason = quit.reason;
+        if let Some(received) = quit.restart_handoff.as_ref().map(Receiver::try_recv) {
+            match received {
                 Ok(Ok(())) => {
                     log::info!("quit: restart coordinator detached; proceeding with stop");
-                    self.quit_coordinator.restart_handoff = None;
+                    if let Some(quit) = self.quit_coordinator.accepted_mut() {
+                        quit.restart_handoff = None;
+                    }
                 }
                 Err(TryRecvError::Empty) => return true,
                 Ok(Err(error)) => {
@@ -519,22 +473,24 @@ impl super::PlexiApp {
         }
         self.ctx
             .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        if self.quit_coordinator.save_failure.is_some() {
-            return false; // waiting on the user's answer to the dialog
-        }
-        if self
-            .quit_coordinator
-            .retry_at
-            .is_some_and(|at| Instant::now() < at)
-        {
-            return false;
-        }
+        let retrying = match self.quit_coordinator.accepted().map(|quit| &quit.save) {
+            // Waiting on the user's answer to the dialog.
+            Some(SaveStage::AskingUser { .. }) => return false,
+            Some(SaveStage::Retrying { at, .. }) if Instant::now() < *at => return false,
+            Some(SaveStage::Retrying { .. }) => true,
+            _ => false,
+        };
         // A failed save leaves the UI usable, so the editor may now be dirty.
-        if self.quit_coordinator.retry_at.is_some() {
+        if retrying {
             if reason == ExitReason::HostStop {
-                if self.refuse_host_stop_for_unsaved_editor() {
-                    self.quit_coordinator = QuitCoordinator::default();
-                    self.quitting = false;
+                if let Some(files) = self.unsaved_editor_files() {
+                    let reply = self
+                        .quit_coordinator
+                        .accepted_mut()
+                        .and_then(|quit| quit.stop_reply.take());
+                    refuse_host_stop_for_unsaved_editor(reply, &files);
+                    self.quit_coordinator
+                        .go(QuitState::Idle, "host stop refused for unsaved editor");
                     return false;
                 }
             } else if !self.prepare_user_quit_for(reason) {
@@ -542,52 +498,53 @@ impl super::PlexiApp {
             }
         }
         if !self.persist_quit_state() {
-            if let Some(cause) = self.quit_coordinator.save_failure() {
+            let Some(quit) = self.quit_coordinator.accepted_mut() else {
+                return false;
+            };
+            if let SaveStage::AskingUser { failures, cause } = &quit.save {
                 log::error!(
-                    "quit: workspace save failed {} time(s), asking the user: {cause}",
-                    self.quit_coordinator.save_failures
+                    "quit: workspace save failed {failures} time(s), asking the user: {cause}"
                 );
-                self.quit_coordinator.retry_at = None;
-                self.pending_close = true;
-                self.pending_quit = false;
                 self.ui_wake.wake("quit_save_failed");
                 return false;
             }
             let delay = Duration::from_secs(1);
-            self.quit_coordinator.retry_at = Some(Instant::now() + delay);
+            quit.save = SaveStage::Retrying {
+                failures: quit.save.failures(),
+                at: Instant::now() + delay,
+            };
             self.schedule_workspace_save_wake(delay);
             log::error!("quit: save failed; keeping window and retrying before cleanup");
             return false;
         }
-        self.quit_coordinator.retry_at = None;
-        if matches!(reason, ExitReason::UpdateRestart) && !self.quit_coordinator.restart_scheduled {
-            let result = schedule_restart();
-            if let Err(error) = result {
+        let Some(quit) = self.quit_coordinator.accepted_mut() else {
+            return false;
+        };
+        if reason == ExitReason::UpdateRestart && !quit.restart_scheduled {
+            if let Err(error) = schedule_restart() {
                 log::error!("update restart failed: {error}");
                 trace("restart_failed");
-                self.quit_coordinator = QuitCoordinator::default();
-                self.quitting = false;
+                self.quit_coordinator
+                    .go(QuitState::Idle, "update restart could not be scheduled");
                 return false;
             }
-            self.quit_coordinator.restart_scheduled = true;
+            quit.restart_scheduled = true;
             trace("restart_scheduled");
         }
-        if !self.quit_coordinator.hide_requested {
+        if quit.hide == WindowHide::NotRequested {
             trace("window_hide_requested");
             // AppKit confirmation is distinct from egui's occlusion flag:
             // occluded means covered, and cannot prove the window disappeared.
             let hidden = hide_native_window(frame);
-            self.quit_coordinator.window_hidden = hidden.is_ok();
+            quit.hide = WindowHide::Requested {
+                handed_off: hidden.is_ok(),
+            };
             match hidden {
                 Ok(true) => {
                     trace("window_hidden_native");
                     // Native hide is acknowledged now. Deferred backends only
                     // enter this watchdog mode on the following logic pass.
-                    crate::platform::logging::mark_shutdown_cleanup(
-                        &self.ui_phase,
-                        self.quit_coordinator.is_active(),
-                        true,
-                    );
+                    crate::platform::logging::mark_shutdown_cleanup(&self.ui_phase, true, true);
                 }
                 Ok(false) => trace("window_hide_deferred"),
                 // The window is cosmetic; the quit is not (stint 1542). A
@@ -600,29 +557,39 @@ impl super::PlexiApp {
             }
             self.ctx
                 .send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            self.quit_coordinator.hide_requested = true;
             // Return control to the window system before any child grace wait.
             self.ui_wake.wake("quit_window_hidden");
             return true;
         }
         trace("post_hide_logic");
+        self.finish_exit()
+    }
+
+    /// The one flush list and exit, shared by the coordinated quit and
+    /// `on_exit`. The final save has already run.
+    fn finish_exit(&mut self) -> ! {
         self.begin_quit_cleanup();
         self.flush_ui_scale_persist_now();
         self.flush_editor_positions_now();
         self.bank_final_focus_segment();
         self.flush_admission_summaries();
-        exit_host(
-            reason,
-            self.quit_workspace_durability(),
-            self.quit_coordinator.stop_reply.take(),
-        );
+        let reason = self
+            .quit_coordinator
+            .accepted_reason()
+            .unwrap_or(ExitReason::WindowClosed);
+        let durability = self.quit_workspace_durability();
+        let reply = self
+            .quit_coordinator
+            .accepted_mut()
+            .and_then(|quit| quit.stop_reply.take());
+        exit_host(reason, durability, reply)
     }
 
     pub(super) fn begin_quit_cleanup(&self) {
         crate::platform::logging::mark_shutdown_cleanup(
             &self.ui_phase,
             self.quit_coordinator.is_active(),
-            self.quit_coordinator.window_hidden,
+            self.quit_coordinator.window_handed_off(),
         );
     }
 
@@ -643,16 +610,13 @@ impl super::PlexiApp {
         } else {
             "confirmation_cancelled"
         });
-        self.pending_close = false;
-        self.close_confirm_target = None;
-        self.pending_quit = false;
-        self.reset_keyboard_quit_confirmation();
-        let (QuitPhase::ConfirmingAgents, Some(reason)) =
-            (self.quit_coordinator.phase, self.quit_coordinator.reason)
-        else {
+        self.pane_close_dialog = None;
+        let QuitState::ConfirmingAgents { reason } = *self.quit_coordinator.state() else {
+            self.reset_keyboard_quit_confirmation();
             return;
         };
-        self.quit_coordinator = QuitCoordinator::default();
+        self.quit_coordinator
+            .go(QuitState::Idle, "working-agent confirmation answered");
         if confirmed {
             log::info!(
                 "quit: working-agent confirmation accepted reason={}",
@@ -660,7 +624,6 @@ impl super::PlexiApp {
             );
             self.continue_user_quit(reason, UserQuitConfirmation::Accepted);
         } else {
-            self.quitting = false;
             self.ctx
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             log::info!("quit: working-agent confirmation cancelled");
@@ -674,40 +637,39 @@ impl super::PlexiApp {
     }
 
     pub(super) fn keyboard_quit_timed_out(&self, now: Instant) -> bool {
-        self.quit_last_press
-            .is_some_and(|last| now.duration_since(last) > Duration::from_millis(1500))
+        self.quit_coordinator.keyboard_presses_timed_out(now)
     }
 
     pub(super) fn reset_keyboard_quit_confirmation(&mut self) {
-        self.quit_press_count = 0;
-        self.quit_last_press = None;
+        if self.quit_coordinator.keyboard_presses() > 0 {
+            self.quit_coordinator
+                .go(QuitState::Idle, "keyboard confirmation reset");
+        }
     }
 
     fn advance_keyboard_quit_confirmation(&mut self) -> bool {
-        if !self.confirm_quit() {
+        // An accepted quit (a save retry) has no presses left to count.
+        if !self.confirm_quit() || self.quit_coordinator.is_active() {
             return true;
         }
         let now = Instant::now();
-        if self.keyboard_quit_timed_out(now) {
-            self.reset_keyboard_quit_confirmation();
-        }
-        self.quit_press_count += 1;
-        if self.quit_press_count >= 3 {
-            self.reset_keyboard_quit_confirmation();
+        let count = self.quit_coordinator.next_keyboard_press(now);
+        if count >= 3 {
+            self.quit_coordinator
+                .go(QuitState::Idle, "third Cmd+Q press");
             return true;
         }
-        self.quit_last_press = Some(now);
-        log::info!(
-            "quit: keyboard confirmation press={}",
-            self.quit_press_count
+        self.quit_coordinator.go(
+            QuitState::CountingPresses { count, last: now },
+            "Cmd+Q press",
         );
+        log::info!("quit: keyboard confirmation press={count}");
         false
     }
 
     fn continue_user_quit(&mut self, reason: ExitReason, confirmation: UserQuitConfirmation) {
         if reason == ExitReason::UpdateRestart && self.update_status.ready().is_none() {
             log::info!("update: restart cancelled because the update is no longer ready");
-            self.quitting = false;
             return;
         }
         if self.prepare_user_quit_with_confirmation(reason, confirmation) {
@@ -716,20 +678,19 @@ impl super::PlexiApp {
     }
 
     pub(super) fn resolve_quit_editor(&mut self, pane: u64, cancelled: bool) {
-        let (
-            QuitPhase::AwaitingEditor {
-                pane: pending,
-                confirmation,
-            },
-            Some(reason),
-        ) = (self.quit_coordinator.phase, self.quit_coordinator.reason)
+        let QuitState::AwaitingEditor {
+            reason,
+            pane: pending,
+            confirmation,
+        } = *self.quit_coordinator.state()
         else {
             return;
         };
         if pane != pending {
             return;
         }
-        self.quit_coordinator = QuitCoordinator::default();
+        self.quit_coordinator
+            .go(QuitState::Idle, "unsaved editor answered");
         if cancelled {
             log::info!("quit: cancelled at unsaved editor pane={pane}");
         } else {
@@ -778,7 +739,7 @@ impl super::PlexiApp {
 
     /// Check for interactive vetoes before accepting a user quit.
     pub(super) fn prepare_user_quit_for(&mut self, reason: ExitReason) -> bool {
-        let confirmation = if self.quitting {
+        let confirmation = if self.quit_coordinator.is_active() {
             // The coordinator may be retrying a save after accepting the quit.
             UserQuitConfirmation::Accepted
         } else {
@@ -801,7 +762,7 @@ impl super::PlexiApp {
             }
             return false;
         }
-        if matches!(self.quit_coordinator.phase, QuitPhase::ConfirmingAgents) {
+        if self.quit_coordinator.confirming_agents() {
             return false;
         }
         let veto = self.windows.iter_mut().find_map(|window| {
@@ -816,11 +777,14 @@ impl super::PlexiApp {
             })
         });
         if let Some(pane) = veto {
-            self.quit_coordinator = QuitCoordinator::default();
-            self.quit_coordinator
-                .enter(QuitPhase::AwaitingEditor { pane, confirmation }, reason);
-            self.quitting = false;
-            self.reset_keyboard_quit_confirmation();
+            self.quit_coordinator.go(
+                QuitState::AwaitingEditor {
+                    reason,
+                    pane,
+                    confirmation,
+                },
+                "unsaved editor vetoed the quit",
+            );
             self.pane_navigate(pane);
             log::info!(
                 "quit: awaiting unsaved editor pane={pane} reason={}",
@@ -829,14 +793,13 @@ impl super::PlexiApp {
             return false;
         }
         let working = self.working_agent_count();
-        if !self.quitting && !matches!(confirmation, UserQuitConfirmation::Accepted) && working > 0
+        if !self.quit_coordinator.is_active()
+            && !matches!(confirmation, UserQuitConfirmation::Accepted)
+            && working > 0
         {
             self.quit_coordinator
-                .enter(QuitPhase::ConfirmingAgents, reason);
-            self.pending_quit = true;
+                .go(QuitState::ConfirmingAgents { reason }, "agents are working");
             trace("confirmation_required");
-            self.pending_close = true;
-            self.reset_keyboard_quit_confirmation();
             log::info!("quit: confirmation required working_agents={working}");
             return false;
         }
@@ -844,6 +807,21 @@ impl super::PlexiApp {
             UserQuitConfirmation::Keyboard => self.advance_keyboard_quit_confirmation(),
             UserQuitConfirmation::WorkingAgents | UserQuitConfirmation::Accepted => true,
         }
+    }
+}
+
+/// Answer a `host stop` refused because editors hold unsaved changes.
+fn refuse_host_stop_for_unsaved_editor(reply: Option<String>, files: &str) {
+    log::info!("quit: host stop refused for unsaved editors: {files}");
+    if let Some(reply) = reply {
+        crate::rpc::write_json_response(
+            &reply,
+            serde_json::json!({
+                "ok": false,
+                "error_code": "unsaved_editor_changes",
+                "error": format!("Save or discard the editor changes in {files} before stopping the host"),
+            }),
+        );
     }
 }
 
@@ -1545,7 +1523,7 @@ mod tests {
             HIDE_RESULT.with(|slot| slot.set(Some(Err("NSView has no window"))));
             h.app.request_quit(ExitReason::WindowClosed);
             for _ in 0..10 {
-                h.app.quit_coordinator.retry_at = None;
+                h.app.quit_coordinator.clear_retry();
                 h.app
                     .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(()));
             }
@@ -1610,15 +1588,15 @@ mod tests {
             HIDE_RESULT.with(|slot| slot.set(Some(hide)));
             h.app.request_quit(ExitReason::WindowClosed);
             for _ in 0..10 {
-                if h.app.quit_coordinator.hide_requested {
+                if h.app.quit_coordinator.hide_requested() {
                     break;
                 }
-                h.app.quit_coordinator.retry_at = None;
+                h.app.quit_coordinator.clear_retry();
                 h.app
                     .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(()));
             }
             HIDE_RESULT.with(|slot| slot.set(None));
-            assert!(h.app.quit_coordinator.hide_requested, "the hide step ran");
+            assert!(h.app.quit_coordinator.hide_requested(), "the hide step ran");
             h.app.begin_quit_cleanup();
             assert_eq!(
                 crate::platform::logging::expects_shutdown_wait(&h.app.ui_phase),
@@ -1634,7 +1612,7 @@ mod tests {
         h.add_test_pane();
         h.app.request_quit(ExitReason::HostStop);
         assert!(h.app.service_quit(&eframe::Frame::_new_kittest()));
-        assert!(h.app.quit_coordinator.hide_requested);
+        assert!(h.app.quit_coordinator.hide_requested());
         // Model the next logic pass after the backend has applied hide,
         // stopping before exit_host so the watchdog phase is observable.
         h.app.begin_quit_cleanup();
@@ -1648,6 +1626,7 @@ mod tests {
     fn quit_save_is_not_duplicated_by_a_second_quit_path() {
         let mut h = crate::testing::HostHarness::new();
         h.add_test_pane();
+        h.app.request_quit(ExitReason::WindowClosed);
         assert!(h.app.persist_quit_state());
         let path = crate::workspace::workspace_path_in(h.profile_dir());
         let first = std::fs::metadata(&path).unwrap().modified().unwrap();
@@ -1665,6 +1644,7 @@ mod tests {
     fn quit_save_persists_a_later_dirty_mutation() {
         let mut h = crate::testing::HostHarness::new();
         h.add_test_pane();
+        h.app.request_quit(ExitReason::WindowClosed);
         assert!(h.app.persist_quit_state());
         h.app.sidebar_visible = !h.app.sidebar_visible;
         h.app.mark_workspace_dirty();
@@ -1678,6 +1658,7 @@ mod tests {
     fn quit_save_failure_stays_dirty_and_retries() {
         let mut h = crate::testing::HostHarness::new();
         h.add_test_pane();
+        h.app.request_quit(ExitReason::WindowClosed);
         let path = crate::workspace::workspace_path_in(h.profile_dir());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"invalid workspace").unwrap();
@@ -1716,7 +1697,7 @@ mod tests {
             h.app.resolve_quit_confirmation(true);
         });
         assert_eq!(
-            h.app.quit_coordinator.reason,
+            h.app.quit_coordinator.reason(),
             Some(ExitReason::WindowClosed)
         );
         assert!(
@@ -1754,10 +1735,10 @@ mod tests {
                     panic!("restart must wait for durability")
                 }));
             assert!(h.app.workspace_dirty);
-            assert!(!h.app.quit_coordinator.hide_requested);
-            assert_eq!(h.app.quit_coordinator.reason, Some(reason));
+            assert!(!h.app.quit_coordinator.hide_requested());
+            assert_eq!(h.app.quit_coordinator.reason(), Some(reason));
             std::fs::remove_file(&path).unwrap();
-            h.app.quit_coordinator.retry_at = None;
+            h.app.quit_coordinator.clear_retry();
             let scheduled = std::cell::Cell::new(0);
             assert!(h
                 .app
@@ -1766,7 +1747,7 @@ mod tests {
                     scheduled.set(scheduled.get() + 1);
                     Ok(())
                 }));
-            assert!(h.app.quit_coordinator.hide_requested);
+            assert!(h.app.quit_coordinator.hide_requested());
             assert!(!h.app.workspace_dirty);
             assert_eq!(
                 scheduled.get(),
@@ -1871,7 +1852,7 @@ mod tests {
             let started = std::time::Instant::now();
             let durability = h.app.persist_for_teardown(Duration::from_millis(20));
             let elapsed = started.elapsed();
-            let failures = h.app.quit_coordinator.save_failures;
+            let failures = h.app.quit_coordinator.save_failures();
             let _ = tx.send((durability, elapsed, failures));
         });
         let (durability, elapsed, failures) = rx
@@ -1897,13 +1878,13 @@ mod tests {
         std::fs::write(&path, b"invalid workspace").unwrap();
         h.app.request_quit(ExitReason::WindowClosed);
         for attempt in 1..=MAX_QUIT_SAVE_ATTEMPTS {
-            h.app.quit_coordinator.retry_at = None;
+            h.app.quit_coordinator.clear_retry();
             assert!(!h
                 .app
                 .service_quit_with_restart(&eframe::Frame::_new_kittest(), || {
                     panic!("restart must wait for durability")
                 }));
-            assert_eq!(h.app.quit_coordinator.save_failures, attempt);
+            assert_eq!(h.app.quit_coordinator.save_failures(), attempt);
             assert_eq!(
                 h.app.quit_coordinator.save_failure().is_some(),
                 attempt == MAX_QUIT_SAVE_ATTEMPTS,
@@ -1930,12 +1911,13 @@ mod tests {
                 );
             } else {
                 assert!(
-                    h.app.quit_coordinator.save_failure().is_none() && !h.app.quitting,
+                    h.app.quit_coordinator.save_failure().is_none()
+                        && !h.app.quit_coordinator.is_active(),
                     "Tab then Enter cancels"
                 );
             }
             assert!(
-                !h.app.quit_coordinator.save_waived,
+                !h.app.quit_coordinator.save_waived(),
                 "nothing quit without saving"
             );
             assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
@@ -1950,7 +1932,7 @@ mod tests {
             cause.contains("invalid workspace"),
             "cause names the failure: {cause}"
         );
-        assert!(h.app.pending_close, "dialog is requested");
+        assert!(h.app.confirm_close_wanted(), "dialog is requested");
         assert!(
             !h.app.quit_coordinator.blocks_input(),
             "the dialog must be usable"
@@ -1961,7 +1943,10 @@ mod tests {
                 .app
                 .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
         }
-        assert_eq!(h.app.quit_coordinator.save_failures, MAX_QUIT_SAVE_ATTEMPTS);
+        assert_eq!(
+            h.app.quit_coordinator.save_failures(),
+            MAX_QUIT_SAVE_ATTEMPTS
+        );
         assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
     }
 
@@ -1969,12 +1954,12 @@ mod tests {
     fn quit_without_saving_proceeds_and_preserves_the_file_on_disk() {
         let (mut h, path) = quit_with_unsaveable_workspace();
         h.app.resolve_quit_save_failure(true);
-        assert!(!h.app.pending_close);
+        assert!(!h.app.confirm_close_wanted());
         assert!(h
             .app
             .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
         assert!(
-            h.app.quit_coordinator.hide_requested,
+            h.app.quit_coordinator.hide_requested(),
             "quit proceeds to hide and exit"
         );
         assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
@@ -2108,7 +2093,7 @@ mod tests {
             .service_quit_with_restart(&eframe::Frame::_new_kittest(), || {
                 panic!("restart must wait for durability")
             }));
-        assert_eq!(h.app.quit_coordinator.save_failures, 1);
+        assert_eq!(h.app.quit_coordinator.save_failures(), 1);
         let cause = h
             .app
             .quit_coordinator
@@ -2116,8 +2101,11 @@ mod tests {
             .expect("a permanent block is not retried")
             .to_owned();
         assert!(cause.contains(&path.display().to_string()), "{cause}");
-        assert!(h.app.pending_close, "the save-failure dialog is requested");
-        assert!(!h.app.quit_coordinator.hide_requested);
+        assert!(
+            h.app.confirm_close_wanted(),
+            "the save-failure dialog is requested"
+        );
+        assert!(!h.app.quit_coordinator.hide_requested());
         assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt workspace");
     }
 
@@ -2154,16 +2142,19 @@ mod tests {
             response_file: Some("host-stop-reply".to_string()),
         });
         h.hidden_frame();
-        assert_eq!(h.app.quit_coordinator.reason, Some(ExitReason::HostStop));
+        assert_eq!(h.app.quit_coordinator.reason(), Some(ExitReason::HostStop));
         assert_eq!(
-            h.app.quit_coordinator.stop_reply.as_deref(),
+            h.app.quit_coordinator.stop_reply(),
             Some("host-stop-reply"),
             "the reply token reaches exit_host (stint 1430)"
         );
-        assert!(!h.app.pending_close, "host stop must not raise the dialog");
+        assert!(
+            !h.app.confirm_close_wanted(),
+            "host stop must not raise the dialog"
+        );
         assert!(h.app.quit_coordinator.save_failure().is_none());
         assert!(
-            h.app.quit_coordinator.hide_requested,
+            h.app.quit_coordinator.hide_requested(),
             "host stop must proceed to exit"
         );
         assert_eq!(
@@ -2207,7 +2198,7 @@ mod tests {
     /// Stint 1540: `plexi host stop` has nobody to answer a dialog. A save
     /// that keeps failing for a reason other than a boot-time block is
     /// retried the bounded number of times, then the quit goes on unsaved:
-    /// no `pending_close`, no dialog, and the exit records Unsaved for the
+    /// no dialog, and the exit records Unsaved for the
     /// stop reply. The file on disk is not rewritten.
     #[test]
     fn host_stop_failing_save_exits_unsaved_without_a_dialog() {
@@ -2223,18 +2214,21 @@ mod tests {
         h.app.request_quit(ExitReason::HostStop);
         let mut proceeded = false;
         for _ in 0..MAX_QUIT_SAVE_ATTEMPTS {
-            h.app.quit_coordinator.retry_at = None;
+            h.app.quit_coordinator.clear_retry();
             proceeded = h
                 .app
                 .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(()));
-            assert!(!h.app.pending_close, "no dialog for host stop");
+            assert!(!h.app.confirm_close_wanted(), "no dialog for host stop");
             assert!(
                 h.app.quit_coordinator.save_failure().is_none(),
                 "no dialog cause set"
             );
         }
         assert!(proceeded, "the quit goes on after the last failed save");
-        assert_eq!(h.app.quit_coordinator.save_failures, MAX_QUIT_SAVE_ATTEMPTS);
+        assert_eq!(
+            h.app.quit_coordinator.save_failures(),
+            MAX_QUIT_SAVE_ATTEMPTS
+        );
         assert_eq!(
             h.app.quit_workspace_durability(),
             WorkspaceDurability::Unsaved
@@ -2253,19 +2247,19 @@ mod tests {
         std::fs::write(&path, b"invalid workspace").unwrap();
         h.app.request_quit(ExitReason::HostStop);
         for _ in 0..2 {
-            h.app.quit_coordinator.retry_at = None;
+            h.app.quit_coordinator.clear_retry();
             assert!(!h
                 .app
                 .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
         }
         // The cause clears (the file becomes writable as a workspace).
         std::fs::remove_file(&path).unwrap();
-        h.app.quit_coordinator.retry_at = None;
+        h.app.quit_coordinator.clear_retry();
         assert!(h
             .app
             .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
         assert!(
-            !h.app.quit_coordinator.save_waived,
+            !h.app.quit_coordinator.save_waived(),
             "a recovered save is not waived"
         );
         assert_eq!(
@@ -2279,12 +2273,12 @@ mod tests {
         let (mut h, path) = quit_with_unsaveable_workspace();
         h.app.resolve_quit_save_failure(false);
         assert!(!h.app.quit_coordinator.is_active());
-        assert!(!h.app.quitting);
-        assert!(!h.app.pending_close);
+        assert!(!h.app.quit_coordinator.is_active());
+        assert!(!h.app.confirm_close_wanted());
         assert!(!h
             .app
             .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
-        assert!(!h.app.quit_coordinator.hide_requested);
+        assert!(!h.app.quit_coordinator.hide_requested());
         assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
     }
 
@@ -2305,7 +2299,10 @@ mod tests {
         h.run_frames(2);
         h.app.arm_destructive_dialogs_for_test();
         h.press_key(egui::Key::Q, egui::Modifiers::NONE);
-        assert!(h.app.quit_coordinator.save_waived, "Q quits without saving");
+        assert!(
+            h.app.quit_coordinator.save_waived(),
+            "Q quits without saving"
+        );
         assert!(h.app.quit_coordinator.save_failure().is_none());
     }
 
@@ -2317,15 +2314,15 @@ mod tests {
         test_restart_scheduler::take();
         let mut h = crate::testing::HostHarness::new();
         h.add_test_pane();
-        h.app.update_quit_pending = true;
+        h.app.quit_coordinator.queue_update_restart();
         h.run_frames(1);
         assert_eq!(test_restart_scheduler::take(), 1);
         assert_eq!(
-            h.app.quit_coordinator.reason,
+            h.app.quit_coordinator.reason(),
             Some(ExitReason::UpdateRestart)
         );
-        assert!(h.app.quit_coordinator.restart_scheduled);
-        assert!(h.app.quit_coordinator.hide_requested);
+        assert!(h.app.quit_coordinator.restart_scheduled());
+        assert!(h.app.quit_coordinator.hide_requested());
         // A second pass after the hide would call `exit_host`; stop here.
     }
 
@@ -2340,12 +2337,12 @@ mod tests {
                 "fixture error".into()
             )));
         assert!(!h.app.quit_coordinator.is_active());
-        assert!(!h.app.quit_coordinator.hide_requested);
-        assert!(!h.app.quitting);
+        assert!(!h.app.quit_coordinator.hide_requested());
+        assert!(!h.app.quit_coordinator.is_active());
         assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_ok());
         h.app.request_quit(ExitReason::WindowClosed);
         assert!(h.app.service_quit(&eframe::Frame::_new_kittest()));
-        assert!(h.app.quit_coordinator.hide_requested);
+        assert!(h.app.quit_coordinator.hide_requested());
     }
 
     #[test]
@@ -2369,7 +2366,7 @@ mod tests {
             .push(egui::ViewportEvent::Close);
         h.frame(input);
         assert_eq!(
-            h.app.quit_coordinator.reason,
+            h.app.quit_coordinator.reason(),
             Some(ExitReason::WindowClosed)
         );
         let output = h.last_full_output.as_ref().unwrap();
@@ -2381,8 +2378,8 @@ mod tests {
             .iter()
             .any(|command| matches!(command, egui::ViewportCommand::Close)));
         h.hidden_frame(); // saves and hides; cleanup needs a subsequent pass
-        assert!(h.app.quit_coordinator.saved);
-        assert!(h.app.quit_coordinator.hide_requested);
+        assert!(h.app.quit_coordinator.saved());
+        assert!(h.app.quit_coordinator.hide_requested());
     }
 
     #[test]
@@ -2401,7 +2398,7 @@ mod tests {
             !path.with_extension("json.prev").exists(),
             "the debounce must not create an extra generation before final save"
         );
-        assert!(h.app.quit_coordinator.hide_requested);
+        assert!(h.app.quit_coordinator.hide_requested());
     }
 
     #[cfg(unix)]
@@ -2423,7 +2420,7 @@ mod tests {
             });
             h.hidden_frame();
             assert!(h.app.quit_coordinator.is_active());
-            assert!(!h.app.quit_coordinator.hide_requested);
+            assert!(!h.app.quit_coordinator.hide_requested());
 
             let mut client = BufReader::new(client);
             let mut line = String::new();
@@ -2440,12 +2437,15 @@ mod tests {
             drop(client);
 
             let deadline = Instant::now() + timeout;
-            while h.app.quit_coordinator.restart_handoff.is_some() {
-                assert!(Instant::now() < deadline, "restart handoff was not serviced");
+            while h.app.quit_coordinator.restart_handoff_pending() {
+                assert!(
+                    Instant::now() < deadline,
+                    "restart handoff was not serviced"
+                );
                 h.hidden_frame();
                 std::thread::yield_now();
             }
-            assert_eq!(h.app.quit_coordinator.hide_requested, coordinator_ready);
+            assert_eq!(h.app.quit_coordinator.hide_requested(), coordinator_ready);
             assert_eq!(h.app.quit_coordinator.is_active(), coordinator_ready);
         }
     }

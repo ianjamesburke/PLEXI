@@ -129,19 +129,17 @@ impl PlexiApp {
         crate::platform::logging::time_drain("drain_pane_cmd_channel", || {
             self.drain_pane_cmd_channel()
         });
-        if self.shutdown_requested {
+        if let Some((reply, restart)) = self.quit_coordinator.take_host_stop() {
             crate::app::quit::trace("host_stop_received");
-            self.shutdown_requested = false;
-            self.request_quit(crate::app::quit::ExitReason::HostStop);
+            self.request_host_stop(reply, restart);
             return;
         }
         self.drain_update_events();
         crate::platform::logging::time_drain("refresh_command_palette", || {
             self.refresh_command_palette()
         });
-        if self.update_quit_pending {
+        if self.quit_coordinator.take_update_restart() {
             crate::app::quit::trace("update_restart_received");
-            self.update_quit_pending = false;
             // Plexi starts this quit itself, so it asks about unsaved work and
             // working agents the way Cmd+Q does (stint 1538).
             let reason = crate::app::quit::ExitReason::UpdateRestart;
@@ -1178,7 +1176,7 @@ impl PlexiApp {
         self.draw_config_notice(&ctx);
 
         // Quit confirmation overlay
-        if self.confirm_quit() && self.quit_press_count > 0 {
+        if self.confirm_quit() && self.quit_coordinator.keyboard_presses() > 0 {
             if self.keyboard_quit_timed_out(std::time::Instant::now()) {
                 self.reset_keyboard_quit_confirmation();
             } else {

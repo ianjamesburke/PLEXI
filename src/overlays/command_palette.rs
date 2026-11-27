@@ -4360,7 +4360,7 @@ mod tests {
         h.app.run_palette_command(PaletteCommand::RestartToUpdate);
         assert!(!h.app.show_changelog, "nothing ready, nothing offered");
         assert!(!h.app.update_confirm_prompt);
-        assert!(!h.app.update_quit_pending);
+        assert!(!h.app.quit_coordinator.update_restart_queued());
     }
 
     fn harness_with_ready_update() -> crate::testing::HostHarness {
@@ -4394,7 +4394,7 @@ mod tests {
         assert!(h.app.show_changelog, "the restart confirm opens");
         assert!(h.app.update_confirm_prompt);
         assert!(
-            !h.app.update_quit_pending,
+            !h.app.quit_coordinator.update_restart_queued(),
             "the first Enter must never restart"
         );
         assert_eq!(
@@ -4409,9 +4409,9 @@ mod tests {
         h.hidden_frame();
         assert_eq!(crate::app::quit::test_restart_scheduler::take(), 1);
         assert!(!h.app.update_confirm_prompt);
-        assert!(!h.app.update_quit_pending);
+        assert!(!h.app.quit_coordinator.update_restart_queued());
         assert_eq!(
-            h.app.quit_coordinator.reason,
+            h.app.quit_coordinator.reason(),
             Some(crate::app::quit::ExitReason::UpdateRestart)
         );
     }
@@ -4425,7 +4425,7 @@ mod tests {
         assert!(!h.app.update_confirm_prompt);
         assert!(!h.app.show_changelog);
         h.run_frames(2);
-        assert!(!h.app.update_quit_pending);
+        assert!(!h.app.quit_coordinator.update_restart_queued());
         assert!(!h.app.quit_coordinator.is_active());
         assert_eq!(h.app.update_status.ready(), Some("0.5.1"));
     }

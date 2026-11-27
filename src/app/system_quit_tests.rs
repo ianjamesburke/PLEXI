@@ -104,13 +104,13 @@ fn host_stop_preserves_unsaved_editor_text() {
         assert_eq!(buffer.text, "unsaved edits");
         assert!(buffer.dirty);
         assert!(crate::app::view_trait::View::unsaved_changes_dialog(editor).is_none());
-        assert!(!h.app.pending_close);
+        assert!(!h.app.confirm_close_wanted());
 
         h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
         assert_eq!(std::fs::read_to_string(document).unwrap(), "unsaved edits");
         inject_host_stop(&h, &root.path().join("host-stop-after-save.json"));
         h.hidden_frame();
-        assert_eq!(h.app.quit_coordinator.reason, Some(ExitReason::HostStop));
+        assert_eq!(h.app.quit_coordinator.reason(), Some(ExitReason::HostStop));
         assert!(h.app.quit_coordinator.is_active());
     }
 }
@@ -159,7 +159,7 @@ fn host_stop_refuses_an_edit_made_during_workspace_save_retry() {
     h.hidden_frame();
 
     assert!(!h.app.quit_coordinator.is_active());
-    assert!(!h.app.pending_close);
+    assert!(!h.app.confirm_close_wanted());
     assert_eq!(
         read_stop_reply(&reply_path)["error_code"],
         "unsaved_editor_changes"
@@ -199,10 +199,10 @@ fn discard(h: &mut HostHarness) {
 
 fn confirm_cmd_q(h: &mut HostHarness) {
     assert!(!h.app.quit_coordinator.is_active());
-    assert_eq!(h.app.quit_press_count, 1);
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 1);
     tap_cmd_q(h);
     assert!(!h.app.quit_coordinator.is_active());
-    assert_eq!(h.app.quit_press_count, 2);
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 2);
     tap_cmd_q(h);
     assert!(h.app.quit_coordinator.is_active());
 }
@@ -237,7 +237,7 @@ fn cmd_q_unsaved_answers_resume_quit() {
         }
         confirm_cmd_q(&mut h);
         assert_eq!(
-            h.app.quit_coordinator.reason,
+            h.app.quit_coordinator.reason(),
             Some(ExitReason::WindowClosed)
         );
         assert!(h.app.windows[0].panes.contains_key(&first));
@@ -311,8 +311,8 @@ fn cmd_q_unsaved_cancel_aborts_with_one_or_two_editors() {
         }
         let cancelled = h.app.focused_pane_id().unwrap();
         h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
-        assert!(!h.app.quitting && !h.app.quit_coordinator.is_active());
-        assert_eq!(h.app.quit_coordinator.reason, None);
+        assert!(!h.app.quit_coordinator.is_active());
+        assert_eq!(h.app.quit_coordinator.reason(), None);
         h.run_frames(2);
         assert!(h.app.focus_stack.is_empty());
         for pane in [Some(first), second].into_iter().flatten() {
@@ -357,7 +357,7 @@ fn cmd_q_unsaved_failed_save_keeps_the_decision_pending() {
     discard(&mut h);
     confirm_cmd_q(&mut h);
     assert_eq!(
-        h.app.quit_coordinator.reason,
+        h.app.quit_coordinator.reason(),
         Some(ExitReason::WindowClosed)
     );
     assert!(path.is_dir());
@@ -371,7 +371,7 @@ fn restart_to_update_keeps_its_reason_after_the_editor_answer() {
         .apply(crate::host::update_status::UpdateEvent::Ready {
             version: "9.9.9".into(),
         });
-    h.app.update_quit_pending = true;
+    h.app.quit_coordinator.queue_update_restart();
     h.run_frames(1);
     assert!(!h.app.quit_coordinator.is_active());
     h.run_frames(1);
@@ -382,7 +382,7 @@ fn restart_to_update_keeps_its_reason_after_the_editor_answer() {
         "Save did not resume restart"
     );
     assert_eq!(
-        h.app.quit_coordinator.reason,
+        h.app.quit_coordinator.reason(),
         Some(ExitReason::UpdateRestart)
     );
     assert_eq!(std::fs::read_to_string(path).unwrap(), "unsaved edits");
@@ -416,7 +416,7 @@ fn asks_about_unsaved_text(reason: SystemQuitReason) {
     );
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     h.run_frames(2);
-    assert!(!h.app.quitting && !h.app.quit_coordinator.is_active());
+    assert!(!h.app.quit_coordinator.is_active());
     assert!(h.app.windows[0].panes.contains_key(&pane));
     assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
     assert!(h.text_editor_mut(pane).open_buffer().dirty);
@@ -460,7 +460,7 @@ fn system_quit_with_nothing_unsaved_quits_without_asking() {
             "{reason:?}: the system request is not cancelled"
         );
         assert_eq!(
-            h.app.quit_coordinator.reason,
+            h.app.quit_coordinator.reason(),
             Some(ExitReason::WindowClosed)
         );
         assert!(

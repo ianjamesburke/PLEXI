@@ -3726,13 +3726,14 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     use crate::app::FocusKind;
 
     let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
 
     // Push ConfirmClose by activating its source state and running sync.
-    h.app.pending_close = true;
+    h.app.pane_close_dialog = Some(h.app.close_confirm_target_for(pane));
     h.app.sync_confirm_close_focus();
     assert!(
         h.app.focus_stack.contains(&FocusKind::ConfirmClose),
-        "ConfirmClose must be pushed when pending_close is true"
+        "ConfirmClose must be pushed while a pane close is asked"
     );
 
     // Push CommandPalette on top — now ConfirmClose is buried.
@@ -3748,7 +3749,7 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     );
 
     // Clear ConfirmClose source state — sync must remove the buried entry.
-    h.app.pending_close = false;
+    h.app.pane_close_dialog = None;
     h.app.sync_confirm_close_focus();
 
     assert!(
@@ -9921,7 +9922,7 @@ fn update_restart_asks_about_an_unsaved_buffer() {
     crate::app::quit::test_restart_scheduler::take();
     let (_dir, path, mut h, pane) = unsaved_editor_fixture();
     h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
-    h.app.update_quit_pending = true;
+    h.app.quit_coordinator.queue_update_restart();
     // On the old path the quit is already accepted after one frame (and a
     // further frame would run it), so check that first.
     h.run_frames(1);
@@ -9955,7 +9956,7 @@ fn update_restart_cancelled_then_restarted_after_discarding() {
     crate::app::quit::test_restart_scheduler::take();
     let (_dir, _path, mut h, pane) = unsaved_editor_fixture();
     h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
-    h.app.update_quit_pending = true;
+    h.app.quit_coordinator.queue_update_restart();
     // On the old path the quit is accepted after one frame; fail here rather
     // than let a later frame end the test process.
     h.run_frames(1);
@@ -9969,10 +9970,10 @@ fn update_restart_cancelled_then_restarted_after_discarding() {
     assert!(!h.app.quit_coordinator.is_active(), "cancel starts no quit");
     assert!(h.text_editor_mut(pane).open_buffer().dirty, "nothing lost");
     h.text_editor_mut(pane).test_discard_unsaved();
-    h.app.update_quit_pending = true;
+    h.app.quit_coordinator.queue_update_restart();
     h.run_frames(1);
     assert_eq!(
-        h.app.quit_coordinator.reason,
+        h.app.quit_coordinator.reason(),
         Some(crate::app::quit::ExitReason::UpdateRestart),
         "Restart again proceeds once nothing is unsaved"
     );
@@ -9984,10 +9985,10 @@ fn update_restart_cancelled_then_restarted_after_discarding() {
 fn update_restart_with_nothing_unsaved_starts_at_once() {
     crate::app::quit::test_restart_scheduler::take();
     let (_dir, _path, mut h, _pane) = unsaved_editor_fixture();
-    h.app.update_quit_pending = true;
+    h.app.quit_coordinator.queue_update_restart();
     h.run_frames(1);
     assert_eq!(
-        h.app.quit_coordinator.reason,
+        h.app.quit_coordinator.reason(),
         Some(crate::app::quit::ExitReason::UpdateRestart)
     );
 }
@@ -10016,13 +10017,13 @@ fn update_restart_with_a_working_agent_confirms_then_restarts() {
         .apply(crate::host::update_status::UpdateEvent::Ready {
             version: "9.9.9".into(),
         });
-    h.app.update_quit_pending = true;
+    h.app.quit_coordinator.queue_update_restart();
     h.run_frames(1);
-    assert!(h.app.pending_quit, "the working-agent confirmation opens");
+    assert!(h.app.quit_coordinator.confirming_agents(), "the working-agent confirmation opens");
     assert!(!h.app.quit_coordinator.is_active());
     h.app.resolve_quit_confirmation(true);
     assert_eq!(
-        h.app.quit_coordinator.reason,
+        h.app.quit_coordinator.reason(),
         Some(crate::app::quit::ExitReason::UpdateRestart),
         "confirming restarts into the update"
     );
@@ -10058,9 +10059,9 @@ fn working_agent_with_update_ready() -> HostHarness {
 fn update_restart_confirmed_after_the_update_went_away_does_nothing() {
     crate::app::quit::test_restart_scheduler::take();
     let mut h = working_agent_with_update_ready();
-    h.app.update_quit_pending = true;
+    h.app.quit_coordinator.queue_update_restart();
     h.run_frames(1);
-    assert!(h.app.pending_quit);
+    assert!(h.app.quit_coordinator.confirming_agents());
     h.app
         .update_status
         .apply(crate::host::update_status::UpdateEvent::UpToDate { checked_at: 1 });
@@ -10069,7 +10070,7 @@ fn update_restart_confirmed_after_the_update_went_away_does_nothing() {
         !h.app.quit_coordinator.is_active(),
         "nothing to restart into"
     );
-    assert!(!h.app.quitting);
+    assert!(!h.app.quit_coordinator.is_active());
 }
 
 /// Stint 1538 part 1: cancelling the working-agent confirmation raised by
@@ -10078,11 +10079,11 @@ fn update_restart_confirmed_after_the_update_went_away_does_nothing() {
 #[test]
 fn update_restart_confirmation_cancelled_leaves_an_ordinary_quit_plain() {
     let mut h = working_agent_with_update_ready();
-    h.app.update_quit_pending = true;
+    h.app.quit_coordinator.queue_update_restart();
     h.run_frames(1);
-    assert!(h.app.pending_quit);
+    assert!(h.app.quit_coordinator.confirming_agents());
     h.app.resolve_quit_confirmation(false);
-    assert!(!h.app.pending_quit, "cancel clears the confirmation");
+    assert!(!h.app.quit_coordinator.confirming_agents(), "cancel clears the confirmation");
     assert!(
         h.app.update_status.ready().is_some(),
         "the update stays ready"
@@ -10090,7 +10091,7 @@ fn update_restart_confirmation_cancelled_leaves_an_ordinary_quit_plain() {
     assert!(!h.app.prepare_user_quit(), "an ordinary quit asks too");
     h.app.resolve_quit_confirmation(true);
     assert_eq!(
-        h.app.quit_coordinator.reason,
+        h.app.quit_coordinator.reason(),
         Some(crate::app::quit::ExitReason::WindowClosed),
         "a later ordinary quit stays a quit"
     );
@@ -10147,7 +10148,7 @@ fn unsaved_dialog_desktop_quit_targets_dirty_pane() {
     );
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     h.run_frames(2);
-    assert!(!h.app.quitting);
+    assert!(!h.app.quit_coordinator.is_active());
     assert!(h.app.focus_stack.is_empty());
     assert!(h.text_editor_mut(pane).open_buffer().dirty);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
@@ -10178,8 +10179,8 @@ fn answer_keyboard_quit_editor_prompt(h: &mut HostHarness, answer: egui::Key) {
         h.app.focus_stack.top(),
         Some(crate::app::FocusKind::UnsavedChanges)
     );
-    assert!(!h.app.quitting);
-    assert_eq!(h.app.quit_press_count, 0);
+    assert!(!h.app.quit_coordinator.is_active());
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 0);
     h.app.arm_destructive_dialogs_for_test();
     let modifiers = if answer == egui::Key::S {
         egui::Modifiers::COMMAND
@@ -10200,23 +10201,23 @@ fn keyboard_quit_saves_editor_then_requires_normal_confirmation() {
     let (_dir, path, mut h, pane) = unsaved_editor_fixture();
     h.app.config.confirm_quit = Some(true);
     tap_keyboard_quit(&mut h);
-    let clean_quit_count = h.app.quit_press_count;
+    let clean_quit_count = h.app.quit_coordinator.keyboard_presses();
     assert_eq!(clean_quit_count, 1);
-    h.app.quit_last_press = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+    h.app.quit_coordinator.age_keyboard_presses(std::time::Duration::from_secs(2));
     h.run_frames(1);
-    assert_eq!(h.app.quit_press_count, 0);
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 0);
 
     h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
     answer_keyboard_quit_editor_prompt(&mut h, egui::Key::S);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "unsaved edits");
     assert!(
-        !h.app.quitting,
+        !h.app.quit_coordinator.is_active(),
         "Save must wait for the normal quit confirmation"
     );
-    assert_eq!(h.app.quit_press_count, clean_quit_count);
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), clean_quit_count);
     tap_keyboard_quit(&mut h);
-    assert_eq!(h.app.quit_press_count, 2);
-    assert!(!h.app.quitting);
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 2);
+    assert!(!h.app.quit_coordinator.is_active());
     tap_keyboard_quit(&mut h);
     assert!(h.app.quit_coordinator.is_active());
 }
@@ -10229,11 +10230,11 @@ fn keyboard_quit_discards_editor_then_requires_normal_confirmation() {
     answer_keyboard_quit_editor_prompt(&mut h, egui::Key::D);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
     assert!(!h.text_editor_mut(pane).open_buffer().dirty);
-    assert!(!h.app.quitting);
-    assert_eq!(h.app.quit_press_count, 1);
+    assert!(!h.app.quit_coordinator.is_active());
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 1);
     tap_keyboard_quit(&mut h);
-    assert_eq!(h.app.quit_press_count, 2);
-    assert!(!h.app.quitting);
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 2);
+    assert!(!h.app.quit_coordinator.is_active());
     tap_keyboard_quit(&mut h);
     assert!(h.app.quit_coordinator.is_active());
 }
@@ -10245,8 +10246,8 @@ fn keyboard_quit_cancel_at_editor_prompt_keeps_dirty_editor_open() {
     h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
     answer_keyboard_quit_editor_prompt(&mut h, egui::Key::Escape);
     assert!(h.app.focus_stack.is_empty());
-    assert!(!h.app.quitting);
-    assert_eq!(h.app.quit_press_count, 0);
+    assert!(!h.app.quit_coordinator.is_active());
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 0);
     assert_eq!(h.app.focused_pane_id(), Some(pane));
     let buffer = h.text_editor_mut(pane).open_buffer();
     assert!(buffer.dirty);
@@ -10264,10 +10265,10 @@ fn keyboard_quit_cancel_at_normal_confirmation_keeps_resolved_editor_open() {
         h.app.config.confirm_quit = Some(true);
         h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
         answer_keyboard_quit_editor_prompt(&mut h, answer);
-        assert_eq!(h.app.quit_press_count, 1);
+        assert_eq!(h.app.quit_coordinator.keyboard_presses(), 1);
         h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
-        assert!(!h.app.quitting);
-        assert_eq!(h.app.quit_press_count, 0);
+        assert!(!h.app.quit_coordinator.is_active());
+        assert_eq!(h.app.quit_coordinator.keyboard_presses(), 0);
         assert_eq!(h.app.focused_pane_id(), Some(pane));
         let buffer = h.text_editor_mut(pane).open_buffer();
         assert!(!buffer.dirty);
@@ -10275,7 +10276,7 @@ fn keyboard_quit_cancel_at_normal_confirmation_keeps_resolved_editor_open() {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
 
         tap_keyboard_quit(&mut h);
-        assert_eq!(h.app.quit_press_count, 1, "a new quit starts at one press");
+        assert_eq!(h.app.quit_coordinator.keyboard_presses(), 1, "a new quit starts at one press");
     }
 }
 
@@ -10291,7 +10292,7 @@ fn keyboard_quit_with_confirmation_disabled_exits_after_editor_answer() {
         answer_keyboard_quit_editor_prompt(&mut h, answer);
         assert!(!h.app.confirm_quit());
         assert!(h.app.quit_coordinator.is_active(), "answer={answer:?}");
-        assert_eq!(h.app.quit_press_count, 0);
+        assert_eq!(h.app.quit_coordinator.keyboard_presses(), 0);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
     }
 }
@@ -10356,10 +10357,10 @@ fn editor_gate_keyboard_quit_waits_for_unsaved_conflict_then_resumes() {
     h.text_editor_mut(pane).test_check_disk();
     h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
     assert!(
-        !h.app.quitting,
+        !h.app.quit_coordinator.is_active(),
         "quit must ask before losing a conflicted buffer"
     );
-    assert_eq!(h.app.quit_press_count, 0);
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 0);
     assert_eq!(gate_note_semantics(&h, pane)["source_text"], "my poem");
     // macOS can also send a viewport close for the same Cmd+Q. The open
     // editor prompt still owns the decision.
@@ -10371,8 +10372,8 @@ fn editor_gate_keyboard_quit_waits_for_unsaved_conflict_then_resumes() {
         .events
         .push(egui::ViewportEvent::Close);
     h.frame(input);
-    assert!(!h.app.quitting);
-    assert_eq!(h.app.quit_press_count, 0);
+    assert!(!h.app.quit_coordinator.is_active());
+    assert_eq!(h.app.quit_coordinator.keyboard_presses(), 0);
     h.app.arm_destructive_dialogs_for_test();
     h.press_key(egui::Key::D, egui::Modifiers::NONE);
     assert!(h.app.windows[0].panes.contains_key(&pane));
@@ -10383,7 +10384,7 @@ fn editor_gate_keyboard_quit_waits_for_unsaved_conflict_then_resumes() {
     assert!(h.app.focus_stack.is_empty());
     assert!(h.app.quit_coordinator.is_active());
     assert_eq!(
-        h.app.quit_coordinator.reason,
+        h.app.quit_coordinator.reason(),
         Some(crate::app::quit::ExitReason::WindowClosed)
     );
 }
@@ -10461,7 +10462,7 @@ fn editor_gate_quit_requires_a_fresh_enter_for_each_dirty_editor() {
             h.app.focus_stack.top(),
             Some(crate::app::FocusKind::UnsavedChanges)
         );
-        assert!(!h.app.quitting);
+        assert!(!h.app.quit_coordinator.is_active());
     }
 
     h.frame(enter(false, false));
@@ -20282,7 +20283,7 @@ fn pane_close_keys_keep_host_and_restore_zoom() {
     h.press_key(egui::Key::W, egui::Modifiers::COMMAND);
     assert_eq!(h.app.windows.len(), 1);
     assert!(h.app.windows[0].panes.is_empty());
-    assert!(!h.app.quitting);
+    assert!(!h.app.quit_coordinator.is_active());
 }
 
 #[test]
@@ -20424,11 +20425,11 @@ fn working_agent_quit_requires_confirmation_and_cancel_preserves_panes() {
             session_id: None,
         }));
     assert!(!h.app.prepare_user_quit());
-    assert!(h.app.pending_close);
+    assert!(h.app.confirm_close_wanted());
     h.run_frames(2);
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
-    assert!(!h.app.pending_close);
-    assert!(!h.app.quitting);
+    assert!(!h.app.confirm_close_wanted());
+    assert!(!h.app.quit_coordinator.is_active());
     assert_eq!(h.pane_count(), pane_count);
     #[cfg(unix)]
     assert_eq!(
@@ -20449,7 +20450,7 @@ fn pane_close_chord_dismisses_modal_without_closing_pane() {
     h.press_key(egui::Key::W, egui::Modifiers::COMMAND);
     assert!(!h.app.command_palette_open());
     assert!(h.app.windows[0].panes.contains_key(&pane));
-    assert!(!h.app.pending_close);
+    assert!(!h.app.confirm_close_wanted());
 }
 
 #[test]
@@ -20534,13 +20535,13 @@ fn working_agent_window_close_and_keyboard_quit_share_confirmation() {
         } else {
             h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
         }
-        assert!(h.app.pending_quit);
-        assert!(!h.app.quitting);
+        assert!(h.app.quit_coordinator.confirming_agents());
+        assert!(!h.app.quit_coordinator.is_active());
         h.run_frames(2);
         h.app.arm_destructive_dialogs_for_test();
         h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
-        assert!(h.app.quitting);
-        assert!(!h.app.pending_quit);
+        assert!(h.app.quit_coordinator.is_active());
+        assert!(!h.app.quit_coordinator.confirming_agents());
     }
 }
 

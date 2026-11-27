@@ -14,7 +14,6 @@ fn screenshot_quit_save_failure_dialog() {
         for _ in 0..crate::app::quit::MAX_QUIT_SAVE_ATTEMPTS {
             assert!(!app.persist_quit_state());
         }
-        app.pending_close = true;
     });
     h.run_steps(4);
     h.with_app(|app| {
@@ -43,7 +42,6 @@ fn seed_quit_save_failure(h: &mut PlexiUiHarness) {
         for _ in 0..crate::app::quit::MAX_QUIT_SAVE_ATTEMPTS {
             assert!(!app.persist_quit_state());
         }
-        app.pending_close = true;
     });
     h.run_steps(4);
     assert!(h.with_app(|app| app.quit_coordinator.save_failure().is_some()));
@@ -58,9 +56,8 @@ fn quit_without_saving_takes_only_a_fresh_real_q() {
     h.harness().key_down(egui::Key::Q);
     h.run_steps(1);
     seed_quit_save_failure(&mut h);
-    let open = |h: &mut PlexiUiHarness| {
-        h.with_app(|app| app.quit_coordinator.save_failure().is_some())
-    };
+    let open =
+        |h: &mut PlexiUiHarness| h.with_app(|app| app.quit_coordinator.save_failure().is_some());
     h.harness().key_down(egui::Key::Q);
     h.run_steps(3);
     assert!(open(&mut h), "a held Q quit without saving");
@@ -98,7 +95,8 @@ fn quit_save_failure_tab_then_space_or_enter_does_not_quit() {
     h.run_steps(3);
     // Quit without saving clears the failure and keeps quitting.
     assert!(
-        h.with_app(|app| app.quit_coordinator.save_failure().is_some() || !app.quitting),
+        h.with_app(|app| app.quit_coordinator.save_failure().is_some()
+            || !app.quit_coordinator.is_active()),
         "Tab then Enter quit without saving"
     );
 }
@@ -117,8 +115,14 @@ fn quit_save_failure_lists_cancel_first_and_enter_cancels() {
     h.harness().key_press(egui::Key::Enter);
     h.run_steps(3);
     h.with_app(|app| {
-        assert!(app.quit_coordinator.save_failure().is_none(), "Enter decided the dialog");
-        assert!(!app.quitting, "Enter must cancel, not quit");
+        assert!(
+            app.quit_coordinator.save_failure().is_none(),
+            "Enter decided the dialog"
+        );
+        assert!(
+            !app.quit_coordinator.is_active(),
+            "Enter must cancel, not quit"
+        );
     });
 }
 
@@ -166,7 +170,9 @@ fn screenshot_working_agent_quit_confirmation() {
     h.step();
     h.save_screenshot(&evidence_png!())
         .expect("render quit confirmation");
-    assert!(h.with_app(|app| app.pending_quit && !app.quitting));
+    assert!(h.with_app(
+        |app| app.quit_coordinator.confirming_agents() && !app.quit_coordinator.is_active()
+    ));
     println!("Screenshot saved to {}", evidence_png!());
 }
 
@@ -236,7 +242,7 @@ fn close_confirm_dialog_names_the_pane() {
     h.run_steps(3);
     h.save_screenshot(&evidence_png!("")).unwrap();
     assert_eq!(
-        h.with_app(|app| app.close_confirm_target.clone().map(|t| (t.pane, t.label))),
+        h.with_app(|app| app.pane_close_dialog.clone().map(|t| (t.pane, t.label))),
         Some((a, "Build log".to_string())),
         "the dialog records the pane it asked about"
     );
@@ -252,9 +258,7 @@ fn open_close_dialog() -> (PlexiUiHarness, u64, u64) {
 }
 
 /// As [`open_close_dialog`], running `before` just ahead of the dialog.
-fn open_close_dialog_after(
-    before: impl FnOnce(&mut PlexiUiHarness),
-) -> (PlexiUiHarness, u64, u64) {
+fn open_close_dialog_after(before: impl FnOnce(&mut PlexiUiHarness)) -> (PlexiUiHarness, u64, u64) {
     let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
     let a = add_focused_pane(&mut h);
     let b = add_focused_pane(&mut h);
@@ -274,7 +278,10 @@ fn open_close_dialog_after(
         app.dispatch_host_action(crate::host::keys::Action::ClosePane, &ctx);
     });
     h.run_steps(3);
-    assert!(h.with_app(|app| app.pending_close), "the dialog is open");
+    assert!(
+        h.with_app(|app| app.confirm_close_wanted()),
+        "the dialog is open"
+    );
     (h, a, b)
 }
 
@@ -303,7 +310,9 @@ fn close_pane_takes_only_a_fresh_real_enter() {
     });
     h.run_steps(3);
     let open = |h: &mut PlexiUiHarness| {
-        h.with_app(|app| app.pending_close && app.windows[app.active_window].panes.len() == 2)
+        h.with_app(|app| {
+            app.confirm_close_wanted() && app.windows[app.active_window].panes.len() == 2
+        })
     };
     assert!(open(&mut h), "the dialog is open");
     arm_destructive(&mut h);
@@ -325,9 +334,8 @@ fn close_pane_takes_only_a_fresh_real_enter() {
     h.harness().key_press(egui::Key::Enter);
     h.run_steps(3);
     assert!(
-        h.with_app(
-            |app| !app.pending_close && !app.windows[app.active_window].panes.contains_key(&a)
-        ),
+        h.with_app(|app| !app.confirm_close_wanted()
+            && !app.windows[app.active_window].panes.contains_key(&a)),
         "a fresh real Enter closes the pane"
     );
 }
@@ -457,7 +465,7 @@ fn focused_close_row_takes_only_a_fresh_real_enter() {
     );
     let open = move |h: &mut PlexiUiHarness| {
         h.with_app(|app| {
-            app.pending_close && app.windows[app.active_window].panes.contains_key(&a)
+            app.confirm_close_wanted() && app.windows[app.active_window].panes.contains_key(&a)
         })
     };
     h.harness().key_down(egui::Key::Enter);
@@ -548,7 +556,7 @@ fn close_pane_is_disabled_during_the_arm_delay() {
     h.harness().key_press(egui::Key::Enter);
     h.run_steps(3);
     assert!(
-        h.with_app(|app| app.pending_close
+        h.with_app(|app| app.confirm_close_wanted()
             && app.windows[app.active_window].panes.contains_key(&a)),
         "an Enter during the delay closed the pane"
     );
@@ -898,7 +906,7 @@ fn tab_in_close_dialog_cycles_its_actions_and_enter_activates_cancel() {
     h.harness().key_press(egui::Key::Enter);
     h.run_steps(3);
     assert!(
-        !h.with_app(|app| app.pending_close),
+        !h.with_app(|app| app.confirm_close_wanted()),
         "Cancel closed the dialog"
     );
     let open: Vec<u64> = h.with_app(|app| {
@@ -943,7 +951,7 @@ fn close_dialog_cancel_keeps_focus_across_row_and_stack_reflow() {
         h.harness().key_press(egui::Key::Enter);
         h.run_steps(3);
         assert!(
-            !h.with_app(|app| app.pending_close),
+            !h.with_app(|app| app.confirm_close_wanted()),
             "Enter left the dialog open"
         );
         let mut open: Vec<u64> = h.with_app(|app| {
@@ -986,7 +994,7 @@ fn enter_on_tab_focused_close_closes_and_esc_still_cancels() {
     let (mut h, _, _) = open_close_dialog();
     h.harness().key_press(egui::Key::Escape);
     h.run_steps(3);
-    assert!(!h.with_app(|app| app.pending_close), "Esc cancels");
+    assert!(!h.with_app(|app| app.confirm_close_wanted()), "Esc cancels");
 }
 
 // ── Text-entry dialogs on the kit (stint 1559) ─────────────────────────────

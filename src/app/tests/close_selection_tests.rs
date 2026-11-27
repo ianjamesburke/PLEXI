@@ -359,7 +359,7 @@ fn close_selected_asks_confirm_close_once_per_pane() {
         "three panes selected"
     );
     close_shortcut(&mut h);
-    assert!(h.app.pending_close, "first pane asks");
+    assert!(h.app.confirm_close_wanted(), "first pane asks");
     assert_eq!(open(&h), vec![a, b, c, d]);
     for which in ["second", "third"] {
         let before = open(&h).len();
@@ -370,7 +370,7 @@ fn close_selected_asks_confirm_close_once_per_pane() {
             before - 1,
             "the armed Enter closes one pane"
         );
-        assert!(h.app.pending_close, "{which} pane asks");
+        assert!(h.app.confirm_close_wanted(), "{which} pane asks");
     }
     let before = open(&h);
     tap_enter(&mut h);
@@ -379,10 +379,10 @@ fn close_selected_asks_confirm_close_once_per_pane() {
         before,
         "a quick Enter closed the third pane before its own delay"
     );
-    assert!(h.app.pending_close, "the third pane still asks");
+    assert!(h.app.confirm_close_wanted(), "the third pane still asks");
     let third = h
         .app
-        .close_confirm_target
+        .pane_close_dialog
         .clone()
         .expect("the third dialog names its pane");
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
@@ -582,11 +582,14 @@ fn focus_leaving_a_confirm_close_pause_dismisses_the_dialog() {
     h.app.config.confirm_close = Some(true);
     select(&mut h, &[a, b]);
     close_shortcut(&mut h);
-    assert!(h.app.pending_close, "a asks first");
+    assert!(h.app.confirm_close_wanted(), "a asks first");
     h.app.focus_pane_in_strip(c);
     h.run_frames(2);
     assert!(h.app.host.pane_close_batch().is_none());
-    assert!(!h.app.pending_close, "the batch's dialog went with it");
+    assert!(
+        !h.app.confirm_close_wanted(),
+        "the batch's dialog went with it"
+    );
     h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
     h.run_frames(2);
     assert_eq!(open(&h), vec![a, b, c, d], "nothing closed");

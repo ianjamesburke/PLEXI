@@ -1211,27 +1211,30 @@ impl PlexiApp {
 
     pub(crate) fn ask_to_close_pane(&mut self, target: CloseConfirmTarget) {
         log::info!("close_confirm: asking pane={}", target.pane);
-        self.close_confirm_target = Some(target);
-        self.pending_close = true;
+        self.pane_close_dialog = Some(target);
     }
 
-    /// Reconcile the confirm-close focus layer with `pending_close`. Mirrors
-    /// `sync_notification_modal_focus` — the source of truth is a boolean
-    /// toggled from multiple paths, and the focus stack must follow it
-    /// deterministically each frame.
+    /// Reconcile the confirm-close focus layer with the dialogs it hosts: a
+    /// pane's "Close pane?" and the quit coordinator's questions. The focus
+    /// stack follows them deterministically each frame.
     pub(crate) fn sync_confirm_close_focus(&mut self) {
         self.dismiss_close_dialog_for_gone_pane();
-        let wanted = self.pending_close || self.quit_coordinator.save_failure().is_some();
+        let wanted = self.confirm_close_wanted();
         self.reconcile_focus_layer(FocusKind::ConfirmClose, wanted);
+    }
+
+    /// Whether the confirm-close layer has a dialog to show.
+    pub(crate) fn confirm_close_wanted(&self) -> bool {
+        self.pane_close_dialog.is_some() || self.quit_coordinator.asks_user()
     }
 
     /// A single "Close pane?" whose pane was closed another way closes too,
     /// and says so (stint 1500). The multi-select close owns its own dialog.
     fn dismiss_close_dialog_for_gone_pane(&mut self) {
-        if !self.pending_close || self.pending_quit || self.host.pane_close_batch().is_some() {
+        if self.quit_coordinator.confirming_agents() || self.host.pane_close_batch().is_some() {
             return;
         }
-        let Some(target) = self.close_confirm_target.clone() else {
+        let Some(target) = self.pane_close_dialog.clone() else {
             return;
         };
         if self.find_pane_in_any_window(target.pane).is_some() {
@@ -1241,8 +1244,7 @@ impl PlexiApp {
             "close_confirm: pane={} closed another way; dialog dismissed",
             target.pane
         );
-        self.pending_close = false;
-        self.close_confirm_target = None;
+        self.pane_close_dialog = None;
         self.notify_close_target_gone(&target.label);
     }
 

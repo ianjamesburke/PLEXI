@@ -135,8 +135,7 @@ impl PlexiApp {
                     // The "Close pane?" dialog acts on whatever is focused, so
                     // it must not outlive the batch that asked for this pane.
                     if matches!(wait, CloseBatchWait::ConfirmClose { .. }) {
-                        self.pending_close = false;
-                        self.close_confirm_target = None;
+                        self.pane_close_dialog = None;
                     }
                     let batch = self.host.take_pane_close_batch();
                     log::info!(
@@ -227,8 +226,7 @@ impl PlexiApp {
         }
         if self.confirm_close() {
             self.focus_close_batch_pane(win_idx, tile);
-            self.close_confirm_target = Some(self.close_confirm_target_for(pane));
-            self.pending_close = true;
+            self.pane_close_dialog = Some(self.close_confirm_target_for(pane));
             return Some(CloseBatchWait::ConfirmClose {
                 pane,
                 confirmed: false,
@@ -351,7 +349,9 @@ impl PlexiApp {
             CloseBatchWait::ConfirmClose {
                 confirmed: true, ..
             } => WaitOutcome::Close,
-            CloseBatchWait::ConfirmClose { .. } if self.pending_close => WaitOutcome::Pending,
+            CloseBatchWait::ConfirmClose { .. } if self.pane_close_dialog.is_some() => {
+                WaitOutcome::Pending
+            }
             CloseBatchWait::ContextClose(_) if self.pending_context_close.is_some() => {
                 WaitOutcome::Pending
             }
