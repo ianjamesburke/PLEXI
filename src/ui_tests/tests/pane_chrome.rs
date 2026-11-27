@@ -1319,7 +1319,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
             .expect("context_state");
         assert_eq!(
             p_blocked.status,
-            crate::host::context_state::ContextStatus::Blocked
+            crate::protocol::ContextStatus::Blocked
         );
         assert_eq!(
             p_blocked.status_summary_badge().as_deref(),
@@ -1334,7 +1334,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
             .expect("context_state");
         assert_eq!(
             p_needs_you.status,
-            crate::host::context_state::ContextStatus::NeedsYou
+            crate::protocol::ContextStatus::NeedsYou
         );
         assert_eq!(
             p_needs_you.status_summary_badge().as_deref(),
@@ -1349,7 +1349,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
             .expect("context_state");
         assert_eq!(
             p_error.status,
-            crate::host::context_state::ContextStatus::Error
+            crate::protocol::ContextStatus::Error
         );
         assert_eq!(p_error.status_summary_badge().as_deref(), Some("[1 ERROR]"));
 

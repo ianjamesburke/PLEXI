@@ -343,7 +343,7 @@ fn sidebar_renders_and_numbers_master_contexts_only() {
 
         // Rollup intact: the child is still observable from its parent,
         // which is what the Portal tile paints.
-        let parent_state = crate::host::context_state::ContextState::compute(
+        let parent_state = crate::host::context_state::compute_context_state(
             app.router.get(0).context_id,
             app.router.as_slice(),
             &app.windows,

@@ -6726,12 +6726,12 @@ pub(crate) fn restore_workspace(
     // immediately reflect child Blocked / NeedsYou / Idle states on startup.
     let subcontext_states: std::collections::HashMap<
         u64,
-        crate::host::context_state::ContextState,
+        crate::protocol::ContextState,
     > = contexts
         .iter()
         .filter(|c| c.parent_id.is_some())
         .map(|c| {
-            let state = crate::host::context_state::ContextState::compute(
+            let state = crate::host::context_state::compute_context_state(
                 c.context_id,
                 &contexts,
                 &windows,

@@ -173,7 +173,7 @@ impl PlexiApp {
                     }
                 }
                 if let Some(portal) = pane.as_portal() {
-                    let status = crate::host::context_state::ContextState::compute(
+                    let status = crate::host::context_state::compute_context_state(
                         portal.target_context_id,
                         self.router.as_slice(),
                         &self.windows,
@@ -181,7 +181,7 @@ impl PlexiApp {
                     .status;
                     let effective_status = if matches!(
                         status,
-                        crate::host::context_state::ContextStatus::Idle
+                        crate::protocol::ContextStatus::Idle
                     ) {
                         portal
                             .context_state
@@ -192,20 +192,20 @@ impl PlexiApp {
                         status
                     };
                     return match effective_status {
-                        crate::host::context_state::ContextStatus::NeedsYou => {
+                        crate::protocol::ContextStatus::NeedsYou => {
                             Some(crate::protocol::AgentState::NeedsYou)
                         }
-                        crate::host::context_state::ContextStatus::Blocked => {
+                        crate::protocol::ContextStatus::Blocked => {
                             Some(crate::protocol::AgentState::Blocked)
                         }
-                        crate::host::context_state::ContextStatus::Working => {
+                        crate::protocol::ContextStatus::Working => {
                             Some(crate::protocol::AgentState::Working)
                         }
-                        crate::host::context_state::ContextStatus::Done => {
+                        crate::protocol::ContextStatus::Done => {
                             Some(crate::protocol::AgentState::Idle)
                         }
-                        crate::host::context_state::ContextStatus::Error
-                        | crate::host::context_state::ContextStatus::Idle => None,
+                        crate::protocol::ContextStatus::Error
+                        | crate::protocol::ContextStatus::Idle => None,
                     };
                 }
                 None
@@ -246,22 +246,22 @@ impl PlexiApp {
     /// `Blocked` (amber), or `Error` (danger).
     #[cfg(test)]
     pub(crate) fn sidebar_context_indicator_color(&self, ctx_id: u64) -> Option<egui::Color32> {
-        let state = crate::host::context_state::ContextState::compute(
+        let state = crate::host::context_state::compute_context_state(
             ctx_id,
             self.router.as_slice(),
             &self.windows,
         );
         match state.status {
-            crate::host::context_state::ContextStatus::NeedsYou => {
+            crate::protocol::ContextStatus::NeedsYou => {
                 Some(crate::ui::activity::needs_you_color(&self.colors))
             }
-            crate::host::context_state::ContextStatus::Blocked => {
+            crate::protocol::ContextStatus::Blocked => {
                 Some(crate::ui::activity::blocked_color(&self.colors))
             }
-            crate::host::context_state::ContextStatus::Error => Some(self.colors.danger),
-            crate::host::context_state::ContextStatus::Working
-            | crate::host::context_state::ContextStatus::Done
-            | crate::host::context_state::ContextStatus::Idle => None,
+            crate::protocol::ContextStatus::Error => Some(self.colors.danger),
+            crate::protocol::ContextStatus::Working
+            | crate::protocol::ContextStatus::Done
+            | crate::protocol::ContextStatus::Idle => None,
         }
     }
 }

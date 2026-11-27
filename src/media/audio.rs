@@ -36,6 +36,16 @@ pub struct AudioDeviceInfo {
     pub default: bool,
 }
 
+impl From<AudioDeviceInfo> for crate::protocol::AudioDeviceWire {
+    fn from(info: AudioDeviceInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            default: info.default,
+        }
+    }
+}
+
 /// Failure modes of the production audio paths. Both variants are raised only
 /// by `cfg(not(test))` code — the test-build stubs never touch hardware, so
 /// under `cfg(test)` this enum is deliberately uninhabited.

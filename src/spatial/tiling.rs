@@ -455,7 +455,7 @@ pub struct PortalPreview {
     pub notification_count: usize,
     pub windows: Vec<MiniWindow>,
     pub window_count: usize,
-    pub status: crate::host::context_state::ContextStatus,
+    pub status: crate::protocol::ContextStatus,
     pub status_summary: Option<String>,
 }
 
@@ -468,7 +468,7 @@ impl Default for PortalPreview {
             notification_count: 0,
             windows: Vec::new(),
             window_count: 0,
-            status: crate::host::context_state::ContextStatus::Idle,
+            status: crate::protocol::ContextStatus::Idle,
             status_summary: None,
         }
     }
