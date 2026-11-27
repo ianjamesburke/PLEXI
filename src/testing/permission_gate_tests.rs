@@ -1860,7 +1860,7 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
 fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants() {
     use crate::workspace::secrets::{
         self,
-        manager::{mutate_secret, secret_inventory, Mutation, SecretTarget},
+        manager::{mutate_secret, Mutation, SecretInventory, SecretTarget},
     };
 
     let _mesh = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
@@ -1884,8 +1884,8 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             crate::release::ReleaseFeature::FolderSecrets,
         ]);
     let mon = monitor();
-    let sys_store = secrets::system_store();
-    let fld_store = secrets::folder_store();
+    let sys_store = secrets::system_store(crate::broker::custody::TEST_HOST);
+    let fld_store = secrets::folder_store(crate::broker::custody::TEST_HOST);
 
     sys_store
         .set(
@@ -2028,9 +2028,27 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
         assert!(!body.to_string().contains(canary));
     }
 
-    // 3. CLI context-scope enforcement and inventory scoping from context A:
-    let _ctx_guard = crate::cli::workspace::set_test_pane_context_root(&root_a);
-    let inv_a = secret_inventory(&root_a, false).unwrap();
+    // 3. Default inventory trusts the pane's live scope on the host.
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
+    let peer = crate::broker::caller::PeerWitness::for_live_pids(&[human_pid]);
+    let mut list = |cwd: &std::path::Path| {
+        let request = serde_json::json!({"type":"secret_list","cwd":cwd});
+        let reply = crate::testing::socket_policy_tests::send(
+            &mut h, request.clone(), Some(peer.clone()),
+        );
+        assert_eq!(reply["error_code"], "permission_denied", "{reply}");
+        let error = reply["error"].as_str().unwrap();
+        let pending = monitor.host_records().pending().into_iter()
+            .find(|row| row.tool == "secret.list" && error.contains(&row.pending_request_id))
+            .unwrap();
+        monitor.approve_pending(&pending.pending_request_id, crate::broker::gate::ApprovalChoice::Once)
+            .unwrap();
+        let reply = crate::testing::socket_policy_tests::send(&mut h, request, Some(peer.clone()));
+        serde_json::from_value::<SecretInventory>(reply.clone()).unwrap_or_else(|error| {
+            panic!("missing inventory: {error}: {reply}")
+        })
+    };
+    let inv_a = list(&root_a).entries;
     assert!(inv_a.iter().any(|e| e.name == "SECRET_A"));
     assert!(inv_a.iter().any(|e| e.name == "FOLDER_SECRET_A"));
     assert!(
@@ -2040,20 +2058,15 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             || e.name == "FOLDER_SECRET_NESTED"),
         "context A inventory must not include sibling or nested context secrets"
     );
-    assert!(
-        secret_inventory(&root_b, false)
-            .unwrap()
-            .iter()
-            .all(|entry| entry.scope == "global"),
-        "listing sibling context B must retain only global names"
-    );
-    assert!(
-        secret_inventory(&nested_b, false)
-            .unwrap()
-            .iter()
-            .all(|entry| entry.scope == "global"),
-        "listing nested context B must retain only global names"
-    );
+    for target in [&root_b, &nested_b] {
+        let inventory = list(target);
+        assert!(inventory.entries.iter().all(|entry| entry.scope == "global"));
+        assert!(matches!(
+            inventory.skipped.as_slice(),
+            [crate::workspace::secrets::manager::SkippedSecrets::OutsidePaneContext { path, .. }]
+                if path == target
+        ));
+    }
     for target in [&root_b, &nested_b] {
         for (op, tool) in [
             ("read", "secret.read"),

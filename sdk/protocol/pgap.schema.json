@@ -3242,6 +3242,50 @@
         },
         {
           "additionalProperties": false,
+          "description": "Names-only inventory relative to the socket caller's scope.",
+          "properties": {
+            "cwd": {
+              "type": "string"
+            },
+            "global": {
+              "default": false,
+              "type": "boolean"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "secret_list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cwd",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A boolean OpenRouter configuration check, with no credential value.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "openrouter_secret_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Read a workspace or global secret for the host-classified socket caller.",
           "properties": {
             "global": {

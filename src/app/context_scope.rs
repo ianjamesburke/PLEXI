@@ -13,8 +13,9 @@ pub(crate) fn check_context_scope(ctx_root: PathBuf, target_dir: &Path) -> Resul
             crate::app::registry::resolve_agent_lookup_workspace_root(&target_canon)
                 .map(|ws| crate::platform::path::canonical_or_self(&ws))
                 .is_some_and(|ws| ws.starts_with(&ctx_root) && ws != ctx_root);
+        let host = crate::broker::custody::host_process()?;
         let nested_folder_secret = crate::workspace::secrets::list_folder_secrets(
-            crate::workspace::secrets::folder_store(),
+            crate::workspace::secrets::folder_store(&host),
         )
         .iter()
         .any(|meta| {

@@ -1746,7 +1746,7 @@ fn send_to_socket_connected(
     let socket_path = match payload["type"].as_str() {
         Some(
             "secret_get" | "secret_set" | "secret_delete" | "folder_secret_exec" | "run_secrets" | "folder_secret_read"
-            | "folder_secret_set" | "folder_secret_rm",
+            | "folder_secret_set" | "folder_secret_rm" | "pane_secret_list" | "secret_list",
         ) => resolve_secret_socket(),
         _ => resolve_command_socket().ok_or_else(|| {
             log::warn!("cli: {NO_COMMAND_SOCKET}");

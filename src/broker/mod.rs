@@ -155,7 +155,7 @@ pub(crate) const SECRET_SOCKET_ORIGIN: &str = "host.command_socket";
 pub(crate) fn command_secret_tool(tool: &str) -> bool {
     matches!(
         tool,
-        "secret.get" | "secret.exec" | "secret.read" | "secret.set" | "secret.delete"
+        "secret.get" | "secret.exec" | "secret.read" | "secret.set" | "secret.delete" | "secret.list"
     )
 }
 
@@ -165,7 +165,8 @@ impl TargetType {
         // desktop grant is claimed on retry, while socket calls own their click.
         self == Self::Secret
             && command_secret_tool(tool)
-            && (!matches!(tool, "secret.read" | "secret.exec") || trust_origin == SECRET_SOCKET_ORIGIN)
+            && (!matches!(tool, "secret.read" | "secret.exec" | "secret.list")
+                || trust_origin == SECRET_SOCKET_ORIGIN)
     }
 }
 

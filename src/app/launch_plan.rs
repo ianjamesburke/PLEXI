@@ -3062,7 +3062,7 @@ mod tests {
         let home = dirs::home_dir().expect("home");
         let sentinel = "PLEXI_HOME_ONLY_SENTINEL_1632";
         crate::workspace::secrets::set_folder_secret(
-            crate::workspace::secrets::folder_store(),
+            crate::workspace::secrets::folder_store(crate::broker::custody::TEST_HOST),
             sentinel,
             &home,
             "home-only-1632",
@@ -3202,7 +3202,7 @@ mod tests {
         let _ = launched.pane;
 
         crate::workspace::secrets::remove_folder_secret(
-            crate::workspace::secrets::folder_store(),
+            crate::workspace::secrets::folder_store(crate::broker::custody::TEST_HOST),
             sentinel,
             &home,
         )
@@ -3716,7 +3716,7 @@ mod tests {
         )
         .unwrap();
         let account = crate::workspace::secrets::keychain_workspace_name(&cfg.id, "GRANT_1632");
-        crate::workspace::secrets::system_store()
+        crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
             .set(&account, "not-for-output")
             .unwrap();
         id

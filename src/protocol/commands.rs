@@ -1270,6 +1270,17 @@ pub enum HostRequest {
         context: String,
         response_file: String,
     },
+    /// Names-only inventory relative to the socket caller's scope.
+    SecretList {
+        cwd: std::path::PathBuf,
+        #[serde(default)]
+        global: bool,
+        response_file: String,
+    },
+    /// A boolean OpenRouter configuration check, with no credential value.
+    OpenrouterSecretStatus {
+        response_file: String,
+    },
     /// Read a workspace or global secret for the host-classified socket caller.
     SecretGet {
         name: String,

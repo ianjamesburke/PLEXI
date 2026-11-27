@@ -968,6 +968,24 @@ Names-only explicit-context inventory, admitted for the host-stamped peer.
 | `context` | `string` | yes |
 | `response_file` | `string` | yes |
 
+### `secret_list`
+
+Names-only inventory relative to the socket caller's scope.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `cwd` | `string` | yes |
+| `global` | `boolean` | no |
+| `response_file` | `string` | yes |
+
+### `openrouter_secret_status`
+
+A boolean OpenRouter configuration check, with no credential value.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
 ### `secret_get`
 
 Read a workspace or global secret for the host-classified socket caller.

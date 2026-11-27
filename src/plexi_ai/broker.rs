@@ -360,7 +360,8 @@ fn resolve_openrouter_api_key(workspace_root: Option<&std::path::Path>) -> Resul
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
-        let store = crate::workspace::secrets::system_store();
+        let host = crate::broker::custody::host_process()?;
+        let store = crate::workspace::secrets::system_store(&host);
         match resolve_openrouter_api_key_from_store(
             API_KEY_NAME,
             workspace_root,

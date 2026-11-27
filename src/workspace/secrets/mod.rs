@@ -141,7 +141,7 @@ pub fn reserved_secret_error(workspace_id: &str) -> String {
 /// the developer's real credential store is its own problem, so the same rule
 /// applies there.
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-pub fn system_store() -> &'static dyn SecretStore {
+pub fn system_store(_host: &crate::broker::custody::HostProcess) -> &'static dyn SecretStore {
     #[cfg(all(target_os = "macos", not(test)))]
     {
         static STORE: store::MacKeychain = store::MacKeychain;
@@ -208,10 +208,8 @@ impl SecretStore for LinuxUserStore {
 
 /// Store for folder-scoped secrets. Tests get a process-local memory store.
 /// Production uses the OS keychain, or on Linux the Secret Service with a
-/// labeled encrypted-file fallback. This is not [`system_store`]: the Linux
-/// workspace [`system_store`] is an unencrypted file, and folder secrets must
-/// not use it.
-pub fn folder_store() -> &'static dyn SecretStore {
+/// labeled encrypted-file fallback.
+pub fn folder_store(_host: &crate::broker::custody::HostProcess) -> &'static dyn SecretStore {
     #[cfg(test)]
     {
         static STORE: std::sync::OnceLock<InMemoryKeychain> = std::sync::OnceLock::new();
@@ -223,7 +221,7 @@ pub fn folder_store() -> &'static dyn SecretStore {
     }
     #[cfg(all(not(test), any(target_os = "macos", windows)))]
     {
-        system_store()
+        system_store(_host)
     }
 }
 

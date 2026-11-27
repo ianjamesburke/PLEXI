@@ -348,39 +348,34 @@ fn guard_fails_for_default_or_unsafe_in_custody() {
 }
 
 #[test]
-fn workspace_secret_commands_never_open_a_store() {
+fn cli_commands_never_open_a_secret_store() {
     struct StoreGuard;
     impl<'ast> Visit<'ast> for StoreGuard {
-        fn visit_path(&mut self, path: &'ast syn::Path) {
-            assert!(!matches!(
-                last_ident(path).as_deref(),
-                Some("system_store" | "folder_store")
-            ));
-            syn::visit::visit_path(self, path);
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            if !is_cfg_test(&item.attrs) {
+                syn::visit::visit_item_mod(self, item);
+            }
         }
+
+        fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+            if !is_cfg_test(&item.attrs) {
+                syn::visit::visit_item_fn(self, item);
+            }
+        }
+
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            assert!(!matches!(
+                ident.to_string().as_str(),
+                "host_process" | "system_store" | "folder_store" | "platform_folder_store"
+                    | "global_secret_stored" | "reconcile_index_with_keychain"
+                    | "secret_inventory" | "inventory_for_caller" | "backend_label"
+            ), "CLI must request secret store operations from the host: {ident}");
+        }
+
     }
-    let (_, source, _) = crate_sources()
-        .into_iter()
-        .find(|(p, _, _)| p == "cli/workspace.rs")
-        .unwrap();
-    let file = syn::parse_file(&source).unwrap();
-    for name in [
-        "workspace_secret_get",
-        "workspace_secret_set",
-        "workspace_secret_delete",
-        "folder_secret_exec",
-        "folder_secret_read",
-        "folder_secret_set",
-        "folder_secret_rm",
-    ] {
-        let function = file
-            .items
-            .iter()
-            .find_map(|item| match item {
-                syn::Item::Fn(f) if f.sig.ident == name => Some(f),
-                _ => None,
-            })
-            .unwrap();
-        StoreGuard.visit_block(&function.block);
+    for (path, source, test) in crate_sources() {
+        if path.starts_with("cli/") && !test {
+            StoreGuard.visit_file(&syn::parse_file(&source).unwrap());
+        }
     }
 }

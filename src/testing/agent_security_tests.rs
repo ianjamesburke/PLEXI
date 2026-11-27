@@ -41,7 +41,7 @@ fn secret_get_from_a_pane_files_a_click_approval_not_a_value() {
     let root = h.workspace_root();
     write_workspace(&root, "ws-0788-get", &[]);
     let canary = "secret-get-canary-0788-a1";
-    crate::workspace::secrets::system_store()
+    crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
         .set("plexi:ws-0788-get:API_KEY_0788", canary)
         .unwrap();
 
@@ -74,7 +74,7 @@ fn secret_get_without_pane_ancestry_asks_as_external() {
     let root = h.workspace_root();
     write_workspace(&root, "ws-0788-nopane", &[]);
     let canary = "secret-get-canary-0788-b2";
-    crate::workspace::secrets::system_store()
+    crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
         .set("plexi:ws-0788-nopane:API_KEY_0788", canary)
         .unwrap();
     let get = serde_json::json!({"type":"secret_get","name":"API_KEY_0788","workspace_root":root});
@@ -96,14 +96,14 @@ fn agent_pane_env_carries_no_workspace_or_folder_secrets() {
         crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
     let root = h.workspace_root();
     write_workspace(&root, "ws-0788-env", &["INJECTED_0788"]);
-    crate::workspace::secrets::system_store()
+    crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
         .set(
             "plexi:ws-0788-env:INJECTED_0788",
             "workspace-env-canary-0788",
         )
         .unwrap();
     crate::workspace::secrets::set_folder_secret(
-        crate::workspace::secrets::folder_store(),
+        crate::workspace::secrets::folder_store(crate::broker::custody::TEST_HOST),
         "FOLDER_0788",
         &root,
         "folder-env-canary-0788",
@@ -389,13 +389,13 @@ fn caller_context_is_answered_from_the_verified_peer() {
         before.get("workspace_error"),
         Some(&serde_json::Value::Null)
     );
-    set_folder_secret(folder_store(), "NESTED", &nested, "fixture").unwrap();
+    set_folder_secret(folder_store(crate::broker::custody::TEST_HOST), "NESTED", &nested, "fixture").unwrap();
     let bound = ask(&mut h, &[pid], &nested, "ctx-bound.json");
     assert!(bound["workspace_error"]
         .as_str()
         .unwrap()
         .starts_with("permission_denied:"));
-    remove_folder_secret(folder_store(), "NESTED", &nested).unwrap();
+    remove_folder_secret(folder_store(crate::broker::custody::TEST_HOST), "NESTED", &nested).unwrap();
 
     let outside = ask(&mut h, &[999_999], root.parent().unwrap(), "ctx-out.json");
     assert!(outside["workspace_error"].is_null());
@@ -700,11 +700,11 @@ fn restored_routine_grant_drops_its_saved_secret_eligibility() {
     let (desktop, routine) = {
         let mut h = HostHarness::from_profile_dir(profile.path());
         write_workspace(&root, "ws-1666", &[injected]);
-        crate::workspace::secrets::system_store()
+        crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
             .set(&format!("plexi:ws-1666:{injected}"), injected_value)
             .unwrap();
         crate::workspace::secrets::set_folder_secret(
-            crate::workspace::secrets::folder_store(),
+            crate::workspace::secrets::folder_store(crate::broker::custody::TEST_HOST),
             folder,
             &root,
             folder_value,

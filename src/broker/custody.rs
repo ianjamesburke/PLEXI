@@ -13,7 +13,7 @@
 //!   is private to this module. [`install_for_host_start`] mints the only
 //!   production token, and `main` calls it once, on the host start path
 //!   (`broker::custody_guard_tests` pins both facts by parsing the source).
-//!   The accessor is `pub(in crate::broker)`.
+//!   The accessor also supplies proof to the host's user-secret stores.
 //! - A process that never ran host start (every CLI command, including
 //!   `plexi host start`, which launches a separate host process) has no token,
 //!   so `PermissionMonitor::for_profile` and the store loaders fail loudly at
@@ -81,19 +81,22 @@ pub(crate) fn install_for_host_start() -> Result<(), CustodyAlreadyInstalled> {
 
 /// The host token, or [`NotHostProcess`] in any other process.
 #[cfg(not(test))]
-pub(in crate::broker) fn host_process() -> Result<HostProcess, NotHostProcess> {
+pub(crate) fn host_process() -> Result<HostProcess, NotHostProcess> {
     installed().get().copied().ok_or(NotHostProcess)
 }
 
 /// Tests run as the host unless a test opts into the CLI role with
 /// [`as_cli_process`] on its own thread.
 #[cfg(test)]
-pub(in crate::broker) fn host_process() -> Result<HostProcess, NotHostProcess> {
+pub(crate) fn host_process() -> Result<HostProcess, NotHostProcess> {
     if CLI_ROLE.with(|role| role.get()) {
         return Err(NotHostProcess);
     }
     Ok(HostProcess::for_test())
 }
+
+#[cfg(test)]
+pub(crate) const TEST_HOST: &HostProcess = &HostProcess::for_test();
 
 #[cfg(test)]
 thread_local! {

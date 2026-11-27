@@ -426,7 +426,7 @@ pub(crate) fn account_name(folder: &Path, name: &str) -> String {
     format!("{ACCOUNT_PREFIX}{}:{name}", hex_encode(&path_bytes(folder)))
 }
 
-fn parse_account(account: &str) -> Option<FolderSecretMeta> {
+pub(super) fn parse_account(account: &str) -> Option<FolderSecretMeta> {
     let rest = account.strip_prefix(ACCOUNT_PREFIX)?;
     let (hex, name) = rest.rsplit_once(':')?;
     if !valid_env_name(name) {
@@ -755,7 +755,7 @@ mod tests {
         std::fs::create_dir(&folder_b).unwrap();
         let name = "PLEXI_FOLDER_SECRET_BUILD_ENV";
         let value = "folder-secret-unit-value-9f3c2a";
-        set_folder_secret(super::super::folder_store(), name, &folder_a, value).unwrap();
+        set_folder_secret(super::super::folder_store(crate::broker::custody::TEST_HOST), name, &folder_a, value).unwrap();
         let inside = crate::host::shell::build_env(Some(&folder_a));
         assert_eq!(inside.get(name).map(String::as_str), Some(value));
         assert!(!profile
@@ -1016,7 +1016,7 @@ mod lazy_startup_tests {
         std::fs::create_dir(&folder).unwrap();
         super::super::init_workspace(&folder, &crate::config::workspace_channel_dir()).unwrap();
         set_folder_secret(
-            super::super::folder_store(),
+            super::super::folder_store(crate::broker::custody::TEST_HOST),
             "DEMO_TOKEN_0957",
             &folder,
             "test-only",
@@ -1045,7 +1045,7 @@ mod lazy_startup_tests {
                 "disabled bindings and withheld agent secrets need names only"
             );
         }
-        super::super::folder_store()
+        super::super::folder_store(crate::broker::custody::TEST_HOST)
             .delete(&account_name(&folder, "DEMO_TOKEN_0957"))
             .unwrap();
     }

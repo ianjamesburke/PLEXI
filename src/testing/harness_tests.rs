@@ -5058,7 +5058,7 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
     let dir = crate::platform::path::canonical_or_self(tmp.path());
     let sentinel = "PLEXI_FOLDER_SENTINEL_1666";
     crate::workspace::secrets::set_folder_secret(
-        crate::workspace::secrets::folder_store(),
+        crate::workspace::secrets::folder_store(crate::broker::custody::TEST_HOST),
         sentinel,
         &dir,
         "folder-1666",
@@ -5079,7 +5079,7 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
         format!("fallback = true\n\n[terminal.env]\ninject = [\"{injected}\"]\n"),
     )
     .expect("secrets.toml");
-    crate::workspace::secrets::system_store()
+    crate::workspace::secrets::system_store(crate::broker::custody::TEST_HOST)
         .set(&format!("plexi:ws-1666-fresh:{injected}"), "workspace-1666")
         .expect("in-memory system store");
     let (view, received) = add_pipe_test_pane(&mut h, 0);
@@ -5368,7 +5368,7 @@ fn plugin_terminal_routes_all_admit_the_requesting_view() {
     let dir = crate::platform::path::canonical_or_self(tmp.path());
     let sentinel = "PLEXI_FOLDER_SENTINEL_1666_ROUTES";
     crate::workspace::secrets::set_folder_secret(
-        crate::workspace::secrets::folder_store(),
+        crate::workspace::secrets::folder_store(crate::broker::custody::TEST_HOST),
         sentinel,
         &dir,
         "routes-1666",

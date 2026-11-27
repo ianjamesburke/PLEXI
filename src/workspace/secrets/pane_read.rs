@@ -31,10 +31,10 @@ impl SecretScope {
         }
     }
 
-    pub(crate) fn store(&self) -> &'static dyn super::SecretStore {
+    pub(crate) fn store(&self, host: &crate::broker::custody::HostProcess) -> &'static dyn super::SecretStore {
         match self {
-            Self::Folder { .. } => super::folder_store(),
-            _ => super::system_store(),
+            Self::Folder { .. } => super::folder_store(host),
+            _ => super::system_store(host),
         }
     }
 
