@@ -19,7 +19,6 @@ pub enum ReleaseFeature {
     CloudAccount,
     FolderSecrets,
     WasmApps,
-    PageGrid,
     TreeAtlas,
     Marketplace,
     Daw,
@@ -41,7 +40,6 @@ impl ReleaseFeature {
         Self::CloudAccount,
         Self::FolderSecrets,
         Self::WasmApps,
-        Self::PageGrid,
         Self::TreeAtlas,
         Self::Marketplace,
         Self::Daw,
@@ -64,7 +62,6 @@ impl ReleaseFeature {
             Self::CloudAccount => "cloud_account",
             Self::FolderSecrets => "folder_secrets",
             Self::WasmApps => "wasm_apps",
-            Self::PageGrid => "page_grid",
             Self::TreeAtlas => "tree_atlas",
             Self::Marketplace => "marketplace",
             Self::Daw => "daw",
@@ -91,7 +88,6 @@ impl ReleaseFeature {
             Self::CloudAccount => "Optional cloud account and history retention",
             Self::FolderSecrets => "Secrets injected per folder, with grants",
             Self::WasmApps => "Native Rust/WASM plugins and the GPU canvas",
-            Self::PageGrid => "Reserved page-grid experiment",
             Self::TreeAtlas => "Context tree overview at root with Cmd+Escape",
             Self::Marketplace => "App marketplace: browse, search, publish",
             Self::Daw => "DAW engine proof of concept",
@@ -156,7 +152,6 @@ impl ReleaseFeature {
             ],
             Self::CliOperations
             | Self::WasmApps
-            | Self::PageGrid
             | Self::TreeAtlas
             | Self::Daw
             | Self::MediaIo

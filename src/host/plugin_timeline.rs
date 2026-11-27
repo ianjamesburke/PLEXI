@@ -1,4 +1,4 @@
-//! App event timeline + undo checkpoints.
+//! App event timeline.
 //!
 //! Plugins own state. The host owns the timeline. Agents never own plugin state.
 //!
@@ -7,8 +7,8 @@
 //!   schema) before emitting on them.
 //! - **App events**: every accepted `HostRequest::EmitEvent` enters the
 //!   timeline. Malformed events are rejected and logged, never recorded.
-//! - **Undo checkpoints**: events carrying rollback metadata
-//!   (`rollback_token`) also create a reversible checkpoint.
+//! - **Rollback metadata**: an event carrying a `rollback_token` keeps it on
+//!   its record and is stamped with a checkpoint id.
 //! - **Subscriptions**: actors subscribe to streams only through the broker
 //!   (`TargetType::PluginEventStream`); accepted events are routed into a
 //!   delivery queue keyed by trigger mode.
@@ -92,44 +92,6 @@ pub struct EmittedEvent {
     pub suggested_trigger: Option<TriggerMode>,
 }
 
-// ── Undo checkpoints ─────────────────────────────────────────────────────────
-
-/// Lifecycle of a reversible checkpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CheckpointStatus {
-    /// Reversible — no rollback attempted.
-    Active,
-    /// Verification sent to the plugin, awaiting `RollbackVerifyResult`.
-    Verifying,
-    /// Rollback instruction (`RollbackApply`) was issued to the plugin.
-    RolledBack,
-    /// The plugin's current revision no longer matches `revision_after`;
-    /// rollback is blocked pending conflict resolution.
-    Conflict,
-}
-
-/// One reversible mutation in the host undo timeline. Field set matches the
-/// spec's checkpoint metadata block exactly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UndoCheckpoint {
-    pub checkpoint_id: String,
-    pub actor_type: PluginEventActor,
-    pub actor_id: String,
-    pub plugin_id: String,
-    pub pane_id: u64,
-    pub resource_scope: String,
-    pub resource_id: String,
-    pub revision_before: Option<String>,
-    pub revision_after: String,
-    pub rollback_token: String,
-    pub changed_resources: Vec<String>,
-    pub summary: String,
-    /// RFC 3339.
-    pub created_at: String,
-    pub status: CheckpointStatus,
-}
-
 /// Outcome of recording an event.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventOutcome {
@@ -138,57 +100,6 @@ pub struct EventOutcome {
     pub checkpoint_id: Option<String>,
     /// Number of subscription deliveries queued for this event.
     pub deliveries_queued: usize,
-}
-
-/// Why a rollback request did not proceed.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg(test)]
-pub enum RollbackError {
-    UnknownCheckpoint(String),
-    AlreadyRolledBack(String),
-    Conflict(String),
-    /// A verification round-trip for this checkpoint is already in flight.
-    VerifyInFlight(String),
-}
-
-#[cfg(test)]
-impl std::fmt::Display for RollbackError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnknownCheckpoint(id) => write!(f, "unknown checkpoint '{id}'"),
-            Self::AlreadyRolledBack(id) => write!(f, "checkpoint '{id}' already rolled back"),
-            Self::Conflict(id) => write!(f, "checkpoint '{id}' is in conflict"),
-            Self::VerifyInFlight(id) => write!(f, "checkpoint '{id}' verification in flight"),
-        }
-    }
-}
-
-/// What the host should send the plugin to start a rollback: a revision
-/// verification question.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg(test)]
-pub struct RollbackVerifyRequest {
-    pub checkpoint_id: String,
-    pub resource_id: String,
-    pub expected_revision: String,
-}
-
-/// The host's decision after the plugin reports its current revision.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg(test)]
-pub enum RollbackVerdict {
-    /// Revisions match — instruct the plugin to roll back.
-    Apply {
-        checkpoint_id: String,
-        resource_id: String,
-        rollback_token: String,
-    },
-    /// Revisions diverged — rollback blocked, checkpoint marked conflict.
-    Blocked {
-        checkpoint_id: String,
-        expected_revision: String,
-        current_revision: String,
-    },
 }
 
 // ── Subscriptions ────────────────────────────────────────────────────────────
@@ -349,7 +260,7 @@ pub(crate) const EVENT_RING_CAP: usize = 4096;
 
 // ── PluginTimeline ──────────────────────────────────────────────────────────────
 
-/// Host-owned timeline of plugin events, undo checkpoints, subscriptions, and
+/// Host-owned timeline of plugin events, subscriptions, and
 /// pending deliveries. Shared as `Arc<Mutex<PluginTimeline>>`: production panes
 /// all point at [`global()`], harness tests construct isolated instances.
 #[derive(Debug, Default)]
@@ -364,7 +275,6 @@ pub struct PluginTimeline {
     events: VecDeque<PluginEventRecord>,
     /// Ring capacity; `0` (the `Default`) means [`EVENT_RING_CAP`].
     event_cap: usize,
-    checkpoints: Vec<UndoCheckpoint>,
     subscriptions: Vec<SubscriptionRecord>,
     deliveries: VecDeque<EventDelivery>,
     pane_locations: HashMap<u64, u64>,
@@ -563,33 +473,16 @@ impl PluginTimeline {
             created_at: crate::host::event_log::now_timestamp(),
         };
 
-        // Rollback metadata → undo checkpoint.
-        let checkpoint_id = record.rollback_token.clone().map(|token| {
+        // Rollback metadata → checkpoint id.
+        let checkpoint_id = record.rollback_token.as_ref().map(|_| {
             self.next_checkpoint_seq += 1;
             let checkpoint_id = format!("ckpt-{}", self.next_checkpoint_seq);
-            let checkpoint = UndoCheckpoint {
-                checkpoint_id: checkpoint_id.clone(),
-                actor_type: record.actor,
-                actor_id: record.actor_id.clone(),
-                plugin_id: record.plugin_id.clone(),
-                pane_id: record.pane_id,
-                resource_scope: record.resource_scope.clone(),
-                resource_id: record.resource_id.clone(),
-                revision_before: record.revision_before.clone(),
-                revision_after: record.revision_after.clone(),
-                rollback_token: token,
-                changed_resources: record.changed_resources.clone(),
-                summary: record.summary.clone(),
-                created_at: record.created_at.clone(),
-                status: CheckpointStatus::Active,
-            };
             log::info!(
                 "plugin_timeline: undo checkpoint {checkpoint_id} for '{}' ({} -> {})",
                 record.plugin_id,
                 record.revision_before.as_deref().unwrap_or("?"),
                 record.revision_after
             );
-            self.checkpoints.push(checkpoint);
             checkpoint_id
         });
 
@@ -809,111 +702,6 @@ impl PluginTimeline {
     #[cfg(test)]
     pub fn events(&self) -> &VecDeque<PluginEventRecord> {
         &self.events
-    }
-
-    // ── Undo timeline ───────────────────────────────────────────────────────
-
-    /// All undo checkpoints (read-only, oldest first).
-    #[cfg(test)]
-    pub fn checkpoints(&self) -> &[UndoCheckpoint] {
-        &self.checkpoints
-    }
-
-    /// Checkpoints for one plugin, newest first — the listing API for history UI.
-    #[cfg(test)]
-    pub fn checkpoints_for_plugin(&self, plugin_id: &str) -> Vec<&UndoCheckpoint> {
-        let mut out: Vec<&UndoCheckpoint> = self
-            .checkpoints
-            .iter()
-            .filter(|c| c.plugin_id == plugin_id)
-            .collect();
-        out.reverse();
-        out
-    }
-
-    /// Begin a rollback: transition the checkpoint to `Verifying` and return
-    /// the revision-verification question the host must send the plugin.
-    /// Broker gating (`TargetType::UndoCheckpoint`) is the caller's duty —
-    /// see `WASM plugin runtime::request_rollback`.
-    #[cfg(test)]
-    pub fn begin_rollback(
-        &mut self,
-        checkpoint_id: &str,
-    ) -> Result<RollbackVerifyRequest, RollbackError> {
-        let Some(ckpt) = self
-            .checkpoints
-            .iter_mut()
-            .find(|c| c.checkpoint_id == checkpoint_id)
-        else {
-            return Err(RollbackError::UnknownCheckpoint(checkpoint_id.to_string()));
-        };
-        match ckpt.status {
-            CheckpointStatus::RolledBack => {
-                return Err(RollbackError::AlreadyRolledBack(checkpoint_id.to_string()))
-            }
-            CheckpointStatus::Conflict => {
-                return Err(RollbackError::Conflict(checkpoint_id.to_string()))
-            }
-            CheckpointStatus::Verifying => {
-                return Err(RollbackError::VerifyInFlight(checkpoint_id.to_string()))
-            }
-            CheckpointStatus::Active => {}
-        }
-        ckpt.status = CheckpointStatus::Verifying;
-        log::info!(
-            "plugin_timeline: rollback verification started for {checkpoint_id} \
-             (expect rev '{}')",
-            ckpt.revision_after
-        );
-        Ok(RollbackVerifyRequest {
-            checkpoint_id: ckpt.checkpoint_id.clone(),
-            resource_id: ckpt.resource_id.clone(),
-            expected_revision: ckpt.revision_after.clone(),
-        })
-    }
-
-    /// Resolve the plugin's answer to a rollback verification. Revision match →
-    /// `Apply` (checkpoint marked `RolledBack`); mismatch → `Blocked`
-    /// (checkpoint marked `Conflict`).
-    #[cfg(test)]
-    pub fn resolve_rollback_verify(
-        &mut self,
-        checkpoint_id: &str,
-        current_revision: &str,
-    ) -> Result<RollbackVerdict, RollbackError> {
-        let Some(ckpt) = self
-            .checkpoints
-            .iter_mut()
-            .find(|c| c.checkpoint_id == checkpoint_id)
-        else {
-            return Err(RollbackError::UnknownCheckpoint(checkpoint_id.to_string()));
-        };
-        if ckpt.status != CheckpointStatus::Verifying {
-            return Err(RollbackError::UnknownCheckpoint(format!(
-                "{checkpoint_id} (no verification in flight)"
-            )));
-        }
-        if ckpt.revision_after == current_revision {
-            ckpt.status = CheckpointStatus::RolledBack;
-            log::info!("plugin_timeline: rollback verified for {checkpoint_id} — issuing apply");
-            Ok(RollbackVerdict::Apply {
-                checkpoint_id: ckpt.checkpoint_id.clone(),
-                resource_id: ckpt.resource_id.clone(),
-                rollback_token: ckpt.rollback_token.clone(),
-            })
-        } else {
-            ckpt.status = CheckpointStatus::Conflict;
-            log::warn!(
-                "plugin_timeline: rollback blocked for {checkpoint_id} — plugin at rev \
-                 '{current_revision}', checkpoint expects '{}'",
-                ckpt.revision_after
-            );
-            Ok(RollbackVerdict::Blocked {
-                checkpoint_id: ckpt.checkpoint_id.clone(),
-                expected_revision: ckpt.revision_after.clone(),
-                current_revision: current_revision.to_string(),
-            })
-        }
     }
 
     /// Current pane ownership is host-established; records outlive ephemeral panes.
@@ -1418,7 +1206,6 @@ mod tests {
         assert_eq!(rec.pane_id, 7);
         assert_eq!(rec.actor_id, "chess", "actor_id defaults to plugin_id");
         assert_eq!(rec.resource_scope, "game");
-        assert!(t.checkpoints().is_empty());
     }
 
     #[test]
@@ -1428,92 +1215,10 @@ mod tests {
         e.rollback_token = Some("undo-abc".to_string());
         e.changed_resources = vec!["game-abc".to_string()];
         let out = t.record_event(CTX, "chess", 7, e).unwrap();
-        let ckpt_id = out
-            .checkpoint_id
-            .expect("rollback metadata must checkpoint");
-        let ckpt = &t.checkpoints()[0];
-        assert_eq!(ckpt.checkpoint_id, ckpt_id);
-        assert_eq!(ckpt.rollback_token, "undo-abc");
-        assert_eq!(ckpt.revision_before.as_deref(), Some("rev-12"));
-        assert_eq!(ckpt.revision_after, "rev-13");
-        assert_eq!(ckpt.resource_id, "game-abc");
-        assert_eq!(ckpt.status, CheckpointStatus::Active);
-        assert_eq!(t.checkpoints_for_plugin("chess").len(), 1);
-        assert!(t.checkpoints_for_plugin("other").is_empty());
-    }
-
-    #[test]
-    fn rollback_verify_match_applies_and_marks_rolled_back() {
-        let mut t = timeline_with_stream();
-        let mut e = emitted("move.played");
-        e.rollback_token = Some("undo-abc".to_string());
-        let ckpt_id = t
-            .record_event(CTX, "chess", 7, e)
-            .unwrap()
-            .checkpoint_id
-            .unwrap();
-
-        let verify = t.begin_rollback(&ckpt_id).unwrap();
-        assert_eq!(verify.expected_revision, "rev-13");
-        assert_eq!(verify.resource_id, "game-abc");
-
-        let verdict = t.resolve_rollback_verify(&ckpt_id, "rev-13").unwrap();
-        match verdict {
-            RollbackVerdict::Apply { rollback_token, .. } => {
-                assert_eq!(rollback_token, "undo-abc")
-            }
-            other => panic!("expected Apply, got {other:?}"),
-        }
-        assert_eq!(t.checkpoints()[0].status, CheckpointStatus::RolledBack);
-        assert!(matches!(
-            t.begin_rollback(&ckpt_id),
-            Err(RollbackError::AlreadyRolledBack(_))
-        ));
-    }
-
-    #[test]
-    fn rollback_verify_mismatch_blocks_and_marks_conflict() {
-        let mut t = timeline_with_stream();
-        let mut e = emitted("move.played");
-        e.rollback_token = Some("undo-abc".to_string());
-        let ckpt_id = t
-            .record_event(CTX, "chess", 7, e)
-            .unwrap()
-            .checkpoint_id
-            .unwrap();
-
-        t.begin_rollback(&ckpt_id).unwrap();
-        let verdict = t.resolve_rollback_verify(&ckpt_id, "rev-99").unwrap();
-        assert!(matches!(verdict, RollbackVerdict::Blocked { .. }));
-        assert_eq!(t.checkpoints()[0].status, CheckpointStatus::Conflict);
-        assert!(matches!(
-            t.begin_rollback(&ckpt_id),
-            Err(RollbackError::Conflict(_))
-        ));
-    }
-
-    #[test]
-    fn begin_rollback_guards_unknown_and_in_flight() {
-        let mut t = timeline_with_stream();
-        assert!(matches!(
-            t.begin_rollback("nope"),
-            Err(RollbackError::UnknownCheckpoint(_))
-        ));
-        let mut e = emitted("move.played");
-        e.rollback_token = Some("undo-abc".to_string());
-        let ckpt_id = t
-            .record_event(CTX, "chess", 7, e)
-            .unwrap()
-            .checkpoint_id
-            .unwrap();
-        t.begin_rollback(&ckpt_id).unwrap();
-        assert!(matches!(
-            t.begin_rollback(&ckpt_id),
-            Err(RollbackError::VerifyInFlight(_))
-        ));
-        // Resolving without a verification in flight is also rejected.
-        let mut t2 = timeline_with_stream();
-        assert!(t2.resolve_rollback_verify("nope", "rev-1").is_err());
+        assert!(
+            out.checkpoint_id.is_some(),
+            "rollback metadata must checkpoint"
+        );
     }
 
     #[test]

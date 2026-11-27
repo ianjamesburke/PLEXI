@@ -18,10 +18,6 @@ use std::sync::{LazyLock, Mutex};
 pub enum RepaintCause {
     /// App-runtime idle poll for async responses (per visible pane).
     ViewIdlePoll,
-    /// App-runtime click forwarding (immediate repaint + awaiting-frame echo).
-    ViewClick,
-    /// App-requested `ScheduleRender { after_ms }`.
-    ViewScheduleRender,
     /// Pointer-tracking plugins at ~60fps while the pointer moves; also terminal
     /// drag-selection auto-scroll.
     PointerTracking,
@@ -31,18 +27,12 @@ pub enum RepaintCause {
     TerminalSearchBlink,
     /// PTY output event from a terminal backend thread.
     TerminalPtyOutput,
-    /// Skeleton loader animation (~20fps).
-    SkeletonLoader,
     /// Pane swap animation.
     PaneSwapAnim,
     /// Directional edge pulse after focus move.
     EdgePulse,
-    /// CRT feature effect (~60fps while enabled).
-    CrtEffect,
     /// 100ms poll while a file drag hovers the window.
     FileDragPoll,
-    /// 100ms widget pulse/poll animations (copy feedback, quick-note loading).
-    WidgetPulse,
     /// Quit/delete confirm overlay 100ms timeout poll.
     QuitConfirm,
     /// Frame carried raw input events (covers one-shot event-driven repaints).
@@ -50,20 +40,15 @@ pub enum RepaintCause {
 }
 
 /// All variants, in declaration order. Indexes into [`COUNTERS`].
-const ALL_CAUSES: [RepaintCause; 15] = [
+const ALL_CAUSES: [RepaintCause; 10] = [
     RepaintCause::ViewIdlePoll,
-    RepaintCause::ViewClick,
-    RepaintCause::ViewScheduleRender,
     RepaintCause::PointerTracking,
     RepaintCause::TerminalCursorBlink,
     RepaintCause::TerminalSearchBlink,
     RepaintCause::TerminalPtyOutput,
-    RepaintCause::SkeletonLoader,
     RepaintCause::PaneSwapAnim,
     RepaintCause::EdgePulse,
-    RepaintCause::CrtEffect,
     RepaintCause::FileDragPoll,
-    RepaintCause::WidgetPulse,
     RepaintCause::QuitConfirm,
     RepaintCause::UserInput,
 ];
@@ -75,18 +60,13 @@ impl RepaintCause {
     pub fn label(self) -> &'static str {
         match self {
             RepaintCause::ViewIdlePoll => "plugin_idle_poll",
-            RepaintCause::ViewClick => "view_click",
-            RepaintCause::ViewScheduleRender => "view_schedule_render",
             RepaintCause::PointerTracking => "pointer_tracking",
             RepaintCause::TerminalCursorBlink => "terminal_cursor_blink",
             RepaintCause::TerminalSearchBlink => "terminal_search_blink",
             RepaintCause::TerminalPtyOutput => "terminal_pty_output",
-            RepaintCause::SkeletonLoader => "skeleton_loader",
             RepaintCause::PaneSwapAnim => "pane_swap_anim",
             RepaintCause::EdgePulse => "edge_pulse",
-            RepaintCause::CrtEffect => "crt_effect",
             RepaintCause::FileDragPoll => "file_drag_poll",
-            RepaintCause::WidgetPulse => "widget_pulse",
             RepaintCause::QuitConfirm => "quit_confirm",
             RepaintCause::UserInput => "user_input",
         }
@@ -192,7 +172,8 @@ mod tests {
     /// Counters are process-global and harness tests drive real frames in
     /// parallel, so: (1) frame_diag tests serialize against each other, and
     /// (2) assertions only touch causes no harness frame ever notes
-    /// (EdgePulse, CrtEffect, SkeletonLoader).
+    /// (EdgePulse, and the terminal blinks, which arrive only through the
+    /// egui_term hook that `PlexiApp::new` installs).
     static SERIAL: Mutex<()> = Mutex::new(());
 
     fn count_of(counts: &[(RepaintCause, u32)], cause: RepaintCause) -> Option<u32> {
@@ -222,23 +203,23 @@ mod tests {
         snapshot_and_reset();
 
         for _ in 0..5 {
-            note(RepaintCause::SkeletonLoader);
+            note(RepaintCause::TerminalCursorBlink);
         }
         for _ in 0..2 {
             note(RepaintCause::EdgePulse);
         }
-        note(RepaintCause::CrtEffect);
+        note(RepaintCause::TerminalSearchBlink);
 
         let counts = snapshot_and_reset();
         for pair in counts.windows(2) {
             assert!(pair[0].1 >= pair[1].1, "not descending: {counts:?}");
         }
         let pos = |cause| counts.iter().position(|(c, _)| *c == cause).unwrap();
-        assert!(pos(RepaintCause::SkeletonLoader) < pos(RepaintCause::EdgePulse));
-        assert!(pos(RepaintCause::EdgePulse) < pos(RepaintCause::CrtEffect));
-        assert_eq!(count_of(&counts, RepaintCause::SkeletonLoader), Some(5));
+        assert!(pos(RepaintCause::TerminalCursorBlink) < pos(RepaintCause::EdgePulse));
+        assert!(pos(RepaintCause::EdgePulse) < pos(RepaintCause::TerminalSearchBlink));
+        assert_eq!(count_of(&counts, RepaintCause::TerminalCursorBlink), Some(5));
         assert_eq!(count_of(&counts, RepaintCause::EdgePulse), Some(2));
-        assert_eq!(count_of(&counts, RepaintCause::CrtEffect), Some(1));
+        assert_eq!(count_of(&counts, RepaintCause::TerminalSearchBlink), Some(1));
     }
 
     #[test]
