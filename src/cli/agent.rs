@@ -1006,15 +1006,6 @@ impl HarnessAdapter {
         self.restore_command_with_flags_in(session_id, flags, dir.as_deref())
     }
 
-    #[allow(dead_code)]
-    pub fn restore_command_in(
-        &self,
-        session_id: Option<&str>,
-        session_store_root: Option<&Path>,
-    ) -> String {
-        self.restore_command_with_flags_in(session_id, &[], session_store_root)
-    }
-
     pub fn restore_command_with_flags_in(
         &self,
         session_id: Option<&str>,
@@ -1059,23 +1050,6 @@ impl HarnessAdapter {
         self.spawn_command_with_flags_and_extensions(task, model, append_system_prompt, &[], &[])
     }
 
-    #[allow(dead_code)]
-    pub fn spawn_command_with_extensions(
-        &self,
-        task: &str,
-        model: Option<&str>,
-        append_system_prompt: Option<&str>,
-        extensions: &[String],
-    ) -> String {
-        self.spawn_command_with_flags_and_extensions(
-            task,
-            model,
-            append_system_prompt,
-            &[],
-            extensions,
-        )
-    }
-
     pub fn spawn_command_with_flags_and_extensions(
         &self,
         task: &str,
@@ -1114,33 +1088,6 @@ impl HarnessAdapter {
     ///
     /// Never passes non-interactive print/exec flags (`-p`, `--print`, `exec`, `--prompt`)
     /// unless `self.harness == AgentHarness::Script`.
-    #[allow(dead_code)]
-    pub fn start_command(
-        &self,
-        message: Option<&str>,
-        model: Option<&str>,
-        append_system_prompt: Option<&str>,
-    ) -> String {
-        self.start_command_with_flags_and_extensions(message, model, append_system_prompt, &[], &[])
-    }
-
-    #[allow(dead_code)]
-    pub fn start_command_with_extensions(
-        &self,
-        message: Option<&str>,
-        model: Option<&str>,
-        append_system_prompt: Option<&str>,
-        extensions: &[String],
-    ) -> String {
-        self.start_command_with_flags_and_extensions(
-            message,
-            model,
-            append_system_prompt,
-            &[],
-            extensions,
-        )
-    }
-
     pub fn start_command_with_flags_and_extensions(
         &self,
         message: Option<&str>,
@@ -1217,23 +1164,6 @@ impl HarnessAdapter {
     }
 
     /// Summarize the composed interactive CLI flags for logging without persona or message prose.
-    #[allow(dead_code)]
-    pub fn start_flags_summary(
-        &self,
-        model: Option<&str>,
-        has_append_system_prompt: bool,
-        has_initial_message: bool,
-        extensions: &[String],
-    ) -> String {
-        self.start_flags_summary_with_custom(
-            model,
-            has_append_system_prompt,
-            has_initial_message,
-            extensions,
-            &[],
-        )
-    }
-
     pub fn start_flags_summary_with_custom(
         &self,
         model: Option<&str>,

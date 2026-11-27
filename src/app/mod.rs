@@ -38,7 +38,6 @@ pub(crate) mod launch_plan;
 pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;
-pub(crate) mod notification_image;
 mod notifications;
 pub mod package;
 pub mod packs;
@@ -80,7 +79,6 @@ pub(crate) use focus::{
 };
 #[cfg(test)]
 pub(crate) use focus::{ContextCloseItem, FocusLogOutcome};
-pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
 pub(crate) use notifications::save_pending_notifications_to;
 pub(crate) use notifications::{load_pending_notifications_from, PendingNotification};
@@ -400,19 +398,7 @@ pub struct PlexiApp {
     /// The invariant: **the currently-displayed notification is pinned by
     /// id**. New notifications arriving never change this, so the user can
     /// never be yanked to a different notification without their input.
-    /// Cmd+] / Cmd+[ move this id across the ordered queue.
     pub(crate) current_notify_id: Option<String>,
-    /// Focused option index for `kind = "choice"` notifications (0-based).
-    /// Reset to 0 whenever the front of the queue changes.
-    #[allow(dead_code)]
-    pub(crate) modal_focused_option: usize,
-    /// Buffer for `kind = "input"` notifications.
-    #[allow(dead_code)]
-    pub(crate) modal_input_buffer: String,
-    /// Input drafts keyed by notification id. Later and queue cycling are
-    /// non-terminal, so they must not discard text the user already entered.
-    #[allow(dead_code)]
-    pub(crate) notification_input_drafts: HashMap<String, String>,
     /// Text being composed in the quick note modal.
     pub(crate) quick_note_text: String,
     /// Local images staged by the QuickNote modal. They are copied into the
@@ -467,18 +453,6 @@ pub struct PlexiApp {
     pub(crate) notes_picker_shown_paths: Vec<std::path::PathBuf>,
     /// Persisted index loaded at most once per process.
     pub(crate) notes_index_loaded: bool,
-    /// notify_id of the notification the modal currently has state for. Used to
-    /// detect a front-of-queue change and reset focus/input buffer.
-    #[allow(dead_code)]
-    pub(crate) modal_state_notify_id: String,
-    /// Lazily-decoded image-render state for notifications that carry an
-    /// `image_inline` or `image_pipe_id` attachment (#74). Keyed by
-    /// `notify_id`. Populated on first render of the notification; entries
-    /// are NOT explicitly evicted on dismiss — egui's TextureHandle drop
-    /// cleanup, plus the small upper bound on concurrent visible
-    /// notifications, makes this acceptable. A future PR can add eviction
-    /// if memory becomes a concern.
-    pub(crate) notification_images: HashMap<String, NotificationImageState>,
     /// Cached from `[notifications]` config. See NotificationsConfig for semantics.
     pub(crate) notifications_enabled: bool,
     pub(crate) notifications_focus_mode: bool,
@@ -2003,9 +1977,6 @@ impl PlexiApp {
                         &profile_dir.join("notifications.json"),
                     ),
                     current_notify_id: None,
-                    modal_focused_option: 0,
-                    modal_input_buffer: String::new(),
-                    notification_input_drafts: HashMap::new(),
                     quick_note_text: String::new(),
                     quick_note_attachments: Vec::new(),
                     quick_note_image_cache: crate::editor::widget::ImageCache::default(),
@@ -2031,8 +2002,6 @@ impl PlexiApp {
                     notes_index_rerun: false,
                     notes_picker_shown_paths: Vec::new(),
                     notes_index_loaded: false,
-                    modal_state_notify_id: String::new(),
-                    notification_images: HashMap::new(),
                     notifications_enabled,
                     notifications_focus_mode,
                     notifications_sound,
@@ -2306,9 +2275,6 @@ impl PlexiApp {
                 &crate::config::config_dir().join("notifications.json"),
             ),
             current_notify_id: None,
-            modal_focused_option: 0,
-            modal_input_buffer: String::new(),
-            notification_input_drafts: HashMap::new(),
             quick_note_text: String::new(),
             quick_note_attachments: Vec::new(),
             quick_note_image_cache: crate::editor::widget::ImageCache::default(),
@@ -2334,8 +2300,6 @@ impl PlexiApp {
             notes_index_rerun: false,
             notes_picker_shown_paths: Vec::new(),
             notes_index_loaded: false,
-            modal_state_notify_id: String::new(),
-            notification_images: HashMap::new(),
             notifications_enabled,
             notifications_focus_mode,
             notifications_sound,
@@ -3282,9 +3246,6 @@ impl PlexiApp {
             },
             pending_notifications: Vec::new(),
             current_notify_id: None,
-            modal_focused_option: 0,
-            modal_input_buffer: String::new(),
-            notification_input_drafts: HashMap::new(),
             quick_note_text: String::new(),
             quick_note_attachments: Vec::new(),
             quick_note_image_cache: crate::editor::widget::ImageCache::default(),
@@ -3310,8 +3271,6 @@ impl PlexiApp {
             notes_index_rerun: false,
             notes_picker_shown_paths: Vec::new(),
             notes_index_loaded: false,
-            modal_state_notify_id: String::new(),
-            notification_images: HashMap::new(),
             notifications_enabled: false,
             notifications_focus_mode: false,
             notifications_sound: None,

@@ -91,30 +91,7 @@ fn snoozed_notification_is_excluded_from_queue_and_context_badge() {
 
     assert_eq!(h.app.visible_notification_count(), 0);
     assert_eq!(h.app.sorted_notification_ids(), Vec::<String>::new());
-    assert_eq!(h.app.context_notification_count(0), 0);
-}
-
-/// Parked contexts intentionally suppress their sidebar badge, but do not
-/// delete queued work; un-parking restores the same count. This makes the
-/// quiet parked policy explicit without conflating it with a snooze.
-#[test]
-fn parked_context_suppresses_and_restores_its_notification_badge() {
-    let mut h = HostHarness::new();
-    let context_id = h.app.router.active().context_id;
-    h.app.pending_notifications.push(PendingNotification {
-        notify_id: "parked-consistency".into(),
-        source_context_id: context_id,
-        scope: crate::protocol::NotifyScope::Context,
-        ..Default::default()
-    });
-    assert_eq!(h.app.context_notification_count(0), 1);
-
-    h.app.router.get_mut(0).parked = true;
-    assert_eq!(h.app.context_notification_count(0), 0);
-    assert_eq!(h.app.pending_notifications.len(), 1);
-
-    h.app.router.get_mut(0).parked = false;
-    assert_eq!(h.app.context_notification_count(0), 1);
+    assert_eq!(h.app.context_notification_count_recursive(context_id), 0);
 }
 
 /// #840: tick_notification_timeouts must not time out a snoozed notification.
@@ -429,35 +406,6 @@ fn window_scoped_notification_visible_only_on_source_window() {
         1,
         "notification must reappear when returning to source window"
     );
-}
-
-/// Switching context can leave a pinned id in the raw queue even though that
-/// entry is no longer visible. Selection must revalidate scope, not existence.
-#[test]
-fn stale_pinned_notification_is_replaced_after_context_switch() {
-    let mut h = HostHarness::new();
-    let first_context_id = h.app.router.active().context_id;
-    let first_window_id = h.app.windows[h.app.active_window].window_id;
-    let second_window = push_second_context_window(&mut h, 2, 2);
-
-    h.app.pending_notifications.push(PendingNotification {
-        notify_id: "context-a".into(),
-        source_context_id: first_context_id,
-        source_window_id: first_window_id,
-        scope: crate::protocol::NotifyScope::Context,
-        ..Default::default()
-    });
-    h.app.pending_notifications.push(PendingNotification {
-        notify_id: "global".into(),
-        scope: crate::protocol::NotifyScope::Global,
-        ..Default::default()
-    });
-    h.app.current_notify_id = Some("context-a".into());
-    h.app.active_window = second_window;
-    h.app.router.set_active(1);
-
-    h.app.revalidate_notification_selection();
-    assert_eq!(h.app.current_notify_id.as_deref(), Some("global"));
 }
 
 // ── #1635: auto-dismiss when originating pane is focused ─────────────────────
@@ -942,29 +890,6 @@ fn set_aside_notice_is_delivered_when_the_live_queue_is_full() {
             .any(|n| n.title == "Old apps folder moved aside" && n.body.contains(&aside)),
         "the set-aside notice must be admitted past the cap"
     );
-}
-
-#[test]
-fn notification_removal_prunes_image_cache() {
-    let mut h = HostHarness::new();
-    for index in 0..8 {
-        let notify_id = format!("attachment-{index}");
-        h.app.pending_notifications.push(PendingNotification {
-            notify_id: notify_id.clone(),
-            dismiss_owner_pane_id: 41,
-            ..Default::default()
-        });
-        h.app.notification_images.insert(
-            notify_id.clone(),
-            crate::app::NotificationImageState::Placeholder {
-                reason: "test attachment".into(),
-            },
-        );
-        h.app
-            .dismiss_notification_from_sender(&notify_id, 41)
-            .expect("owner may dismiss its own notification");
-        assert!(h.app.notification_images.is_empty());
-    }
 }
 
 /// Informational arrivals never take keyboard focus; decisions queue into the Attention Queue.

@@ -212,8 +212,6 @@ pub const CHIP_ARROW: f32 = 6.0;
 // ── Zoom / Niri Column / Atlas geometry tokens ─────────────────────────────
 pub const TOOLBAR_H: f32 = 28.0;
 pub const PATH_BAR_H: f32 = 34.0;
-#[allow(dead_code)]
-pub const STRIP_GAP: f32 = 10.0;
 pub const STRIP_PEEK_W: f32 = 28.0;
 /// Canvas width assumed for strip shares when the real width is not known yet.
 pub const STRIP_FALLBACK_CANVAS_W: f32 = 1200.0;
@@ -227,8 +225,6 @@ pub const DECISION_MODAL_W: f32 = 580.0;
 pub const QUEUE_PANEL_W: f32 = 640.0;
 pub const PEEK_CARD_W: f32 = 380.0;
 pub const ZOOM_DURATION_MS: u64 = 160;
-#[allow(dead_code)]
-pub const CAMERA_EASE_MS: u64 = 120;
 
 // ── Modal widths ───────────────────────────────────────────────────────────
 // Pick the smallest width that fits the content without crowding. Bigger is
