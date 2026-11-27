@@ -11632,7 +11632,7 @@ fn explorer_enter_opens_text_file_in_text_editor_split() {
 
     // The only entry (readme.md) is selected by default; Enter activates it.
     h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
-    h.run_frames(2);
+    wait_for_text_editor(&mut h, &doc);
 
     assert_eq!(
         h.pane_count(),
@@ -11682,13 +11682,8 @@ fn explorer_open_deduplicates_already_open_text_editor_pane() {
         }],
         ..Default::default()
     });
-    h.run_frames(2);
+    let editor_id = wait_for_text_editor(&mut h, &doc);
     assert_eq!(h.pane_count(), 2);
-    let editor_id = *h.app.windows[0]
-        .panes
-        .keys()
-        .find(|&&id| id != explorer)
-        .expect("opened text-editor pane");
     let focused_id = |h: &HostHarness| {
         let win = &h.app.windows[0];
         win.focused_pane.and_then(|t| match win.tree.tiles.get(t) {
@@ -11706,6 +11701,7 @@ fn explorer_open_deduplicates_already_open_text_editor_pane() {
 
     h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
     h.run_frames(2);
+    h.app.wait_for_file_opens_for_test();
     assert_eq!(
         h.pane_count(),
         2,
@@ -11725,8 +11721,9 @@ fn explorer_open_deduplicates_already_open_text_editor_pane() {
 #[test]
 fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let doc = tmp.path().join("readme.md");
-    std::fs::write(&doc, "# hello").expect("seed doc");
+    let doc = tmp.path().join("large");
+    let contents = "A large Explorer document.\n".repeat(36_000);
+    std::fs::write(&doc, &contents).expect("seed doc");
     let mut h = HostHarness::new();
     h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
@@ -11775,20 +11772,23 @@ fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
             .expect("file browser")
             .request_open_for_test(&doc);
     }
-    h.run_frames(2);
-
-    let editor = h.app.windows[0]
-        .panes
-        .iter()
-        .find(|(id, pane)| {
-            **id != browser
-                && **id != decoy
-                && pane
-                    .as_view()
-                    .is_some_and(|app| app.manifest_id == "text-editor")
-        })
-        .map(|(id, _)| *id)
-        .expect("text-editor pane opened from the explorer");
+    let doc = doc.canonicalize().expect("canonical doc");
+    let editor = wait_for_text_editor(&mut h, &doc);
+    let threads = crate::app::file_open::prepared_on::threads(&doc);
+    assert!(!threads.is_empty(), "the target was classified");
+    assert!(
+        threads.iter().all(|thread| *thread != std::thread::current().id()),
+        "Explorer classified the target on the host thread: {threads:?}"
+    );
+    let readers = crate::app::file_open::prepared_on::body_reads(&doc);
+    assert_eq!(readers.len(), 1, "the editor body was read once");
+    assert_ne!(readers[0], std::thread::current().id(), "the body read ran on the host thread");
+    assert_eq!(h.app.focused_pane_id(), Some(editor));
+    let buffer = h.app.windows[0].panes[&editor]
+        .as_view()
+        .and_then(|view| view.runtime.editor_buffer())
+        .expect("open text buffer");
+    assert_eq!(buffer.text, contents);
     let order = split_row_panes(&h.app.windows[0], editor);
     let browser_at = order
         .iter()
@@ -26925,10 +26925,10 @@ fn palette_assign_shortcut_survives_a_focus_change_after_enter() {
     );
 }
 
-/// Run frames until a text editor holds `doc`; the palette reads the file on
-/// a worker, so this waits on the wall clock.
+/// Run frames until the worker's read has opened a text editor for `doc`.
 fn wait_for_text_editor(h: &mut HostHarness, doc: &std::path::Path) -> PaneId {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
     loop {
         if let Some(pane) = h.app.find_open_text_editor_pane_any_window(doc) {
             return pane;

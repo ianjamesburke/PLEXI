@@ -289,61 +289,17 @@ impl PlexiApp {
             .and_then(|(window, _)| self.windows[window].panes.get(&sender_pane_id))
             .and_then(|p| p.as_view())
             .map(|a| a.workspace_root.clone());
-        // workspace_root is None for builtin plugins (which run with trusted
-        // PluginPermissions::builtin()) — they bypass the path check intentionally.
-        // For process plugins the root is always set; None here means the pane was
-        // already removed (race between close and dispatch), so we allow through
-        // rather than silently dropping a legitimate late-arriving command.
-        //
-        // Two gates, both must pass:
-        //   1. Lexical (normalize_path collapses ".." without I/O) — a cheap
-        //      first reject for obvious `../` traversal.
-        //   2. Canonical (resolves symlinks via the filesystem) — a symlink that
-        //      lives inside the workspace but points outside passes the lexical
-        //      check, so `open` would follow it out of the sandbox (#2242). The
-        //      canonical gate rejects targets whose *real* path escapes the root.
-        // The canonical path the second gate checked is the only one any mode
-        // opens, so check and use name the same file.
-        let target = match &workspace_root {
-            Some(root) => {
-                let p = std::path::Path::new(&path);
-                let absolute = if p.is_absolute() {
-                    p.to_path_buf()
-                } else {
-                    root.join(p)
-                };
-                if !normalize_path(&absolute).starts_with(root) {
-                    log::warn!(
-                        "OpenArtifact: pane {sender_pane_id} rejected — path {path:?} outside \
-                         workspace {root:?}"
-                    );
-                    self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, false);
-                    return;
-                }
-                let checked = canonicalize_existing_prefix(&absolute);
-                if !within_canonical_root(root, &checked) {
-                    log::warn!(
-                        "OpenArtifact: pane {sender_pane_id} rejected — {path:?} resolves to \
-                         {checked:?} outside workspace {root:?}"
-                    );
-                    self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, false);
-                    return;
-                }
-                checked
-            }
-            None => std::path::PathBuf::from(&path),
+        if mode == ArtifactOpenMode::OpenInPane {
+            self.queue_artifact_file_open(sender_pane_id, path, workspace_root);
+            return;
+        }
+        let Some(target) = resolve_artifact_target(sender_pane_id, &path, workspace_root.as_deref()) else {
+            self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, false);
+            return;
         };
         log::info!("OpenArtifact: path={path:?} target={target:?} mode={mode:?}");
         match mode {
-            ArtifactOpenMode::OpenInPane => {
-                // Directories open the file browser; files run through the
-                // shared `file.open` classification (`super::file_open`).
-                if target.is_dir() {
-                    self.open_file_browser_at(target);
-                } else {
-                    self.open_file_in_view(sender_pane_id, &target);
-                }
-            }
+            ArtifactOpenMode::OpenInPane => return,
             ArtifactOpenMode::RevealInFinder => {
                 let _logged = shell_open(&target, true);
             }
@@ -354,7 +310,7 @@ impl PlexiApp {
         self.report_artifact_guard_to_explorer(sender_pane_id, &path, mode, true);
     }
 
-    fn report_artifact_guard_to_explorer(
+    pub(super) fn report_artifact_guard_to_explorer(
         &mut self,
         sender_pane_id: PaneId,
         path: &str,
@@ -395,7 +351,7 @@ impl PlexiApp {
     /// Mirror of `open_file_browser` but driven by an explicit path
     /// instead of the focused-pane cwd, since OpenArtifact specifies the
     /// directory it wants browsed.
-    fn open_file_browser_at(&mut self, cwd: std::path::PathBuf) {
+    pub(super) fn open_file_browser_at(&mut self, cwd: std::path::PathBuf) {
         if self.plugin_blocked("file_browser") {
             return;
         }
@@ -410,22 +366,6 @@ impl PlexiApp {
             Some("split_v"),
             Some(0.5),
         );
-    }
-
-    /// Explorer file activation: open `path` with the handler
-    /// `super::file_open::classify_open_target` picks in the sender's context
-    /// (`[file_handlers]`, manifest `file_types`, media players, text editor).
-    /// A manifest handler that fails to launch hands the file to the rest of
-    /// the cascade; any other unavailable handler, or a regular file no Plexi
-    /// handler claims, goes to the OS default opener. A special file (FIFO,
-    /// device, socket) is refused. `sender_pane_id` is the pane that requested
-    /// the open (the explorer, or the terminal behind it); the text-editor
-    /// lands as a split to its right.
-    pub(crate) fn open_file_in_view(&mut self, sender_pane_id: PaneId, target: &std::path::Path) {
-        if let Some(request) = self.open_request(sender_pane_id, target) {
-            let prepared = super::file_open::prepare_open(request);
-            self.finish_open(sender_pane_id, prepared);
-        }
     }
 
     /// The host-state half of opening `target` for `sender_pane_id`: its
@@ -458,12 +398,28 @@ impl PlexiApp {
         })
     }
 
-    /// Open a prepared target with the handler its classification picked.
-    /// Reads no disk: `prepared` carries every read.
     pub(crate) fn finish_open(
         &mut self,
         sender_pane_id: PaneId,
         prepared: super::file_open::PreparedOpen,
+    ) {
+        self.deliver_prepared_open(sender_pane_id, prepared, true);
+    }
+
+    pub(super) fn finish_artifact_open(
+        &mut self,
+        sender_pane_id: PaneId,
+        prepared: super::file_open::PreparedOpen,
+    ) {
+        self.deliver_prepared_open(sender_pane_id, prepared, false);
+    }
+
+    /// Open a prepared target with the handler its classification picked.
+    fn deliver_prepared_open(
+        &mut self,
+        sender_pane_id: PaneId,
+        prepared: super::file_open::PreparedOpen,
+        palette_may_reread: bool,
     ) {
         use super::file_open::{handler_arg, FileOpenError, MatchedBy, OpenHandler};
         let super::file_open::PreparedOpen {
@@ -510,7 +466,9 @@ impl PlexiApp {
                     log::info!(
                         "open: '{path}' → builtin text-editor ({matched_by}, split right of pane {sender_pane_id})"
                     );
-                    self.open_text_file_in_split(sender_pane_id, &path, text.take(), cwd);
+                    self.open_text_file_in_split(
+                        sender_pane_id, &path, text.take(), cwd, palette_may_reread,
+                    );
                 }
                 OpenHandler::View(id) => {
                     let Some(path) = arg(&id) else {
@@ -554,6 +512,7 @@ impl PlexiApp {
         path: &str,
         read: Option<crate::pane_ops::create::TextEditorRead>,
         cwd: std::path::PathBuf,
+        palette_may_reread: bool,
     ) {
         if let Some(existing_pane_id) =
             self.find_open_text_editor_pane_any_window(std::path::Path::new(path))
@@ -564,12 +523,18 @@ impl PlexiApp {
             self.pane_navigate(existing_pane_id);
             return;
         }
-        let read = read.unwrap_or_else(|| {
-            // The editor that held it when the open was prepared has closed
-            // since; read now rather than open an empty document.
-            log::info!("open: '{path}' lost its editor while opening; reading it now");
-            crate::pane_ops::create::TextEditorRead::read(std::path::Path::new(path), &cwd)
-        });
+        let read = match read {
+            Some(read) => read,
+            None if palette_may_reread => {
+                // The palette's existing editor closed while it was opening.
+                log::info!("open: '{path}' lost its editor while opening; reading it now");
+                crate::pane_ops::create::TextEditorRead::read(std::path::Path::new(path), &cwd)
+            }
+            None => {
+                log::warn!("OpenArtifact: no prepared editor buffer for '{path}'");
+                return;
+            }
+        };
         // Built directly, so no `on_launch` dedup can swap in an editor on
         // another file: opening a specific file must always load THAT file.
         let app = crate::pane_ops::create::text_editor_from_read(path.into(), read);
@@ -768,6 +733,50 @@ pub(super) fn shell_open(path: &std::path::Path, reveal: bool) -> Result<(), Str
             }
         }
     }
+}
+
+pub(super) fn resolve_artifact_target(
+    sender_pane_id: PaneId,
+    path: &str,
+    workspace_root: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    // Two gates, both must pass:
+    //   1. Lexical (normalize_path collapses ".." without I/O) — a cheap
+    //      first reject for obvious `../` traversal.
+    //   2. Canonical (resolves symlinks via the filesystem) — a symlink that
+    //      lives inside the workspace but points outside passes the lexical
+    //      check, so `open` would follow it out of the sandbox (#2242). The
+    //      canonical gate rejects targets whose *real* path escapes the root.
+    // The canonical path the second gate checked is the only one any mode
+    // opens, so check and use name the same file.
+    let target = match workspace_root {
+        Some(root) => {
+            let p = std::path::Path::new(path);
+            let absolute = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            };
+            if !normalize_path(&absolute).starts_with(root) {
+                log::warn!(
+                    "OpenArtifact: pane {sender_pane_id} rejected — path {path:?} outside \
+                     workspace {root:?}"
+                );
+                return None;
+            }
+            let checked = canonicalize_existing_prefix(&absolute);
+            if !within_canonical_root(root, &checked) {
+                log::warn!(
+                    "OpenArtifact: pane {sender_pane_id} rejected — {path:?} resolves to \
+                     {checked:?} outside workspace {root:?}"
+                );
+                return None;
+            }
+            checked
+        }
+        None => std::path::PathBuf::from(path),
+    };
+    Some(target)
 }
 
 /// True when an already-canonical `checked` path stays inside the
