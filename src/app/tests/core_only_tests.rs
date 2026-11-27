@@ -115,7 +115,6 @@ fn core_only_registry_stays_empty_after_rescan_and_context_changes() {
                 .is_empty(),
             enabled
         );
-        assert!(h.app.background_apps.is_empty());
         if enabled {
             assert!(h.app.registries.roots().is_empty());
         }

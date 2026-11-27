@@ -81,20 +81,10 @@ fn theme_broadcast_reaches_background_apps_in_every_window() {
         tree_history: Default::default(),
     });
     let inactive_events = add_theme_event_recorder(&mut app, 1);
-    let parked_events = Arc::new(Mutex::new(Vec::new()));
-    app.background_apps.insert(
-        "parked-theme-recorder".to_string(),
-        (
-            1,
-            Box::new(ThemeEventRecorder {
-                events: parked_events.clone(),
-            }),
-        ),
-    );
 
     app.broadcast_theme_event();
 
-    for events in [background_events, inactive_events, parked_events] {
+    for events in [background_events, inactive_events] {
         let events = events.lock().expect("event recorder");
         assert_eq!(events.len(), 1);
         assert!(matches!(

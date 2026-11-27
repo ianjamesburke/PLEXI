@@ -485,11 +485,6 @@ pub struct PlexiApp {
     /// the history-driven focus change as a new history entry.
     pub(crate) navigating_history: bool,
     pub(crate) host: crate::host::model::HostModel,
-    /// Parked background WASM plugin runtimes — kept alive when their pane is closed.
-    /// Keyed by plugin type_id. Value is `(park_context_id, plugin)` where
-    /// `park_context_id` is the context_id the plugin was running in when its
-    /// pane was closed. Used to route notifications to the correct context.
-    pub(crate) background_apps: HashMap<String, (u64, Box<dyn crate::app::view_trait::View>)>,
     /// Directed inter-plugin pipes (#286): the sole JSON-pipe delivery path,
     /// an exclusive duplex channel between two view instances; resource-scoped
     /// fan-out belongs on the event bus. Each accepted open is a connection
@@ -2017,7 +2012,6 @@ impl PlexiApp {
                     last_notify_poll: std::time::Instant::now(),
                     scheduler: crate::host::scheduler::Scheduler::new(),
                     host,
-                    background_apps: HashMap::new(),
                     directed_pipes: Default::default(),
                     hot_reload: hr_watcher,
                     hot_reload_rx: hr_rx,
@@ -2315,7 +2309,6 @@ impl PlexiApp {
             last_notify_poll: std::time::Instant::now(),
             scheduler: crate::host::scheduler::Scheduler::new(),
             host: crate::host::model::HostModel::new(),
-            background_apps: HashMap::new(),
             directed_pipes: Default::default(),
             hot_reload: hr_watcher,
             hot_reload_rx: hr_rx,
@@ -3284,7 +3277,6 @@ impl PlexiApp {
             pane_focus_future: Vec::new(),
             navigating_history: false,
             host: crate::host::model::HostModel::new(),
-            background_apps: HashMap::new(),
             directed_pipes: Default::default(),
             hot_reload: hr_watcher,
             hot_reload_rx: hr_rx,
@@ -5704,49 +5696,6 @@ fn key_str_to_pty_bytes(key: &str) -> Result<Vec<u8>, String> {
     prefixed.push(0x1b);
     prefixed.extend_from_slice(&bytes);
     Ok(prefixed)
-}
-
-/// Parse a key string into a (key_name, Modifiers) pair for PGAP view panes.
-#[cfg(test)]
-fn parse_key_str_to_event(key: &str) -> (String, crate::protocol::Modifiers) {
-    let mut parts: Vec<&str> = key.split('+').collect();
-    let key_part = parts.pop().unwrap_or(key);
-    let mut modifiers = crate::protocol::Modifiers::default();
-    for m in &parts {
-        match m.to_lowercase().as_str() {
-            "ctrl" | "control" => modifiers.ctrl = true,
-            "shift" => modifiers.shift = true,
-            "alt" => modifiers.alt = true,
-            "cmd" | "command" | "meta" => modifiers.cmd = true,
-            _ => {}
-        }
-    }
-    let key_str = match key_part.to_lowercase().as_str() {
-        "enter" | "return" => "return".to_string(),
-        "escape" | "esc" => "escape".to_string(),
-        "space" => "space".to_string(),
-        "backspace" => "backspace".to_string(),
-        "tab" => "tab".to_string(),
-        "up" | "arrowup" => "up".to_string(),
-        "down" | "arrowdown" => "down".to_string(),
-        "right" | "arrowright" => "right".to_string(),
-        "left" | "arrowleft" => "left".to_string(),
-        "plus" => "plus".to_string(),
-        "equals" => "equals".to_string(),
-        "minus" => "minus".to_string(),
-        "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" | "f12" => {
-            key_part.to_lowercase()
-        }
-        _ => {
-            // SDK KeyEvent.key is lowercase for view panes.
-            if key_part.chars().count() == 1 {
-                key_part.to_lowercase()
-            } else {
-                key_part.to_lowercase()
-            }
-        }
-    };
-    (key_str, modifiers)
 }
 
 /// Translate a key string (same vocabulary as `key_str_to_pty_bytes`) into a

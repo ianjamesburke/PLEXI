@@ -302,7 +302,7 @@ impl PlexiApp {
         })
     }
 
-    /// True when any pane or parked background plugin needing a headless tick
+    /// True when any pane needing a headless tick
     /// (a non-active context always; the active context too when
     /// `window_hidden`, per the same reasoning as
     /// [`Self::drain_all_view_commands`]) has pending background work. Drives
@@ -312,20 +312,13 @@ impl PlexiApp {
     /// scheduled to drain it (#2021).
     pub(crate) fn background_processes_need_wake(&self, window_hidden: bool) -> bool {
         let active = self.active_window;
-        let inactive_context_needs_wake =
-            self.windows.iter().enumerate().any(|(ctx_idx, context)| {
-                (ctx_idx != active || window_hidden)
-                    && context.panes.values().any(|pane| {
-                        pane.as_view()
-                            .is_some_and(|view_pane| view_pane.runtime.needs_background_tick())
-                    })
-            });
-
-        inactive_context_needs_wake
-            || self
-                .background_apps
-                .values()
-                .any(|(_, app)| app.needs_background_tick())
+        self.windows.iter().enumerate().any(|(ctx_idx, context)| {
+            (ctx_idx != active || window_hidden)
+                && context.panes.values().any(|pane| {
+                    pane.as_view()
+                        .is_some_and(|view_pane| view_pane.runtime.needs_background_tick())
+                })
+        })
     }
 
     /// Drain every view pane's outbound commands and execute them (stint 0688).
@@ -1315,8 +1308,6 @@ impl PlexiApp {
     /// overlay. Draining all contexts (not just the active one) ensures
     /// that background plugins — e.g. stand-up-reminder in a non-active context
     /// — can surface Global-scope notifications while the user is elsewhere.
-    /// Parked background plugins (pane closed, process alive) are also ticked so
-    /// their timers and notifications keep firing while detached.
     ///
     /// `window_hidden` is true when eframe is running a logic-only pass (the
     /// window is minimized or fully occluded), in which case `App::ui` never
@@ -1381,59 +1372,7 @@ impl PlexiApp {
             }
         }
 
-        // Tick parked background plugins (process alive, no visible pane).
-        // Mirrors the headless tick above but operates on self.background_apps
-        // instead of context panes. Without this, timers stop and notifications
-        // never fire the moment the pane is closed.
-        // Collect (type_id, park_context_idx, commands) for each parked plugin.
-        let parked: Vec<(String, u64, Vec<ViewCommand>)> = self
-            .background_apps
-            .iter_mut()
-            .map(|(type_id, (park_context_id, app))| {
-                // Same gate as visible non-active panes: tick only when the
-                // plugin has pending background work (#2021). Already-queued
-                // pending_commands are still taken unconditionally.
-                if app.needs_background_tick() {
-                    log::debug!(
-                        "parked background plugin '{type_id}': pending work — ticking",
-                        type_id = crate::host::guest_text::shown(type_id)
-                    );
-                    app.background_tick();
-                }
-                let cmds = app.take_pending_commands();
-                (type_id.to_owned(), *park_context_id, cmds)
-            })
-            .collect();
-
         let mut deferred = Vec::new();
-
-        for (type_id, park_context_id, cmds) in parked {
-            let resolved_scope = self
-                .registries
-                .view_for_context(park_context_id, &self.router)
-                .default_notification_scope_for(&type_id);
-            for cmd in cmds {
-                // Commands that require a live pane context are silently
-                // dropped when the plugin is parked — the plugin has no tile to
-                // target and no context to route through.
-                let ViewCommand::ShowNotification { title, .. } = &cmd else {
-                    continue;
-                };
-                log::info!(
-                    "parked background plugin '{}' notification: {} (routing to context_id {})",
-                    type_id,
-                    title,
-                    park_context_id
-                );
-                // 0 = no live pane — tombstone won't fire.
-                deferred.push(stamp_notification_origin(
-                    cmd,
-                    0,
-                    park_context_id,
-                    resolved_scope,
-                ));
-            }
-        }
 
         for (context_id, pane_id, incarnation, type_id, cmds) in per_pane {
             let emitter = crate::app::view_trait::ViewEmitter {
@@ -2210,10 +2149,7 @@ impl PlexiApp {
 }
 
 /// Stamp a drained `ShowNotification` with the origin the host resolved for
-/// it. The two drain paths in `drain_all_view_commands` differ only in which
-/// sender pane and context they stamp — a parked background plugin has no live
-/// pane and routes to its park context, a live pane stamps itself — so the
-/// field-by-field rebuild lives here once. Any other command passes through
+/// it: the sender pane and its context. Any other command passes through
 /// untouched.
 fn stamp_notification_origin(
     cmd: ViewCommand,
