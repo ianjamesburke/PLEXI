@@ -1,4 +1,4 @@
-Stint: 1390 (design), built by 1391, 1392, 1396, the Agents view stint, 1770
+Stint: 1390 (design), built by 1391, 1392, 1396, the Agents view stint, 1623, 1770
 Status: active
 
 # The palette: commands, then files, then agents
@@ -17,7 +17,7 @@ The things you do every day live on shortcuts. The palette is for everything pas
 | Files (Tab) | Files under the active context root, respecting Git ignore rules and the shared search prune list | filename relevance and depth, then match score and usage. Empty query: usage, then newest modified | always: `text` or `image` |
 | Agents (Tab again) | Every agent, waiting on you first | waiting on you, then last interaction | always: `text` |
 
-Tab past Agents returns to Commands; Shift+Tab goes back. The query is kept across stops. Nothing here is configured: no palette table in `config.toml`, no pins, no per-view settings. The Explorer, the notes picker and Cmd+O are untouched in 0.6.
+Tab past Agents returns to Commands; Shift+Tab goes back. The query is kept across stops. Nothing here is configured: no palette table in `config.toml`, no pins, no per-view settings. Cmd+O opens the separate Notes picker.
 
 ```
 Commands (Cmd+P)                                 Files (Tab)
@@ -140,6 +140,8 @@ Chords checked in `KeyBindings::default`.
 | Esc | close | back to results, query and selection kept |
 
 `/` and `>` are ordinary characters; no prefix switches a stop. Cmd+Enter is the global `zoom_in` host binding. While the palette owns input, its handler claims that chord before host dispatch.
+
+`ScopeSwitcher` shows choices in Tab order. The active choice has a filled, outlined chip and alternatives have quiet labels. Notes shows Tab to toggle. Cmd+P shows Tab and Shift+Tab to cycle. At narrow widths the reverse hint yields first, then the Tab hint, and the choices wrap when needed. Show this row only when Tab switches scope. A structured input step under ruling 126 uses the hints for its own Enter and Tab bindings.
 
 ## Deleted
 

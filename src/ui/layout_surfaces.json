@@ -416,6 +416,20 @@
       "gap": "Unresolved: row has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
+      "id": "src/ui/scope_switcher.rs",
+      "fixture": {
+        "file": "tests/scenes/notes-picker-recency-filter.toml"
+      },
+      "additional_fixtures": [
+        {
+          "file": "src/ui_tests/tests/palette.rs",
+          "test": "screenshot_palette_scope_switcher_states"
+        }
+      ],
+      "states": "Both Notes scopes and all Cmd+P stops at normal and narrow widths and raised UI scale",
+      "minimum": "Scope choices preserve the kit button height and full labels, wrapping as needed. The shortcut hint compacts before hiding."
+    },
+    {
       "id": "src/ui/search_bar.rs",
       "fixture": {
         "file": "src/app/text_editor_view.rs",

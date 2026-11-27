@@ -527,6 +527,8 @@ fn screenshot_notes_picker_recency_pile() {
 /// Notes picker overlay: open → step → still visible and renders.
 #[test]
 fn notes_picker_overlay_smoke() {
+    use egui_kittest::kittest::by;
+
     let mut h = PlexiUiHarness::new();
     h.step();
     add_focused_pane(&mut h);
@@ -560,18 +562,47 @@ fn notes_picker_overlay_smoke() {
     let notes_labels = h.harness().get_all_by_label("Notes").count();
     assert_eq!(notes_labels, 1, "the modal title, with no duplicate header");
     assert!(h.harness().query_by_label("global").is_none(), "no tier headers");
-    h.harness().get_by_label("All notes · Tab: current project");
+    assert_layout_surface(&h, "scope_switcher");
+    let selected = |label| {
+        by().role(egui::accesskit::Role::Tab)
+            .label(label)
+            .predicate(|node| node.is_selected() == Some(true))
+    };
+    h.harness().get(selected("All notes"));
+    let trace = crate::testing::test_log::capture();
     h.harness().key_press(egui::Key::Tab);
     h.run_steps(2);
-    h.harness().get_by_label("Current project · Tab: all notes");
+    h.harness().get(selected("Current project"));
     h.with_app(|app| {
         assert_eq!(app.notes_picker_filtered().len(), 1);
         assert_eq!(app.notes_picker_entries[app.notes_picker_filtered()[0]].title, "context-note");
     });
     h.harness().key_press(egui::Key::Tab);
     h.run_steps(2);
+    h.harness().get(selected("All notes"));
     h.with_app(|app| assert_eq!(app.notes_picker_filtered().len(), 2));
-    h.save_screenshot(&evidence_png!()).expect("render failed");
+    h.harness().get_by_label("Current project").click();
+    h.run_steps(2);
+    h.harness().get(selected("Current project"));
+    h.with_app(|app| {
+        assert_eq!(app.notes_picker_filtered().len(), 1);
+        assert_eq!(
+            app.ctx.memory(|memory| memory.focused()),
+            Some(egui::Id::new("notes_picker_search")),
+        );
+    });
+    let toggles: Vec<_> = trace
+        .records()
+        .into_iter()
+        .filter(|(_, line)| line.starts_with("notes_picker: current_project_only="))
+        .collect();
+    assert_eq!(
+        toggles,
+        [true, false, true].map(|scope| (
+            log::Level::Info,
+            format!("notes_picker: current_project_only={scope}"),
+        )),
+    );
 }
 
 #[test]

@@ -2426,14 +2426,6 @@ impl PlexiApp {
         let has_actions = picker
             .selected_row()
             .is_some_and(|row| row.unavailable.is_none() && !row.actions.is_empty());
-        let stops = picker.stops();
-        let next_stop = (!showing_actions && stops.len() > 1).then(|| {
-            let active = stops
-                .iter()
-                .position(|stop| stop.id == picker.active_stop().id)
-                .unwrap_or(0);
-            stops[(active + 1) % stops.len()].label.to_lowercase()
-        });
         let pips = |key: &RowKey| {
             self.palette_answer
                 .as_ref()
@@ -2515,9 +2507,6 @@ impl PlexiApp {
                     HintGroup::alternatives(&[&["\u{2318}", "j"], &["\u{2318}", "k"]], "navigate"),
                     HintGroup::new(&["\u{21b5}"], enter_label),
                 ];
-                if let Some(next) = next_stop.as_deref() {
-                    hints.push(HintGroup::new(&["tab"], next));
-                }
                 if !showing_actions && has_actions {
                     hints.push(HintGroup::new(&["cmd", "enter"], "actions"));
                 }

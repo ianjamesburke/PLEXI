@@ -1308,6 +1308,7 @@ fn palette_commands_stop() {
     );
     h.harness().get_by_label("CONTEXTS");
     h.harness().get_by_label("COMMANDS");
+    assert_layout_surface(&h, "scope_switcher");
     h.save_screenshot(&evidence_png!("_empty"))
         .expect("render failed");
 
@@ -1418,6 +1419,123 @@ fn seed_files_workspace(root: &std::path::Path) {
     photo
         .save(root.join("assets/photo.png"))
         .expect("write photo");
+}
+
+#[test]
+fn palette_scope_switcher_preserves_focus_and_query() {
+    let mut h = palette_harness();
+    reopen_palette(&mut h);
+    type_palette_text(&mut h, "keyboard");
+    h.run_steps(2);
+    assert_layout_surface(&h, "scope_switcher");
+    let trace = crate::testing::test_log::capture();
+    h.harness().key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert_eq!(palette_picker(&h).1, "files");
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+    h.run_steps(2);
+    assert_eq!(palette_picker(&h).1, "commands");
+    h.harness()
+        .get_by_role_and_label(egui::accesskit::Role::Tab, "Agents")
+        .click();
+    h.run_steps(2);
+    let (query, stop, _) = palette_picker(&h);
+    assert_eq!((query.as_str(), stop), ("keyboard", "agents"));
+    h.with_app(|app| {
+        assert_eq!(
+            app.ctx.memory(|memory| memory.focused()),
+            Some(egui::Id::new("palette_search")),
+        );
+    });
+    let stops: Vec<_> = trace
+        .records()
+        .into_iter()
+        .filter(|(_, line)| line.starts_with("picker: stop '"))
+        .collect();
+    assert_eq!(
+        stops,
+        ["files", "commands", "agents"].map(|stop| (
+            log::Level::Info,
+            format!("picker: stop '{stop}'"),
+        )),
+    );
+
+    let commands = h
+        .harness()
+        .get_by_role_and_label(egui::accesskit::Role::Tab, "Commands")
+        .rect()
+        .center();
+    press_at(&mut h, commands);
+    assert_eq!(palette_picker(&h).1, "commands");
+    wait_for_palette(&mut h, "Commands results restored", |app| {
+        app.palette_selected_key().as_deref() == Some("commands:cmd/toggle_shortcuts")
+    });
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run_steps(2);
+    h.harness().get_by_label("back");
+    assert!(h.harness().query_by_label("Scope").is_none());
+}
+
+fn check_palette_scope_switcher_states(mut capture: impl FnMut(&mut PlexiUiHarness, &str, &str)) {
+    use crate::host::picker::PreviewStatus;
+    use egui_kittest::kittest::by;
+
+    for (name, width, height, scale) in [
+        ("normal", 1168.0, 800.0, 1.0),
+        ("narrow", 360.0, 680.0, 1.0),
+        ("raised", 1168.0, 900.0, 1.5),
+    ] {
+        let mut h = PlexiUiHarness::new_sized_scaled(width, height, scale);
+        let root = root_context_in_workspace(&mut h);
+        seed_files_workspace(&root);
+        seed_palette_waiting_agent(&mut h);
+        h.step();
+        h.harness()
+            .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::P);
+        h.run_steps(3);
+        for (stop, label) in [("commands", "Commands"), ("files", "Files"), ("agents", "Agents")] {
+            assert_eq!(palette_picker(&h).1, stop);
+            if stop == "files" {
+                wait_for_palette(&mut h, "seeded Files results", |app| {
+                    matches!(palette_preview(app), Some(PreviewStatus::Ready { .. }))
+                });
+            } else if stop == "agents" {
+                wait_for_palette(&mut h, "seeded Agents results", |app| {
+                    app.palette_agents_load_count() == 1
+                });
+                assert!(h
+                    .harness()
+                    .query_all_by_label("release-reviewer")
+                    .next()
+                    .is_some());
+            }
+            assert!(palette_picker(&h).2.is_some(), "{name} {stop} has results");
+            h.harness().get(
+                by().role(egui::accesskit::Role::Tab)
+                    .label(label)
+                    .predicate(|node| node.is_selected() == Some(true)),
+            );
+            assert_layout_surface(&h, "scope_switcher");
+            capture(&mut h, name, stop);
+            h.harness().key_press(egui::Key::Tab);
+            h.run_steps(2);
+        }
+    }
+}
+
+#[test]
+fn palette_scope_switcher_states() {
+    check_palette_scope_switcher_states(|_, _, _| {});
+}
+
+#[test]
+fn screenshot_palette_scope_switcher_states() {
+    check_palette_scope_switcher_states(|h, size, stop| {
+        h.save_screenshot(&evidence_png!(format!("_{size}_{stop}")))
+            .expect("render failed");
+    });
 }
 
 /// Stint 1392: Tab from Commands lists the active context's files with an
@@ -1543,10 +1661,8 @@ fn palette_files_read_shows_root_readme_first() {
     h.save_screenshot(&evidence_png!()).expect("render failed");
 }
 
-#[test]
-fn palette_agents_stop_with_preview() {
-    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
-    add_focused_pane(&mut h);
+fn seed_palette_waiting_agent(h: &mut PlexiUiHarness) {
+    add_focused_pane(h);
     h.with_app_mut(|app| {
         let id = app.host.alloc_pane_id();
         let mut term = TerminalPane::fixture(
@@ -1587,6 +1703,12 @@ fn palette_agents_stop_with_preview() {
             })
             .unwrap();
     });
+}
+
+#[test]
+fn palette_agents_stop_with_preview() {
+    let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
+    seed_palette_waiting_agent(&mut h);
     reopen_palette(&mut h);
     for _ in 0..2 {
         h.harness().key_press(egui::Key::Tab);

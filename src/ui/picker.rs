@@ -386,61 +386,18 @@ pub(crate) fn stops(
     state: &PickerState,
     colors: &Colors,
 ) -> Option<&'static str> {
-    use crate::ui::bounded::{self, Slot};
-    use crate::ui::button::{ButtonKind, ButtonSize, KitButton};
     if state.showing_actions() {
         if let Some(row) = state.selected_row() {
             crate::ui::typography::caption(ui, &row.title, colors);
         }
         return None;
     }
-    let buttons: Vec<_> = state
-        .stops()
-        .iter()
-        .map(|stop| {
-            let button = KitButton::new(stop.label, colors)
-                .kind(ButtonKind::Ghost)
-                .size(ButtonSize::Sm)
-                .selected(stop.id == state.active_stop().id)
-                .focusable(false);
-            (stop.id, button)
-        })
-        .collect();
-    let gap = style::SPACE_XS;
-    let slots: Vec<_> = buttons
-        .iter()
-        .rev()
-        .map(|(id, button)| Slot {
-            id,
-            width: button.natural_width(ui),
-            compact: None,
-            required: true,
-        })
-        .collect();
-    let width = slots.iter().map(|slot| slot.width + gap).sum::<f32>();
-    let bounds = egui::Rect::from_min_size(
-        ui.cursor().min,
-        egui::vec2(width.min(ui.available_width()), ButtonSize::Sm.height()),
-    );
-    let mut clicked = None;
-    if let Ok(row) = bounded::allocate(bounds, 0.0, gap, &slots) {
-        ui.advance_cursor_after_rect(bounds);
-        for ((id, button), slot) in buttons.into_iter().zip(row.slots.into_iter().rev()) {
-            let mut chip = ui.new_child(egui::UiBuilder::new().id_salt(id).max_rect(slot.rect));
-            if chip.add(button).clicked() {
-                clicked = Some(id);
-            }
-        }
-    } else {
-        static STACKED: std::sync::Once = std::sync::Once::new();
-        STACKED.call_once(|| log::info!("picker: stacking stop chips to fit the available width"));
-        for (id, button) in buttons {
-            if ui.push_id(id, |ui| ui.add(button)).inner.clicked() {
-                clicked = Some(id);
-            }
-        }
-    }
-    clicked
+    let stops = state.stops();
+    let active = stops.iter().position(|stop| stop.id == state.active_stop().id)?;
+    let labels: Vec<_> = stops.iter().map(|stop| stop.label).collect();
+    super::scope_switcher::ScopeSwitcher::new(&labels, active)
+        .show(ui, colors)
+        .map(|index| stops[index].id)
 }
 
 fn actions(
