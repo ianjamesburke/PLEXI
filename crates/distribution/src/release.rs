@@ -88,6 +88,9 @@ pub fn archive_name(platform: &str, channel: &str) -> String {
 pub fn version(tag: &str) -> Option<semver::Version> {
     semver::Version::parse(tag.strip_prefix('v')?).ok()
 }
+/// One channel, one lane: a channel only ever installs its own releases.
+/// Alpha takes alpha tags, beta takes beta tags, stable takes final tags.
+/// A `pr-*` install is a manual install of a named prerelease or final tag.
 pub fn accepts(channel: &str, tag: &str, prerelease: bool) -> bool {
     let Some(version) = version(tag) else {
         return false;
@@ -99,9 +102,8 @@ pub fn accepts(channel: &str, tag: &str, prerelease: bool) -> bool {
         .map(|(lane, n)| (lane, n.parse::<u64>().is_ok()));
     match (normalized_channel(channel), lane) {
         ("stable", _) => version.pre.is_empty() && !prerelease,
-        (_, None) => version.pre.is_empty(),
-        ("beta", Some(("beta", true))) => true,
-        ("alpha", Some(("alpha" | "beta", true))) => true,
+        ("beta", Some(("beta", true))) | ("alpha", Some(("alpha", true))) => true,
+        (c, None) if c.starts_with("pr-") => version.pre.is_empty(),
         (c, Some(("alpha" | "beta", true))) if c.starts_with("pr-") => true,
         _ => false,
     }
@@ -157,82 +159,13 @@ fn github_token() -> Option<String> {
 /// published with alpha assets so it remains an eligible fallback, but it must
 /// not outrank an alpha (or beta) prerelease merely because SemVer orders a
 /// final release above its prerelease.
-fn alpha_preference(tag: &str) -> u8 {
-    let Some(version) = version(tag) else {
-        return 0;
-    };
-    match version.pre.as_str().split_once('.') {
-        Some(("alpha", number)) if number.parse::<u64>().is_ok() => 2,
-        Some(("beta", number)) if number.parse::<u64>().is_ok() => 1,
-        _ => 0,
-    }
-}
-
-fn same_release_series(left: &semver::Version, right: &semver::Version) -> bool {
-    (left.major, left.minor, left.patch) == (right.major, right.minor, right.patch)
-}
-
-fn is_alpha_build(version: &semver::Version) -> bool {
-    matches!(
-        version.pre.as_str().split_once('.'),
-        Some(("alpha", number)) if number.parse::<u64>().is_ok()
-    )
-}
-
-/// Within one release series the alpha channel only moves to alpha builds
-/// once it runs a prerelease: a beta or stable of that series carries
-/// older code (it is cut from an earlier alpha) and, once installed, would
-/// hide every later alpha of that series because SemVer orders it above them.
-pub fn leaves_alpha_lane(channel: &str, from: &str, to: &str) -> bool {
-    match (version(from), version(to)) {
-        (Some(from), Some(to)) => {
-            normalized_channel(channel) == "alpha"
-                && !from.pre.is_empty()
-                && !is_alpha_build(&to)
-                && same_release_series(&from, &to)
-        }
-        _ => false,
-    }
-}
-
-/// An alpha installation that an earlier updater moved onto a beta returns to
-/// its series' alpha builds. SemVer ranks those alphas below the beta, but the
-/// beta was cut from one of them, so the newest alpha is never older code. A
-/// same-series stable is excluded: it is cut after the series' alphas.
-fn returns_to_alpha_lane(channel: &str, from: &str, to: &str) -> bool {
-    match (version(from), version(to)) {
-        (Some(from), Some(to)) => {
-            normalized_channel(channel) == "alpha"
-                && !from.pre.is_empty()
-                && !is_alpha_build(&from)
-                && is_alpha_build(&to)
-                && same_release_series(&from, &to)
-        }
-        _ => false,
-    }
-}
-
-/// Whether the channel would move from `current` to `tag`. No current version
-/// (a fresh install) offers every tag.
-fn offered(channel: &str, current: Option<&str>, tag: &str) -> bool {
-    let Some((from, from_version)) = current.and_then(|from| Some((from, version(from)?))) else {
+/// Whether the channel would move from `current` to `tag`: only to a newer
+/// version. No current version (a fresh install) offers every tag.
+fn offered(current: Option<&str>, tag: &str) -> bool {
+    let Some(from) = current.and_then(version) else {
         return true;
     };
-    version(tag).is_some_and(|next| {
-        (next > from_version && !leaves_alpha_lane(channel, from, tag))
-            || returns_to_alpha_lane(channel, from, tag)
-    })
-}
-
-/// The channel's ordering: the alpha channel prefers alpha, then beta, then
-/// stable builds; every other channel is plain SemVer.
-fn rank(channel: &str, tag: &str) -> (u8, Option<semver::Version>) {
-    let preference = if normalized_channel(channel) == "alpha" {
-        alpha_preference(tag)
-    } else {
-        0
-    };
-    (preference, version(tag))
+    version(tag).is_some_and(|next| next > from)
 }
 
 pub fn select<'a>(
@@ -249,8 +182,8 @@ pub fn select<'a>(
         .filter(|r| {
             r.assets.iter().any(|a| a.name == asset) && r.assets.iter().any(|a| a.name == checksum)
         })
-        .filter(|r| offered(channel, current, &r.tag_name))
-        .max_by_key(|r| rank(channel, &r.tag_name))
+        .filter(|r| offered(current, &r.tag_name))
+        .max_by_key(|r| version(&r.tag_name))
 }
 
 /// Tags `select` could choose, best first, judged from the tag alone. Draft,
@@ -260,9 +193,9 @@ fn ranked_tags<'a>(tags: &'a [String], channel: &str, current: Option<&str>) -> 
         .iter()
         .map(String::as_str)
         .filter(|tag| accepts(channel, tag, tag.contains('-')))
-        .filter(|tag| offered(channel, current, tag))
+        .filter(|tag| offered(current, tag))
         .collect();
-    ranked.sort_by_cached_key(|tag| std::cmp::Reverse(rank(channel, tag)));
+    ranked.sort_by_cached_key(|tag| std::cmp::Reverse(version(tag)));
     ranked
 }
 
@@ -617,115 +550,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn channel_acceptance_preserves_explicit_stable_alpha_installs() {
-        assert!(accepts("alpha", "v1.0.0", false));
-        assert!(accepts("beta", "v1.0.0", false));
-        assert!(!accepts("stable", "v1.0.0", true));
-        assert!(!accepts("beta", "v1.0.0-alpha.1", true));
-        assert!(!accepts("alpha", "v1.0.0-windows.1", true));
-    }
-
-    #[test]
-    fn alpha_selection_prefers_newest_alpha_prerelease_over_stable() {
-        let releases = vec![
-            release("v0.3.5", true),
-            release("v0.3.5-alpha.1", true),
-            release("v0.3.5-alpha.2", true),
-        ];
-        assert_eq!(
-            select(&releases, "alpha", "macos-arm64", None)
-                .unwrap()
-                .tag_name,
-            "v0.3.5-alpha.2"
-        );
-    }
-
-    #[test]
-    fn alpha_update_never_demotes_same_release_series_to_stable() {
-        let releases = vec![release("v0.3.5", true), release("v0.3.5-alpha.2", true)];
-        assert_eq!(
-            select(&releases, "alpha", "macos-arm64", Some("v0.3.5-alpha.1"),)
-                .unwrap()
-                .tag_name,
-            "v0.3.5-alpha.2"
-        );
-
-        let stable_only = vec![release("v0.3.5", true)];
-        assert!(select(&stable_only, "alpha", "macos-arm64", Some("v0.3.5-alpha.1"),).is_none());
-    }
-
-    #[test]
-    fn alpha_update_never_moves_to_a_same_series_beta() {
-        let mut releases = vec![
-            release("v0.5.0-alpha.6", true),
-            release("v0.5.0-beta.1", true),
-        ];
-        assert!(select(&releases, "alpha", "macos-arm64", Some("v0.5.0-alpha.6")).is_none());
-        releases.push(release("v0.5.0-alpha.7", true));
-        assert_eq!(
-            select(&releases, "alpha", "macos-arm64", Some("v0.5.0-alpha.6"))
-                .unwrap()
-                .tag_name,
-            "v0.5.0-alpha.7"
-        );
-    }
-
-    #[test]
-    fn alpha_install_on_a_same_series_beta_returns_to_the_newest_alpha() {
-        let releases = vec![
-            release("v0.5.0-alpha.6", true),
-            release("v0.5.0-alpha.7", true),
-            release("v0.5.0-beta.1", true),
-        ];
-        assert_eq!(
-            select(&releases, "alpha", "macos-arm64", Some("v0.5.0-beta.1"))
-                .unwrap()
-                .tag_name,
-            "v0.5.0-alpha.7"
-        );
-        // Only the alpha channel corrects; a beta install stays on beta.
-        assert!(
-            select(
-                &[release_for("v0.5.0-alpha.7", "beta")],
-                "beta",
-                "macos-arm64",
-                Some("v0.5.0-beta.1")
-            )
-            .is_none()
-        );
-        // A same-series stable is never moved back to that series' alphas.
-        assert!(select(&releases, "alpha", "macos-arm64", Some("v0.5.0")).is_none());
-    }
-
-    #[test]
-    fn alpha_update_acceptance_by_series_and_lane() {
-        let from = Some("v0.5.0-alpha.6");
-        let offered = |tag: &str| {
-            select(&[release(tag, true)], "alpha", "macos-arm64", from).map(|r| r.tag_name.clone())
-        };
-        assert_eq!(offered("v0.5.0-alpha.7").as_deref(), Some("v0.5.0-alpha.7"));
-        assert_eq!(offered("v0.5.0-beta.1"), None);
-        assert_eq!(offered("v0.5.0"), None);
-        assert_eq!(offered("v0.5.0-alpha.5"), None);
-        assert_eq!(offered("v0.6.0-alpha.1").as_deref(), Some("v0.6.0-alpha.1"));
-        assert_eq!(offered("v0.6.0-beta.1").as_deref(), Some("v0.6.0-beta.1"));
-        assert_eq!(offered("v0.6.0").as_deref(), Some("v0.6.0"));
-        assert_eq!(offered("v0.5.1").as_deref(), Some("v0.5.1"));
-        // A newer alpha still outranks a higher-series beta or stable.
-        let releases = vec![
-            release("v0.6.0", true),
-            release("v0.6.0-beta.1", true),
-            release("v0.5.0-alpha.7", true),
-        ];
-        assert_eq!(
-            select(&releases, "alpha", "macos-arm64", from)
-                .unwrap()
-                .tag_name,
-            "v0.5.0-alpha.7"
-        );
-    }
-
     fn release_for(tag: &str, channel: &str) -> Release {
         let asset = archive_name("macos-arm64", channel);
         Release {
@@ -744,7 +568,45 @@ mod tests {
     }
 
     #[test]
-    fn beta_update_moves_between_betas_and_promotes_to_stable_never_to_alpha() {
+    fn every_channel_accepts_only_its_own_lane() {
+        assert!(accepts("alpha", "v0.6.2-alpha.1", true));
+        assert!(!accepts("alpha", "v0.6.2-beta.1", true));
+        assert!(!accepts("alpha", "v0.6.2", false));
+        assert!(accepts("beta", "v0.6.2-beta.1", true));
+        assert!(!accepts("beta", "v0.6.2-alpha.1", true));
+        assert!(!accepts("beta", "v0.6.2", false));
+        assert!(accepts("stable", "v0.6.2", false));
+        assert!(!accepts("stable", "v0.6.2", true));
+        assert!(!accepts("stable", "v0.6.2-beta.1", true));
+        assert!(!accepts("alpha", "v1.0.0-windows.1", true));
+        assert!(accepts("pr-3398", "v0.6.2-beta.1", true));
+        assert!(accepts("pr-3398", "v0.6.2", false));
+    }
+
+    /// The 2026-11-27 incident: an alpha on v0.6.1-alpha.3 installed
+    /// v0.6.2-beta.1. A higher-series beta or stable is never offered to alpha.
+    #[test]
+    fn alpha_never_moves_to_a_higher_series_beta_or_stable() {
+        let releases = vec![
+            release("v0.6.2-beta.1", true),
+            release("v0.6.2", true),
+            release("v0.7.0-beta.1", true),
+        ];
+        assert!(select(&releases, "alpha", "macos-arm64", Some("v0.6.1-alpha.3")).is_none());
+        let next = vec![
+            release("v0.6.2-beta.1", true),
+            release("v0.6.2-alpha.1", true),
+        ];
+        assert_eq!(
+            select(&next, "alpha", "macos-arm64", Some("v0.6.1-alpha.3"))
+                .unwrap()
+                .tag_name,
+            "v0.6.2-alpha.1"
+        );
+    }
+
+    #[test]
+    fn beta_update_moves_only_between_betas() {
         let offered = |tags: &[&str], from: &str| {
             let releases: Vec<_> = tags.iter().map(|t| release_for(t, "beta")).collect();
             select(&releases, "beta", "macos-arm64", Some(from)).map(|r| r.tag_name.clone())
@@ -755,12 +617,9 @@ mod tests {
             offered(&["v0.5.0-beta.2"], "v0.5.0-beta.1").as_deref(),
             Some("v0.5.0-beta.2")
         );
+        assert_eq!(offered(&["v0.5.0"], "v0.5.0-beta.1"), None);
         assert_eq!(
-            offered(&["v0.5.0"], "v0.5.0-beta.1").as_deref(),
-            Some("v0.5.0")
-        );
-        assert_eq!(
-            offered(&["v0.5.0", "v0.6.0-beta.1"], "v0.5.0").as_deref(),
+            offered(&["v0.5.0", "v0.6.0-beta.1"], "v0.5.0-beta.1").as_deref(),
             Some("v0.6.0-beta.1")
         );
     }
@@ -778,17 +637,6 @@ mod tests {
         assert_eq!(
             offered(&["v0.5.1", "v0.6.0-beta.1"], "v0.5.0").as_deref(),
             Some("v0.5.1")
-        );
-    }
-
-    #[test]
-    fn alpha_selection_falls_back_to_stable_when_no_prerelease_exists() {
-        let releases = vec![release("v0.3.5", true)];
-        assert_eq!(
-            select(&releases, "alpha", "macos-arm64", None)
-                .unwrap()
-                .tag_name,
-            "v0.3.5"
         );
     }
 

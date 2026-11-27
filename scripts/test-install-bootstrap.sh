@@ -318,7 +318,7 @@ run_case "alpha forwards remaining installer args" reported v0.3.5-alpha.4 "" "-
 alpha" --install-only --channel alpha
 run_case "user tag pins the installer and is not duplicated" reported v0.3.5-alpha.4 "" "--tag
 v0.3.5-alpha.4" --tag v0.3.5-alpha.4
-run_case "beta falls back to newer stable" reported v0.3.5 "" "--channel
+run_case "beta ignores a newer stable" reported v0.3.2-beta.1 "" "--channel
 beta" --channel beta
 run_case "bootstrap tag overrides channel" reported v0.3.5-alpha.1 v0.3.5-alpha.1 "--channel
 beta" --channel beta
@@ -326,15 +326,9 @@ run_case "alpha prefers newest alpha over a newer stable" ordering v0.3.5-alpha.
 alpha" --channel alpha
 run_case "beta prefers newer beta over stable" ordering v0.9.1-beta.1 "" "--channel
 beta" --channel beta
-run_case "alpha falls back to newest beta" fallback v0.4.0-beta.2 "" "--channel
-alpha" --channel alpha
-run_case "beta uses newest stable when it outranks betas" fallback v0.9.0 "" "--channel
+run_case "beta ignores a stable that outranks its betas" fallback v0.4.0-beta.2 "" "--channel
 beta" --channel beta
-run_case "alpha falls back to stable" stable-only v0.3.5 "" "--channel
-alpha" --channel alpha
-run_case "beta falls back to stable" stable-only v0.3.5 "" "--channel
-beta" --channel beta
-run_case "beta does not prefer same-series prerelease over stable" same-series-beta v0.3.5 "" "--channel
+run_case "beta takes its own lane over a same-series stable" same-series-beta v0.3.5-beta.3 "" "--channel
 beta" --channel beta
 run_case "alpha sees tags past the newest hundred releases" paged v0.3.5-alpha.10 "" "--channel
 alpha" --channel alpha
@@ -346,6 +340,18 @@ run_case "pr channel ignores newer beta" ordering v0.9.0 "" "--channel
 pr-12" --channel pr-12
 run_case "alpha skips newest release without this platform's installer" alpha-linux-fallback v0.3.9-alpha.8 "" "--channel
 alpha" --channel alpha
+
+for channel in alpha beta; do
+  if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/stable-only" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel "$channel" 2>&1)"; then
+    echo "FAIL $channel installed a stable release"
+    fail=1
+  elif [[ "$err" != *"No $channel release of Plexi is published for $platform yet."* ]]; then
+    echo "FAIL $channel without its own release stderr: $err"
+    fail=1
+  else
+    echo "PASS $channel never falls back to stable"
+  fi
+done
 
 if err="$(env -u PLEXI_BOOTSTRAP_TAG PLEXI_GITHUB_REPO_API="$base/fixtures/no-linux-assets" PLEXI_RELEASE_BASE_URL="$base/download" PLEXI_BOOTSTRAP_ARGV_OUT="$argv" bash "$repo/install.sh" --channel alpha 2>&1)"; then
   echo "FAIL no Linux installer release was accepted"

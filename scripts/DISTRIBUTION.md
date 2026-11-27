@@ -226,13 +226,10 @@ waits for the old process to exit before launching the recorded active generatio
 
 ## Release selection and publication
 
-`release::accepts` is the shared policy: stable accepts stable, beta accepts beta
-and stable, alpha accepts alpha, beta and stable. Alpha automatic selection gives
-alpha prereleases priority, then beta prereleases, before stable fallback releases.
-An update from an alpha prerelease never moves to a beta or stable of the same
-release series (`release::leaves_alpha_lane`): those are cut from an earlier alpha,
-and SemVer would then rank them above every later alpha of the series. An alpha
-installation already on a same-series beta is offered the series' newest alpha.
+`release::accepts` is the shared policy: one channel, one lane. Stable accepts
+stable, beta accepts beta, alpha accepts alpha; an update never crosses channels.
+Only stable and beta check for updates (`channel_checks_for_updates`); alpha and
+`pr-*` builds are installed from source and never self-update.
 An explicit tag remains exact. Selection paginates releases, orders candidates
 semantically within that policy, excludes drafts, and requires both the correct
 channel/platform archive and checksum. The installation channel stays fixed.
