@@ -110,13 +110,6 @@ pub(crate) enum PaneLifecycleEvent {
     },
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct PaneLifecycleState {
-    pub context_id: u64,
-    pub parent_pane_id: Option<u64>,
-    pub booted: bool,
-}
-
 impl PaneLifecycleEvent {
     pub(crate) fn from_report(
         state: &AgentState,

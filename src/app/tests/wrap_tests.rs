@@ -758,7 +758,7 @@ fn dissolve_wrapped_subcontext_elevates_panes_with_no_child_remnants() {
         "dissolved child context must not keep an authoritative strip"
     );
     assert!(
-        h.app.host.strip_layout(child).is_none(),
+        h.app.published_strips.layout(child).is_none(),
         "dissolved child context must not keep a published strip layout"
     );
     let parent_panes: std::collections::HashSet<u64> = h
@@ -809,7 +809,7 @@ fn delete_wrapped_subcontext_removes_its_strip_and_layout() {
     h.run_frames(2);
 
     assert!(h.app.host.strip(child).is_none());
-    assert!(h.app.host.strip_layout(child).is_none());
+    assert!(h.app.published_strips.layout(child).is_none());
     assert!(h.app.save_workspace_now());
     let saved = crate::workspace::WorkspaceFile::load_from(h.profile_dir())
         .expect("workspace saved after delete must validate");

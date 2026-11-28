@@ -1617,12 +1617,12 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
     let root_a = tempfile::tempdir().expect("root a");
     let root_b = tempfile::tempdir().expect("root b");
 
-    let mut tree_a: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
+    let mut tree_a: egui_tiles::Tree<crate::host::model::PaneId> =
         egui_tiles::Tree::empty("win-a");
     let tile_a = tree_a.tiles.insert_pane(41);
     tree_a.root = Some(tile_a);
 
-    let mut tree_b: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
+    let mut tree_b: egui_tiles::Tree<crate::host::model::PaneId> =
         egui_tiles::Tree::empty("win-b");
     let tile_b = tree_b.tiles.insert_pane(42);
     tree_b.root = Some(tile_b);
@@ -1778,7 +1778,7 @@ fn legacy_view_pane_without_launch_context_still_loads() {
     // A real, validly-shaped `Tree<PaneId>` — its serde form carries internal
     // fields (`id`, `height`, `width`) with no `#[serde(default)]`, so it must
     // come from the type itself rather than a hand-typed JSON fragment.
-    let mut tree: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
+    let mut tree: egui_tiles::Tree<crate::host::model::PaneId> =
         egui_tiles::Tree::empty("legacy-migration");
     let tile = tree.tiles.insert_pane(1);
     tree.root = Some(tile);
@@ -1788,7 +1788,7 @@ fn legacy_view_pane_without_launch_context_still_loads() {
     strip.push_column(crate::strip::Column::new(
         column,
         1,
-        crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
+        crate::strip::ColumnWidth::Preset(crate::strip::model::ColumnWidthPreset::Child65),
     ));
     let strip_json = serde_json::to_string(&strip).expect("strip must serialize");
 
@@ -2598,7 +2598,7 @@ fn pane_slot_read_preserves_error_like_json_content() {
 fn seed_slot(
     h: &mut HostHarness,
     tmp: &std::path::Path,
-    pane: crate::spatial::tiling::PaneId,
+    pane: crate::host::model::PaneId,
     slot_name: &str,
     content: &[u8],
     replace: bool,
@@ -13389,7 +13389,7 @@ mod routine_firing {
     use super::*;
     use crate::host::context::{Context, Window};
     use crate::host::pane::{Pane, ViewPane, ViewRuntime};
-    use crate::spatial::tiling::PaneId;
+    use crate::host::model::PaneId;
 
     /// Write `routines.toml` into `root`'s workspace channel dir.
     fn write_routines(root: &std::path::Path, body: &str) {
@@ -22986,7 +22986,7 @@ mod program_status_agent {
 mod tiled_navigation_frame_tests {
     use super::*;
     use crate::host::keys::Direction;
-    use crate::spatial::tiling::PaneId;
+    use crate::host::model::PaneId;
 
     const COLUMNS: usize = 5;
 

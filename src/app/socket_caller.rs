@@ -23,7 +23,7 @@ impl PlexiApp {
     pub(crate) fn classify_socket_peer_excluding(
         &self,
         peer: Option<&PeerWitness>,
-        excluded: Option<crate::spatial::tiling::PaneId>,
+        excluded: Option<crate::host::model::PaneId>,
     ) -> SocketCaller {
         let Some(peer) = peer else {
             return SocketCaller::Unidentified(UnidentifiedReason::NoPeerCredential);

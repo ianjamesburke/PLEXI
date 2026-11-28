@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use super::PlexiApp;
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use crate::workspace::AgentHistoryRecord;
 
 /// Proof of admission for one request. Only the admission function can create

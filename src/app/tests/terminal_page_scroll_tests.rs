@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use crate::host::pane::Pane;
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use crate::testing::HostHarness;
 
 /// Prints 200 lines, optionally after pushing kitty keyboard flags (as

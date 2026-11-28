@@ -1,3 +1,4 @@
+use crate::host::model::PaneId;
 use crate::host::pane::{Pane, TerminalPane, ViewRuntime};
 use plexi_protocol::AgentState;
 use crate::render;
@@ -9,8 +10,6 @@ use egui_tiles::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-
-pub type PaneId = u64;
 
 pub(crate) const TAB_BAR_HEIGHT: f32 = crate::ui::style::PANE_HEADER_HEIGHT;
 

@@ -12,6 +12,7 @@
 //!    content grep with line numbers and snippets) integrated with [`UiWake`].
 
 use crate::app::ui_mailbox::UiWake;
+use crate::host::picker::MAX_SOURCE_ROWS;
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
@@ -70,9 +71,6 @@ pub const MAX_CONTENT_FILE_BYTES: u64 = 1_048_576;
 
 /// Number of leading bytes inspected for NUL (`\0`) to reject binary files.
 const BINARY_SNIFF_BYTES: usize = 8_192;
-
-/// Maximum number of search hits retained per session snapshot.
-pub(crate) const MAX_SEARCH_HITS: usize = 250;
 
 /// Maximum length (in chars) of a content match line preview.
 const MAX_PREVIEW_CHARS: usize = 120;
@@ -1599,7 +1597,7 @@ fn search_worker_loop(
                 merged_hits[hit_idx].kind = SearchHitKind::Path {
                     content: Some(snippet),
                 };
-            } else if merged_hits.len() < MAX_SEARCH_HITS {
+            } else if merged_hits.len() < MAX_SOURCE_ROWS {
                 let score = content_match.match_score + recency_boost(entry.modified, now)
                     - ((entry.depth.min(20) as i64) * 15);
                 let idx = merged_hits.len();
@@ -1626,8 +1624,8 @@ fn search_worker_loop(
         }
 
         sort_search_hits(&mut merged_hits);
-        if merged_hits.len() > MAX_SEARCH_HITS {
-            merged_hits.truncate(MAX_SEARCH_HITS);
+        if merged_hits.len() > MAX_SOURCE_ROWS {
+            merged_hits.truncate(MAX_SOURCE_ROWS);
         }
 
         log::info!(
@@ -1693,8 +1691,8 @@ pub fn rank_path_hits(entries: &[WalkEntry], query: &str, now: SystemTime) -> Ve
     if !trimmed.is_empty() {
         sort_search_hits(&mut hits);
     }
-    if hits.len() > MAX_SEARCH_HITS {
-        hits.truncate(MAX_SEARCH_HITS);
+    if hits.len() > MAX_SOURCE_ROWS {
+        hits.truncate(MAX_SOURCE_ROWS);
     }
     hits
 }

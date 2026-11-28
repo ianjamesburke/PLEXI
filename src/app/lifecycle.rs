@@ -173,8 +173,7 @@ impl PlexiApp {
                         })
                         .or_else(|| {
                             self.host
-                                .pane_lifecycle
-                                .get(&target_pane_id)
+                                .pane_lifecycle(target_pane_id)
                                 .map(|s| s.context_id)
                         });
                     if let Some(t_ctx_id) = target_ctx_id {
@@ -248,7 +247,7 @@ impl PlexiApp {
     /// `fallback_win`.
     fn redirect_focus_to_spawn_origin(
         &mut self,
-        from_pane_id: Option<crate::spatial::tiling::PaneId>,
+        from_pane_id: Option<crate::host::model::PaneId>,
         kind: &str,
         fallback_win: usize,
     ) -> (usize, Option<egui_tiles::TileId>) {
@@ -371,7 +370,7 @@ impl PlexiApp {
     fn foreign_report(
         &self,
         origin: &crate::broker::caller::RequestOrigin,
-        target: crate::spatial::tiling::PaneId,
+        target: crate::host::model::PaneId,
     ) -> Option<String> {
         use crate::broker::caller::SocketCaller;
         match origin.socket_caller()? {
@@ -398,7 +397,7 @@ impl PlexiApp {
     /// later pane reusing its number, can read it back (stint 1285).
     fn file_pane_needs_you(
         &self,
-        pane_id: crate::spatial::tiling::PaneId,
+        pane_id: crate::host::model::PaneId,
         kind: crate::broker::gate::NeedsYouKind,
         summary: String,
         session_id: Option<String>,
@@ -570,7 +569,7 @@ impl PlexiApp {
     pub(crate) fn agent_spawn_reply_admitted(
         &mut self,
         origin: &crate::broker::caller::RequestOrigin,
-        host_parent: Option<crate::spatial::tiling::PaneId>,
+        host_parent: Option<crate::host::model::PaneId>,
         request: &plexi_protocol::HostRequest,
         _admitted: super::agent_open::AdmittedAgentMeshRoute,
         prepared: Option<&crate::pane_ops::create::ConfiguredAgentLaunch>,
@@ -2873,7 +2872,7 @@ impl PlexiApp {
                 {
                     self.ensure_authoritative_strip(context_id);
                     let layout = self.active_strip_layout();
-                    self.host.set_strip_layout(context_id, layout);
+                    self.publish_strip_layout(context_id, layout);
                 }
                 let owner = match self.input_owner(&self.ctx) {
                     crate::app::input_owner::InputOwner::Pane(pane_id) => {
@@ -2889,7 +2888,7 @@ impl PlexiApp {
                         serde_json::json!({"kind":"nobody"})
                     }
                 };
-                let reply = if let Some(snapshot) = self.host.published_strip_snapshot(context_id) {
+                let reply = if let Some(snapshot) = self.published_strips.snapshot(context_id) {
                     let columns: Vec<_> = snapshot
                         .strip
                         .columns
@@ -4991,7 +4990,7 @@ impl PlexiApp {
                         );
                     }
                     if session_ended {
-                        if let Some(tracked) = self.host.pane_lifecycle.get_mut(pane_id) {
+                        if let Some(tracked) = self.host.pane_lifecycle_mut(*pane_id) {
                             tracked.booted = false;
                         }
                     } else if *state == plexi_protocol::AgentState::Idle

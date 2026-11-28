@@ -213,10 +213,6 @@ pub const CHIP_ARROW: f32 = 6.0;
 pub const TOOLBAR_H: f32 = 28.0;
 pub const PATH_BAR_H: f32 = 34.0;
 pub const STRIP_PEEK_W: f32 = 28.0;
-/// Canvas width assumed for strip shares when the real width is not known yet.
-pub const STRIP_FALLBACK_CANVAS_W: f32 = 1200.0;
-pub const COLUMN_WIDTH_PARENT: f32 = 0.35;
-pub const COLUMN_WIDTH_CHILD: f32 = 0.65;
 pub const ATLAS_NODE_W: f32 = 216.0;
 pub const ATLAS_NODE_H: f32 = 84.0;
 pub const EDGE_ROAD_W: f32 = 2.5;

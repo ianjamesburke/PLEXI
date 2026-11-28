@@ -1022,7 +1022,7 @@ impl PlexiApp {
     /// Resolve interactive requests whose producer has exited. Informational
     /// messages remain readable as tombstones; Choice/Input requests cannot
     /// leave a producer contract or CLI response file pending after exit.
-    pub(crate) fn tombstone_pane_notifications(&mut self, pane_id: crate::spatial::tiling::PaneId) {
+    pub(crate) fn tombstone_pane_notifications(&mut self, pane_id: crate::host::model::PaneId) {
         let mut ended = Vec::new();
         for n in &mut self.pending_notifications {
             if n.sender_pane_id == pane_id {

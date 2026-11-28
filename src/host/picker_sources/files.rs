@@ -5,10 +5,11 @@
 //! the UI thread only installs answers, in `App::logic`.
 
 use super::preview::classify;
-use super::usage::{UsageBook, UsageEntry};
-use super::{usage_rank_key, PreviewRef, RowKey, FILES_SOURCE, MAX_SOURCE_ROWS};
+use super::usage::UsageBook;
+use crate::host::picker::{
+    usage_rank_key, FileMatchRank, PreviewRef, RowKey, UsageEntry, FILES_SOURCE, MAX_SOURCE_ROWS,
+};
 use crate::search::{normalize_rel_path, score_candidate, CandidateInput, MatchScore, WalkConfig};
-use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -155,43 +156,33 @@ fn walk_files(config: &WalkConfig<'_>) -> Vec<IndexEntry> {
     entries
 }
 
-/// How a query matches the filename, before recency and usage are compared.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct FileMatchRank {
-    exact_name_or_stem: bool,
-    basename_tier: u8,
-    depth: Reverse<usize>,
-    unmatched_prefix_tail: Reverse<usize>,
-}
-
-impl FileMatchRank {
-    fn for_match(entry: &IndexEntry, score: &MatchScore) -> Option<Self> {
-        if score.basename_tier == 0 {
-            return None;
-        }
-        let name_len = entry.file_name.len();
-        let stem_len = Path::new(&entry.file_name)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .map_or(name_len, str::len);
-        let prefix_end = match score.primary_ranges.as_slice() {
-            [range] if range.start == 0 => Some(range.end),
-            _ => None,
-        };
-        let unmatched_prefix_tail = prefix_end.map_or(0, |end| {
-            if end <= stem_len {
-                stem_len - end
-            } else {
-                name_len - end
-            }
-        });
-        Some(Self {
-            exact_name_or_stem: prefix_end == Some(stem_len) || prefix_end == Some(name_len),
-            basename_tier: score.basename_tier,
-            depth: Reverse(entry.depth),
-            unmatched_prefix_tail: Reverse(unmatched_prefix_tail),
-        })
+/// How `score` ranks `entry`'s filename, or `None` when the name did not match.
+fn file_match_rank(entry: &IndexEntry, score: &MatchScore) -> Option<FileMatchRank> {
+    if score.basename_tier == 0 {
+        return None;
     }
+    let name_len = entry.file_name.len();
+    let stem_len = Path::new(&entry.file_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map_or(name_len, str::len);
+    let prefix_end = match score.primary_ranges.as_slice() {
+        [range] if range.start == 0 => Some(range.end),
+        _ => None,
+    };
+    let unmatched_prefix_tail = prefix_end.map_or(0, |end| {
+        if end <= stem_len {
+            stem_len - end
+        } else {
+            name_len - end
+        }
+    });
+    Some(FileMatchRank::new(
+        prefix_end == Some(stem_len) || prefix_end == Some(name_len),
+        score.basename_tier,
+        entry.depth,
+        unmatched_prefix_tail,
+    ))
 }
 
 /// A file row of an answer, ranked.
@@ -437,7 +428,7 @@ fn rank(entries: &[IndexEntry], query: &Query) -> Vec<FileHit> {
                 usage,
                 file_match: score
                     .as_ref()
-                    .and_then(|score| FileMatchRank::for_match(entry, score)),
+                    .and_then(|score| file_match_rank(entry, score)),
                 score: score.map(|score| score.total),
                 modified: entry
                     .modified

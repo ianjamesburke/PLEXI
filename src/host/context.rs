@@ -1,7 +1,8 @@
 use crate::host::keys::Direction;
+use crate::host::model::PaneId;
 use crate::host::pane::Pane;
 use crate::host::shell;
-use crate::spatial::tiling::{PaneId, TabGroupInfo};
+use crate::spatial::tiling::TabGroupInfo;
 use egui_tiles::{Container, Tile, TileId, Tree};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

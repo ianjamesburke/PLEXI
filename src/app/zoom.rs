@@ -6,7 +6,8 @@ use crate::app::input_router::PlexiInput;
 use crate::app::view_trait::KeyDisposition;
 use crate::app::PlexiApp;
 use crate::host::keys::Direction;
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
+use crate::strip::model::ColumnWidthPreset;
 use crate::ui::card_block::{layout_card, paint_card, wrap_text, CardForm, CardSpec, CardState};
 use crate::ui::style;
 use egui::{
@@ -32,23 +33,6 @@ impl ZoomLevel {
         match self {
             Self::Columns => "columns",
             Self::TreeAtlas => "tree_atlas",
-        }
-    }
-}
-
-/// Fixed column width presets (`35%` parent/list, `65%` child/main).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum ColumnWidthPreset {
-    Parent35,
-    #[default]
-    Child65,
-}
-
-impl ColumnWidthPreset {
-    pub fn ratio(self) -> f32 {
-        match self {
-            Self::Parent35 => style::COLUMN_WIDTH_PARENT,
-            Self::Child65 => style::COLUMN_WIDTH_CHILD,
         }
     }
 }
@@ -509,15 +493,31 @@ impl PlexiApp {
     pub fn active_strip_viewport(&self) -> crate::strip::StripViewport {
         let ctx_id = self.router.active().context_id;
         let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
-        if let Some(cached) = self.host.strip_layout(ctx_id) {
+        if let Some(cached) = self.published_strips.layout(ctx_id) {
             if cached.canvas_rect.width() > 1.0 && cached.canvas_rect.height() > 1.0 {
                 return crate::strip::StripViewport::new(cached.canvas_rect, gap);
             }
         }
         crate::strip::StripViewport::new(
-            Rect::from_min_size(Pos2::ZERO, Vec2::new(style::STRIP_FALLBACK_CANVAS_W, 800.0)),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(crate::strip::model::STRIP_FALLBACK_CANVAS_W, 800.0)),
             gap,
         )
+    }
+
+    /// Publish `layout` as the latest snapshot of `context_id`'s strip. A
+    /// context without an authoritative strip publishes nothing.
+    pub(crate) fn publish_strip_layout(&mut self, context_id: u64, layout: crate::strip::StripLayout) {
+        if let Some(strip) = self.host.strip(context_id) {
+            self.published_strips.publish(context_id, strip, layout);
+        }
+    }
+
+    /// Forget the strip and published layout of a context that no longer
+    /// exists, so nothing still lists its panes as members of it.
+    pub(crate) fn remove_strip(&mut self, context_id: u64) {
+        self.host.remove_strip(context_id);
+        self.published_strips.remove(context_id);
+        log::info!("strip: removed strip and layout for context={context_id}");
     }
 
     /// Snapshot the active window's rendered tile geometry. The legacy snapshot

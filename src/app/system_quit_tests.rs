@@ -5,7 +5,7 @@
 
 use crate::app::quit::ExitReason;
 use crate::platform::system_quit::{take_cancels, SystemQuitReason};
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use crate::testing::HostHarness;
 use std::path::Path;
 
@@ -13,7 +13,7 @@ fn unsaved_editor() -> (
     tempfile::TempDir,
     std::path::PathBuf,
     HostHarness,
-    crate::spatial::tiling::PaneId,
+    crate::host::model::PaneId,
 ) {
     let dir = tempfile::tempdir().unwrap();
     let mut h = HostHarness::new();

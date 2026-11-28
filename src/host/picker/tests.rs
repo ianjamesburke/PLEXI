@@ -55,7 +55,7 @@ fn row(source: &str, id: &str, group_rank: u32, score: Option<i64>) -> PickerRow
     }
 }
 
-fn opened(stops: &'static [Stop]) -> (PickerState, Vec<PickerEffect>) {
+fn opened(stops: &'static [Stop]) -> (PickerState<()>, Vec<PickerEffect<()>>) {
     let mut state = PickerState::new(stops);
     let effects = state.apply(PickerCommand::Open {
         stop: stops[0].id,
@@ -64,7 +64,7 @@ fn opened(stops: &'static [Stop]) -> (PickerState, Vec<PickerEffect>) {
     (state, effects)
 }
 
-fn answer(state: &mut PickerState, rows: Vec<PickerRow>) {
+fn answer(state: &mut PickerState<()>, rows: Vec<PickerRow>) {
     let generation = state.generation();
     state.apply(PickerCommand::Rows {
         generation,
@@ -73,14 +73,14 @@ fn answer(state: &mut PickerState, rows: Vec<PickerRow>) {
     });
 }
 
-fn queried_source(effects: &[PickerEffect]) -> Option<&'static str> {
+fn queried_source(effects: &[PickerEffect<()>]) -> Option<&'static str> {
     effects.iter().find_map(|e| match e {
         PickerEffect::Query { source, .. } => Some(*source),
         _ => None,
     })
 }
 
-fn hit(state: &PickerState, id: &str) -> Hit {
+fn hit(state: &PickerState<()>, id: &str) -> Hit {
     Hit {
         stamp: state.rows_stamp(),
         key: RowKey::new("commands", id),
@@ -91,7 +91,7 @@ fn rows(ids: &[&str]) -> Vec<PickerRow> {
     ids.iter().map(|id| row("commands", id, 0, None)).collect()
 }
 
-fn activated(effects: &[PickerEffect]) -> Vec<&str> {
+fn activated(effects: &[PickerEffect<()>]) -> Vec<&str> {
     effects
         .iter()
         .filter_map(|e| match e {
@@ -101,7 +101,7 @@ fn activated(effects: &[PickerEffect]) -> Vec<&str> {
         .collect()
 }
 
-fn deliver(state: &mut PickerState, ids: &[&str], done: bool) -> Vec<PickerEffect> {
+fn deliver(state: &mut PickerState<()>, ids: &[&str], done: bool) -> Vec<PickerEffect<()>> {
     let generation = state.generation();
     state.apply(PickerCommand::Rows {
         generation,
@@ -110,7 +110,7 @@ fn deliver(state: &mut PickerState, ids: &[&str], done: bool) -> Vec<PickerEffec
     })
 }
 
-fn selected(state: &PickerState) -> Option<&str> {
+fn selected(state: &PickerState<()>) -> Option<&str> {
     state.selected().map(RowKey::as_str)
 }
 
@@ -637,14 +637,14 @@ const FILES_STOP: &[Stop] = &[Stop {
 
 fn file(id: &str, score: Option<i64>, picks: Option<(u32, u64)>, modified: u64) -> PickerRow {
     PickerRow {
-        usage: picks.map(|(count, last_pick)| usage::UsageEntry { count, last_pick }),
+        usage: picks.map(|(count, last_pick)| UsageEntry { count, last_pick }),
         modified: Some(modified),
         preview: Some(PreviewRef::Text),
         ..row("files", id, 0, score)
     }
 }
 
-fn order(state: &PickerState) -> Vec<&str> {
+fn order(state: &PickerState<()>) -> Vec<&str> {
     state.rows().iter().map(|row| row.key.stable_id()).collect()
 }
 
