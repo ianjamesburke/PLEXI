@@ -58,7 +58,8 @@ jobs:
       - name: Test host PTY
         # The `#[ignore = "requires-pty"]` tests (stint 1563). The runner can
         # open PTYs and spawn shells, so they run here. Every other ignored
-        # test is skipped by name: the perf gates need a quiet machine,
+        # test is skipped by name: the perf gates and profile_ workloads need a
+        # quiet machine (profile_ also needs PLEXI_UI_PROFILE=1),
         # scene_single takes PLEXI_SCENE, the logger test needs an isolated
         # process, and the CPython bundle test needs a local bundle. A new
         # ignored test not on this list runs here and fails loudly.
@@ -67,6 +68,7 @@ jobs:
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
             python3 scripts/cargo-channel-inputs.py test --bin plexi -- --ignored \
               --skip perf_gate_ \
+              --skip ui_tests::tests::terminal::profile_ \
               --skip scenes::tests::scene_single \
               --skip app::registry::manifest_contract::tests::schema2_rejections_emit_info_with_plugin_field_and_reason \
               --skip host::wasm_python::tests::real_cpython_bundle_resolves_but_is_abi_blocked
