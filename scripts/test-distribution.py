@@ -388,16 +388,6 @@ time.sleep(600)
                 for path in new.iterdir(): tar.add(path, path.name)
         sidecar = tag_dir / (asset + '.sha256')
         sidecar.write_text(sha(archive) + '  ' + asset + '\n')
-        alpha_asset = f'plexi-{args.platform}-alpha.' + ('zip' if os.name == 'nt' else 'tar.gz')
-        alpha_archive = tag_dir / alpha_asset
-        if os.name == 'nt':
-            with zipfile.ZipFile(alpha_archive, 'w') as z:
-                for path in alpha.rglob('*'):
-                    if path.is_file(): z.write(path, path.relative_to(alpha))
-        else:
-            with tarfile.open(alpha_archive, 'w:gz') as tar:
-                for path in alpha.iterdir(): tar.add(path, path.name)
-        (tag_dir / (alpha_asset + '.sha256')).write_text(sha(alpha_archive) + '  ' + alpha_asset + '\n')
         helper = f'plexi-installer-{args.platform}' + ('.exe' if os.name == 'nt' else '')
         shutil.copy2(installer, tag_dir / helper)
         (tag_dir / (helper + '.sha256')).write_text(sha(tag_dir / helper) + '  ' + helper + '\n')
@@ -445,10 +435,11 @@ time.sleep(600)
             assert active() == 'new'
             rate_limited_env = http_env | {'PLEXI_GITHUB_REPO_API': base + '/rate-limited'}
             run([installer, '--channel', 'stable', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
-            run([installer, '--channel', 'alpha', '--tag', 'v1.1.0', '--install-only'], rate_limited_env)
+            crossed = run([installer, '--channel', 'alpha', '--tag', 'v1.1.0', '--install-only'], rate_limited_env, False)
+            assert 'release tag "v1.1.0" is not valid for channel alpha' in crossed.stderr, crossed.stderr
             limited = run([installer, '--channel', 'stable', '--install-only'], rate_limited_env, False)
             assert 'GitHub API rate limit reached' in limited.stderr, limited.stderr
-            print('PASS: explicit stable and alpha tags download directly when release API is rate-limited')
+            print('PASS: an explicit stable tag downloads directly when the release API is rate-limited; alpha refuses it')
             print(limited.stderr.strip())
             sidecar.write_text('0'*64 + '  ' + asset + '\n')
             run([installer, '--install-only'], http_env, False)
