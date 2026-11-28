@@ -580,7 +580,7 @@ pub enum PlexiEvent {
         /// Host-assigned timeline id of the underlying event.
         event_id: u64,
         resource_id: String,
-        trigger_mode: crate::protocol::commands::TriggerMode,
+        trigger_mode: crate::commands::TriggerMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

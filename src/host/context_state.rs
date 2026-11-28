@@ -4,7 +4,7 @@
 //! Reads existing status channels only (StatusSummary for plugins, pty_title for
 //! terminals). No new protocol messages.
 
-use crate::protocol::{ContextState, ContextStatus, PaneSummary, PaneSummaryStatus};
+use plexi_protocol::{ContextState, ContextStatus, PaneSummary, PaneSummaryStatus};
 
 /// Compute the context state for a given context by walking panes and
 /// recursing into child contexts.
@@ -16,7 +16,7 @@ pub fn compute_context_state(
     contexts: &[crate::host::context::Context],
     windows: &[crate::host::context::Window],
 ) -> ContextState {
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
 
     let label = contexts
         .iter()
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(state.children[0].label, "Child");
     }
 
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
 
     struct DummyView;
     impl crate::app::view_trait::View for DummyView {
@@ -271,7 +271,7 @@ mod tests {
                 permissions: crate::app::permissions::PluginPermissions::default(),
                 pane_group: None,
                 linked_pane_id: None,
-                agent: Some(crate::protocol::PaneAgentState {
+                agent: Some(plexi_protocol::PaneAgentState {
                     pane_id: id,
                     state,
                     agent: "codex".into(),

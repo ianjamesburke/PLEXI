@@ -632,7 +632,7 @@ impl super::PlexiApp {
             .flat_map(|window| window.panes.values())
             .filter(|pane| {
                 pane.agent()
-                    .is_some_and(|agent| agent.state == crate::protocol::AgentState::Working)
+                    .is_some_and(|agent| agent.state == plexi_protocol::AgentState::Working)
             })
             .count()
     }
@@ -1704,9 +1704,9 @@ mod tests {
             .panes
             .get_mut(&pane)
             .unwrap()
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 pane_id: pane,
-                state: crate::protocol::AgentState::Working,
+                state: plexi_protocol::AgentState::Working,
                 agent: "test-agent".into(),
                 detail: None,
                 session_id: None,
@@ -2150,7 +2150,7 @@ mod tests {
         assert!(block.contains("invalid workspace"), "{block}");
         h.add_test_pane();
         h.app.mark_workspace_dirty();
-        h.inject_ipc(crate::protocol::HostRequest::Shutdown {
+        h.inject_ipc(plexi_protocol::HostRequest::Shutdown {
             response_file: Some("host-stop-reply".to_string()),
         });
         h.hidden_frame();
@@ -2391,7 +2391,7 @@ mod tests {
         h.add_test_pane();
         h.app.workspace_dirty = true;
         h.app.last_workspace_save = Instant::now() - Duration::from_secs(2);
-        h.inject_ipc(crate::protocol::HostRequest::Shutdown {
+        h.inject_ipc(plexi_protocol::HostRequest::Shutdown {
             response_file: None,
         });
         h.hidden_frame(); // coordinator saves and hides, but does not exit yet
@@ -2418,7 +2418,7 @@ mod tests {
             let timeout = crate::testing::load_aware_timeout(Duration::from_secs(2));
             client.set_read_timeout(Some(timeout)).unwrap();
             assert!(crate::rpc::ReplyRegistry::register(token.clone(), server));
-            h.inject_ipc(crate::protocol::HostRequest::ShutdownForRestart {
+            h.inject_ipc(plexi_protocol::HostRequest::ShutdownForRestart {
                 response_file: token,
             });
             h.hidden_frame();

@@ -124,7 +124,7 @@ pub struct PaneDots {
     pub count: usize,
     pub focused_idx: Option<usize>,
     /// Per-dot agent state (parallel to dot index). `None` means no agent.
-    pub activities: Vec<Option<crate::protocol::AgentState>>,
+    pub activities: Vec<Option<plexi_protocol::AgentState>>,
     pub static_health_pips: std::collections::HashSet<usize>,
     /// Contiguous pane ranges, one per spatial window in this context.
     pub windows: Vec<PaneDotWindow>,
@@ -728,7 +728,7 @@ impl SidebarRow {
         if self.pane_dots.as_ref().is_some_and(|dots| {
             dots.activities
                 .iter()
-                .any(|s| matches!(s, Some(crate::protocol::AgentState::NeedsYou)))
+                .any(|s| matches!(s, Some(plexi_protocol::AgentState::NeedsYou)))
         }) {
             let visual = crate::ui::activity::attention(ui.ctx());
             if visual.alpha > 0.0 {

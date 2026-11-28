@@ -330,7 +330,7 @@ mod tests {
     use super::*;
     use crate::app::socket_caller::{Ingress, PaneIpcMessage};
     use crate::app::ui_mailbox::{RecordingWake, UiMailbox};
-    use crate::protocol::HostRequest;
+    use plexi_protocol::HostRequest;
 
     #[test]
     fn hook_waiter_uses_a_host_issued_handle() {

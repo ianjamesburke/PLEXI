@@ -169,7 +169,7 @@ impl PlexiApp {
                 }
                 if let Some(t) = pane.as_terminal() {
                     if t.standby_session.is_some() {
-                        return Some(crate::protocol::AgentState::NeedsYou);
+                        return Some(plexi_protocol::AgentState::NeedsYou);
                     }
                 }
                 if let Some(portal) = pane.as_portal() {
@@ -181,7 +181,7 @@ impl PlexiApp {
                     .status;
                     let effective_status = if matches!(
                         status,
-                        crate::protocol::ContextStatus::Idle
+                        plexi_protocol::ContextStatus::Idle
                     ) {
                         portal
                             .context_state
@@ -192,20 +192,20 @@ impl PlexiApp {
                         status
                     };
                     return match effective_status {
-                        crate::protocol::ContextStatus::NeedsYou => {
-                            Some(crate::protocol::AgentState::NeedsYou)
+                        plexi_protocol::ContextStatus::NeedsYou => {
+                            Some(plexi_protocol::AgentState::NeedsYou)
                         }
-                        crate::protocol::ContextStatus::Blocked => {
-                            Some(crate::protocol::AgentState::Blocked)
+                        plexi_protocol::ContextStatus::Blocked => {
+                            Some(plexi_protocol::AgentState::Blocked)
                         }
-                        crate::protocol::ContextStatus::Working => {
-                            Some(crate::protocol::AgentState::Working)
+                        plexi_protocol::ContextStatus::Working => {
+                            Some(plexi_protocol::AgentState::Working)
                         }
-                        crate::protocol::ContextStatus::Done => {
-                            Some(crate::protocol::AgentState::Idle)
+                        plexi_protocol::ContextStatus::Done => {
+                            Some(plexi_protocol::AgentState::Idle)
                         }
-                        crate::protocol::ContextStatus::Error
-                        | crate::protocol::ContextStatus::Idle => None,
+                        plexi_protocol::ContextStatus::Error
+                        | plexi_protocol::ContextStatus::Idle => None,
                     };
                 }
                 None
@@ -252,16 +252,16 @@ impl PlexiApp {
             &self.windows,
         );
         match state.status {
-            crate::protocol::ContextStatus::NeedsYou => {
+            plexi_protocol::ContextStatus::NeedsYou => {
                 Some(crate::ui::activity::needs_you_color(&self.colors))
             }
-            crate::protocol::ContextStatus::Blocked => {
+            plexi_protocol::ContextStatus::Blocked => {
                 Some(crate::ui::activity::blocked_color(&self.colors))
             }
-            crate::protocol::ContextStatus::Error => Some(self.colors.danger),
-            crate::protocol::ContextStatus::Working
-            | crate::protocol::ContextStatus::Done
-            | crate::protocol::ContextStatus::Idle => None,
+            plexi_protocol::ContextStatus::Error => Some(self.colors.danger),
+            plexi_protocol::ContextStatus::Working
+            | plexi_protocol::ContextStatus::Done
+            | plexi_protocol::ContextStatus::Idle => None,
         }
     }
 }

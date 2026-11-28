@@ -58,7 +58,7 @@ impl PlexiApp {
                     notify_id: crate::app::notifications::new_notify_id("apps-set-aside"),
                     title: "Old apps folder moved aside".to_string(),
                     body,
-                    scope: crate::protocol::NotifyScope::Global,
+                    scope: plexi_protocol::NotifyScope::Global,
                     required: true,
                     ..Default::default()
                 },
@@ -142,7 +142,7 @@ impl PlexiApp {
                 title: title.to_string(),
                 body,
                 // Profile data belongs to the whole host, not one context.
-                scope: crate::protocol::NotifyScope::Global,
+                scope: plexi_protocol::NotifyScope::Global,
                 required: true,
                 ..Default::default()
             },
@@ -198,7 +198,7 @@ impl PlexiApp {
                 title: title.to_string(),
                 body,
                 // Build identity is a property of the host, not of one context.
-                scope: crate::protocol::NotifyScope::Global,
+                scope: plexi_protocol::NotifyScope::Global,
                 ..Default::default()
             },
         );

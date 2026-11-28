@@ -296,7 +296,7 @@ impl SecretsView {
                 let result = service.pick(&crate::host::services::FilePickRequest {
                     filter: Vec::new(),
                     multiple: false,
-                    mode: crate::protocol::FilePickerMode::Open,
+                    mode: plexi_protocol::FilePickerMode::Open,
                 });
                 if sender.send(result).is_ok() {
                     completed.store(true, Ordering::Release);

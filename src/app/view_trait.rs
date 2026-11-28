@@ -46,7 +46,7 @@ pub enum ViewCommand {
     },
     /// Register the plugin's v3.7 connector tools with the host broker.
     ExposeTools {
-        tools: Vec<crate::protocol::AiTool>,
+        tools: Vec<plexi_protocol::AiTool>,
         pane_id: Option<u64>,
     },
     /// Resolve a pending v3.7 connector tool call.
@@ -58,7 +58,7 @@ pub enum ViewCommand {
     },
     /// Route one plugin-event request through the host-owned timeline and broker.
     PluginEventRequest {
-        request: crate::protocol::HostRequest,
+        request: plexi_protocol::HostRequest,
         pane_id: Option<u64>,
     },
     /// Execute an Assistant host tool against live host state without shelling
@@ -101,7 +101,7 @@ pub enum ViewCommand {
     /// Emitted by `routing.rs` after the `panes.read` / `panes.control`
     /// capability check passes.
     ForwardPaneRequest {
-        request: crate::protocol::HostRequest,
+        request: plexi_protocol::HostRequest,
         /// Who asked: a builtin view on the person's gesture, or a plugin
         /// guest (stint 1285).
         origin: crate::broker::caller::RequestOrigin,
@@ -150,7 +150,7 @@ pub enum ViewCommand {
     /// identified by its type_id.
     DeliverRunUpdate {
         originator_type_id: String,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     },
     /// A notification that carries a notify_id and awaits a user response.
     /// The legacy server-side `NotificationAction` list is handled in
@@ -164,17 +164,17 @@ pub enum ViewCommand {
         source_context_id: u64,
         title: String,
         body: String,
-        kind: crate::protocol::NotifyKind,
-        options: Vec<crate::protocol::NotifyOption>,
+        kind: plexi_protocol::NotifyKind,
+        options: Vec<plexi_protocol::NotifyOption>,
         input_prompt: Option<String>,
         required: bool,
         /// Visibility scope. `Global` notifications are always visible;
         /// `Context` notifications are only visible in their source context.
-        scope: crate::protocol::NotifyScope,
+        scope: plexi_protocol::NotifyScope,
         /// Inline base64-encoded image attachment (#74). Decoded + cached
         /// into a texture on first render. Decoded size > 50 KB triggers a
         /// placeholder badge instead — never crash the host on bad input.
-        image_inline: Option<crate::protocol::NotificationImage>,
+        image_inline: Option<plexi_protocol::NotificationImage>,
         /// Pipe-referenced image (#74). Drained from the binary ring lazily
         /// when the notification is visible. Layout: `width: u32 LE`,
         /// `height: u32 LE`, then RGBA bytes. Mutually exclusive with
@@ -234,7 +234,7 @@ pub enum ViewCommand {
         sender_pane_id: u64,
         terminal_pane_id: u64,
         path: String,
-        mode: crate::protocol::PathTokenMode,
+        mode: plexi_protocol::PathTokenMode,
     },
     /// Canvas Terminal Binding Primitives (#78). Compute a no-execute
     /// preview of `command` for the referenced terminal. Host responds
@@ -254,7 +254,7 @@ pub enum ViewCommand {
     OpenArtifact {
         sender_pane_id: u64,
         path: String,
-        mode: crate::protocol::ArtifactOpenMode,
+        mode: plexi_protocol::ArtifactOpenMode,
     },
     /// Query rolled-up ContextState for a context (#1518).
     /// Forwarded to the host because only it has the full context tree.
@@ -347,7 +347,7 @@ pub trait View: Send {
     fn artifact_guard_finished(
         &mut self,
         _path: &str,
-        _mode: crate::protocol::ArtifactOpenMode,
+        _mode: plexi_protocol::ArtifactOpenMode,
         _allowed: bool,
     ) {
     }
@@ -433,7 +433,7 @@ pub trait View: Send {
     /// Queue a PlexiEvent to be sent to the plugin on the next flush.
     /// Used to deliver host-originated events (e.g. ViewOpened) back to
     /// external process plugins. Built-in plugins ignore this by default.
-    fn queue_outbound_event(&mut self, _event: crate::protocol::PlexiEvent) {}
+    fn queue_outbound_event(&mut self, _event: plexi_protocol::PlexiEvent) {}
 
     /// Host-owned disabled view retains the original plugin record without executing it.
     fn disabled_plugin_record(&self) -> Option<&crate::workspace::SavedPane> {

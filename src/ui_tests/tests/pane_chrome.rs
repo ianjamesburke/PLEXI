@@ -689,10 +689,10 @@ fn zoomed_pane_keeps_shared_header_attention_and_focus_ring() {
         );
         win.focused_pane = Some(tile);
         assert!(win.panes.get_mut(&id).unwrap().set_agent(Some(
-            crate::protocol::PaneAgentState {
+            plexi_protocol::PaneAgentState {
                 pane_id: id,
                 agent: "codex".into(),
-                state: crate::protocol::AgentState::NeedsYou,
+                state: plexi_protocol::AgentState::NeedsYou,
                 detail: Some("Approve the release tag".into()),
                 session_id: None,
             },
@@ -753,7 +753,7 @@ fn zoomed_pane_keeps_shared_header_attention_and_focus_ring() {
                 .find_pane_in_any_window(pane)
                 .and_then(|(w, _)| app.windows[w].panes.get(&pane))
                 .and_then(|p| p.effective_activity().cloned())),
-            Some(crate::protocol::AgentState::NeedsYou),
+            Some(plexi_protocol::AgentState::NeedsYou),
             "{phase}: zoom must not clear the pending state"
         );
         (bar, ring.rect)
@@ -889,7 +889,7 @@ fn screenshot_portal_text_editor_icon() {
         let editor_pane_id = app.host.alloc_pane_id();
         let editor = ViewPane {
             incarnation: Default::default(),
-            pip_status: Some(crate::protocol::PipStatus::Green),
+            pip_status: Some(plexi_protocol::PipStatus::Green),
             id: editor_pane_id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                 editor_path.clone(),
@@ -994,7 +994,7 @@ fn screenshot_portal_minimap_glyphs() {
             mk(
                 PaneKind::TextEditor,
                 false,
-                Some(crate::protocol::AgentState::Working),
+                Some(plexi_protocol::AgentState::Working),
                 0.34,
                 0.67,
             ),
@@ -1058,7 +1058,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
         .expect("open initial master pane");
     h.step();
 
-    let send_req = |h: &mut PlexiUiHarness, req: crate::protocol::HostRequest| {
+    let send_req = |h: &mut PlexiUiHarness, req: plexi_protocol::HostRequest| {
         h.with_app_mut(|app| {
             app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, req);
         });
@@ -1069,7 +1069,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
         let reply = dir.path().join(format!("spawn-{subctx}-{name}.json"));
         send_req(
             h,
-            crate::protocol::HostRequest::AgentSpawn {
+            plexi_protocol::HostRequest::AgentSpawn {
                 anchor_pane: None,
                 role: name.into(),
                 harness: "codex".into(),
@@ -1157,7 +1157,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
         let reply = dir.path().join(format!("split-{name}.json"));
         send_req(
             h,
-            crate::protocol::HostRequest::AgentSpawn {
+            plexi_protocol::HostRequest::AgentSpawn {
                 anchor_pane: None,
                 role: name.into(),
                 harness: "codex".into(),
@@ -1215,9 +1215,9 @@ fn screenshot_visual_escalation_panes_and_portals() {
     //   Bottom row: [squad-alpha  | squad-deploy | squad-ci]
     send_req(
         &mut h,
-        crate::protocol::HostRequest::SetPipStatus {
+        plexi_protocol::HostRequest::SetPipStatus {
             pane_id: master_pane,
-            status: crate::protocol::PipStatus::Yellow,
+            status: plexi_protocol::PipStatus::Yellow,
         },
     );
     h.with_app_mut(|app| {
@@ -1304,11 +1304,11 @@ fn screenshot_visual_escalation_panes_and_portals() {
         assert!(win.panes[&pane_program].effective_activity().is_none());
         assert_eq!(
             win.panes[&pane_working].effective_activity(),
-            Some(&crate::protocol::AgentState::Working)
+            Some(&plexi_protocol::AgentState::Working)
         );
         assert_eq!(
             win.panes[&pane_idle].effective_activity(),
-            Some(&crate::protocol::AgentState::Idle)
+            Some(&plexi_protocol::AgentState::Idle)
         );
         assert!(win.panes[&master_pane].static_health_pip());
         let p_blocked = win.panes[&portal_blocked]
@@ -1319,7 +1319,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
             .expect("context_state");
         assert_eq!(
             p_blocked.status,
-            crate::protocol::ContextStatus::Blocked
+            plexi_protocol::ContextStatus::Blocked
         );
         assert_eq!(
             p_blocked.status_summary_badge().as_deref(),
@@ -1334,7 +1334,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
             .expect("context_state");
         assert_eq!(
             p_needs_you.status,
-            crate::protocol::ContextStatus::NeedsYou
+            plexi_protocol::ContextStatus::NeedsYou
         );
         assert_eq!(
             p_needs_you.status_summary_badge().as_deref(),
@@ -1349,7 +1349,7 @@ fn screenshot_visual_escalation_panes_and_portals() {
             .expect("context_state");
         assert_eq!(
             p_error.status,
-            crate::protocol::ContextStatus::Error
+            plexi_protocol::ContextStatus::Error
         );
         assert_eq!(p_error.status_summary_badge().as_deref(), Some("[1 ERROR]"));
 
@@ -1386,9 +1386,9 @@ fn unnamed_working_terminal_does_not_spawn_escalation_header_bar() {
         terminal.outside_workspace_cached = false;
         terminal.outside_workspace_checked_at = Some(Instant::now());
         terminal.outside_workspace_root = Some(workspace_root);
-        terminal.agent = Some(crate::protocol::PaneAgentState {
+        terminal.agent = Some(plexi_protocol::PaneAgentState {
             pane_id: id,
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             agent: "codex".into(),
             detail: None,
             session_id: None,
@@ -1420,7 +1420,7 @@ fn unnamed_working_terminal_does_not_spawn_escalation_header_bar() {
             .get_mut(&pane_id)
             .and_then(|p| p.as_terminal_mut())
             .expect("terminal pane");
-        term.agent.as_mut().unwrap().state = crate::protocol::AgentState::Blocked;
+        term.agent.as_mut().unwrap().state = plexi_protocol::AgentState::Blocked;
     });
     h.run_steps(2);
     h.with_app(|app| {
@@ -1439,7 +1439,7 @@ fn unnamed_working_terminal_does_not_spawn_escalation_header_bar() {
             .get_mut(&pane_id)
             .and_then(|p| p.as_terminal_mut())
             .expect("terminal pane");
-        term.agent.as_mut().unwrap().state = crate::protocol::AgentState::Working;
+        term.agent.as_mut().unwrap().state = plexi_protocol::AgentState::Working;
     });
     h.run_steps(2);
     h.with_app(|app| {
@@ -1575,9 +1575,9 @@ fn pane_chrome_selected_view_keeps_its_state_ring() {
             .panes
             .get_mut(&view_pane)
             .unwrap()
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 pane_id: view_pane,
-                state: crate::protocol::AgentState::Blocked,
+                state: plexi_protocol::AgentState::Blocked,
                 agent: "fixture".into(),
                 detail: None,
                 session_id: None,
@@ -1632,9 +1632,9 @@ fn pane_chrome_view_tabs_use_responsive_state_header() {
         win.panes
             .get_mut(&first)
             .unwrap()
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 pane_id: first,
-                state: crate::protocol::AgentState::Blocked,
+                state: plexi_protocol::AgentState::Blocked,
                 agent: "fixture".into(),
                 detail: None,
                 session_id: None,
@@ -1680,9 +1680,9 @@ fn pane_chrome_rings_are_concentric_at_both_scales() {
                 .panes
                 .get_mut(&pane)
                 .unwrap()
-                .set_agent(Some(crate::protocol::PaneAgentState {
+                .set_agent(Some(plexi_protocol::PaneAgentState {
                     pane_id: pane,
-                    state: crate::protocol::AgentState::Blocked,
+                    state: plexi_protocol::AgentState::Blocked,
                     agent: "fixture".into(),
                     detail: None,
                     session_id: None,
@@ -1736,7 +1736,7 @@ fn pane_chrome_rings_are_concentric_at_both_scales() {
 
 #[test]
 fn screenshot_pane_chrome_state_matrix() {
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
     let states = [
         ("working", AgentState::Working),
         ("idle", AgentState::Idle),
@@ -1783,7 +1783,7 @@ fn screenshot_pane_chrome_state_matrix() {
                     term.outside_workspace_cached = false;
                     term.outside_workspace_checked_at = Some(Instant::now());
                     term.outside_workspace_root = Some(root.clone());
-                    term.agent = Some(crate::protocol::PaneAgentState { pane_id: id, state: state.clone(), agent: "codex".into(), detail: None, session_id: None });
+                    term.agent = Some(plexi_protocol::PaneAgentState { pane_id: id, state: state.clone(), agent: "codex".into(), detail: None, session_id: None });
                     app.windows[app.active_window].take_pane(id);
                     app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term))).unwrap();
                 });

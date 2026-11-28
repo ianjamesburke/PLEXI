@@ -547,7 +547,7 @@ fn query_ready_status(socket_path: &Path, profile_dir: &Path, deadline: Instant)
         return None;
     }
     let response_file = crate::rpc::response_file_in(profile_dir, "host-status", "json");
-    let request = crate::protocol::HostRequest::ListPanes {
+    let request = plexi_protocol::HostRequest::ListPanes {
         response_file: response_file.clone(),
         context_id: None,
     };
@@ -599,11 +599,11 @@ pub(crate) fn forward_host_launch(
     let deadline = Instant::now() + timeout;
     let response_file = crate::rpc::response_file_in(profile_dir, "launch-open", "json");
     let request = match root {
-        Some(root) => crate::protocol::HostRequest::FocusContext {
+        Some(root) => plexi_protocol::HostRequest::FocusContext {
             root: root.to_path_buf(),
             response_file: Some(response_file.clone()),
         },
-        None => crate::protocol::HostRequest::ShowHost {
+        None => plexi_protocol::HostRequest::ShowHost {
             response_file: response_file.clone(),
         },
     };
@@ -1907,7 +1907,7 @@ pub(crate) fn running_build_info() -> Option<serde_json::Value> {
 fn running_build_info_in(profile: &Path) -> Option<serde_json::Value> {
     let socket = endpoint_in(profile);
     let response_file = crate::rpc::response_file_in(profile, "host-build", "json");
-    let request = crate::protocol::HostRequest::GetBuildInfo {
+    let request = plexi_protocol::HostRequest::GetBuildInfo {
         response_file: response_file.clone(),
     };
     let line = serde_json::to_string(&request).ok()?;
@@ -2907,7 +2907,7 @@ while True:\n    c,_=s.accept();c.recv(65536);held.append(c)\n";
                 if line.trim() == "stop" {
                     break;
                 }
-                let request: crate::protocol::HostRequest =
+                let request: plexi_protocol::HostRequest =
                     serde_json::from_str(&line).unwrap();
                 host.inject_in_process(request);
                 host.hidden_frame();

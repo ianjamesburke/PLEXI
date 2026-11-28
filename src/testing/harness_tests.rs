@@ -52,7 +52,7 @@ fn minimap_shortcut_without_experiments_toggles_bottom_right() {
 
 #[test]
 fn terminal_process_activity_is_not_agent_activity() {
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
     let mut h = HostHarness::new();
     let id = h.add_focused_terminal();
     let pane = h.app.windows[0].panes.get_mut(&id).unwrap();
@@ -73,7 +73,7 @@ fn terminal_process_activity_is_not_agent_activity() {
         (AgentState::Failed, 0),
     ] {
         let pane = h.app.windows[0].panes.get_mut(&id).unwrap();
-        pane.set_agent(Some(crate::protocol::PaneAgentState {
+        pane.set_agent(Some(plexi_protocol::PaneAgentState {
             pane_id: id,
             state: agent_state.clone(),
             agent: "codex".to_string(),
@@ -92,7 +92,7 @@ fn terminal_process_activity_is_not_agent_activity() {
 
 #[test]
 fn exited_agent_does_not_remain_working() {
-    use crate::protocol::{AgentState, PaneAgentState};
+    use plexi_protocol::{AgentState, PaneAgentState};
     let mut h = HostHarness::new();
     let id = h.add_focused_terminal();
     let pane = h.app.windows[0].panes.get_mut(&id).unwrap();
@@ -113,7 +113,7 @@ fn exited_agent_does_not_remain_working() {
 #[test]
 #[ignore = "requires-pty"]
 fn foreground_and_background_programs_are_not_agents() {
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
     use egui_term::BackendCommand;
     use std::time::{Duration, Instant};
     let mut h = HostHarness::new();
@@ -175,8 +175,8 @@ fn foreground_and_background_programs_are_not_agents() {
 #[ignore = "requires-pty"]
 fn manually_launched_agent_exit_clears_working_report() {
     assert_manual_agent_exit(
-        crate::protocol::AgentState::Working,
-        crate::protocol::AgentState::Interrupted,
+        plexi_protocol::AgentState::Working,
+        plexi_protocol::AgentState::Interrupted,
     );
 }
 
@@ -184,16 +184,16 @@ fn manually_launched_agent_exit_clears_working_report() {
 #[ignore = "requires-pty"]
 fn manually_launched_idle_agent_exit_is_not_idle() {
     assert_manual_agent_exit(
-        crate::protocol::AgentState::Idle,
-        crate::protocol::AgentState::Idle,
+        plexi_protocol::AgentState::Idle,
+        plexi_protocol::AgentState::Idle,
     );
 }
 
 fn assert_manual_agent_exit(
-    reported_state: crate::protocol::AgentState,
-    expected: crate::protocol::AgentState,
+    reported_state: plexi_protocol::AgentState,
+    expected: plexi_protocol::AgentState,
 ) {
-    use crate::protocol::PaneAgentState;
+    use plexi_protocol::PaneAgentState;
     use egui_term::BackendCommand;
     use std::time::{Duration, Instant};
     let dir = tempfile::tempdir().unwrap();
@@ -243,7 +243,7 @@ fn assert_manual_agent_exit(
         let pane = &h.app.windows[0].panes[&id];
         let terminal = pane.as_terminal().unwrap();
         if terminal.observed_agent.is_none() && terminal.activity.is_none() {
-            let expected_state = if reported_state == crate::protocol::AgentState::Idle {
+            let expected_state = if reported_state == plexi_protocol::AgentState::Idle {
                 None
             } else {
                 Some(expected.clone())
@@ -259,7 +259,7 @@ fn assert_manual_agent_exit(
                 terminal.agent_role
             );
             assert_eq!(pane.effective_activity(), expected_state.as_ref());
-            if reported_state == crate::protocol::AgentState::Idle {
+            if reported_state == plexi_protocol::AgentState::Idle {
                 assert!(pane.agent().is_none(), "the idle hook must be cleared");
                 assert!(
                     terminal.build_saved_agent_session().is_none(),
@@ -451,7 +451,7 @@ fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
         provider_pane_id,
         crate::plexi_ai::tool_dispatch::ViewInstanceKey::detached(),
         "connector-app".to_string(),
-        vec![crate::protocol::AiTool {
+        vec![plexi_protocol::AiTool {
             name: "connector_tool".to_string(),
             description: "test connector tool".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
@@ -502,7 +502,7 @@ fn two_harnesses_do_not_share_a_chess_tool_namespace() {
             pane_id,
             crate::plexi_ai::tool_dispatch::ViewInstanceKey::detached(),
             "chess".to_string(),
-            vec![crate::protocol::AiTool {
+            vec![plexi_protocol::AiTool {
                 name: "chess.play".to_string(),
                 description: "play".to_string(),
                 input_schema: serde_json::json!({"type": "object"}),
@@ -581,7 +581,7 @@ fn register_top_view_tool(h: &HostHarness, pane_id: u64, plugin_id: &str, tool: 
         pane_id,
         owner,
         plugin_id.to_string(),
-        vec![crate::protocol::AiTool {
+        vec![plexi_protocol::AiTool {
             name: tool.to_string(),
             description: format!("{tool} test tool"),
             input_schema: serde_json::json!({"type": "object"}),
@@ -811,9 +811,9 @@ fn pane_status_request_routes_through_host_and_returns_composite_evidence() {
         .panes
         .get_mut(&pane_id)
         .expect("terminal pane")
-        .set_agent(Some(crate::protocol::PaneAgentState {
+        .set_agent(Some(plexi_protocol::PaneAgentState {
             pane_id,
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             agent: "codex".to_string(),
             detail: Some("Bash(cargo test)".to_string()),
             session_id: None,
@@ -897,9 +897,9 @@ fn pane_heartbeat_skips_when_working() {
         .panes
         .get_mut(&pane)
         .expect("pane")
-        .set_agent(Some(crate::protocol::PaneAgentState {
+        .set_agent(Some(plexi_protocol::PaneAgentState {
             pane_id: pane,
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             agent: "codex".into(),
             detail: None,
             session_id: None,
@@ -925,9 +925,9 @@ fn pane_heartbeat_fires_when_idle() {
         .panes
         .get_mut(&pane)
         .expect("pane")
-        .set_agent(Some(crate::protocol::PaneAgentState {
+        .set_agent(Some(plexi_protocol::PaneAgentState {
             pane_id: pane,
-            state: crate::protocol::AgentState::Idle,
+            state: plexi_protocol::AgentState::Idle,
             agent: "codex".into(),
             detail: None,
             session_id: None,
@@ -1158,12 +1158,12 @@ fn pane_state_reports_an_ended_agent_turn_next_to_a_working_claim() {
     h.run_frames(1);
     assert_eq!(read_json_response(&slot_response)["ok"], true);
 
-    let set_agent_state = |h: &mut HostHarness, state: crate::protocol::AgentState| {
+    let set_agent_state = |h: &mut HostHarness, state: plexi_protocol::AgentState| {
         h.app.windows[0]
             .panes
             .get_mut(&pane_id)
             .expect("terminal pane")
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 pane_id,
                 state,
                 agent: "codex".to_string(),
@@ -1183,7 +1183,7 @@ fn pane_state_reports_an_ended_agent_turn_next_to_a_working_claim() {
     };
 
     // Control: while the agent is in a turn the claim is corroborated.
-    set_agent_state(&mut h, crate::protocol::AgentState::Working);
+    set_agent_state(&mut h, plexi_protocol::AgentState::Working);
     let working = pane_state(&mut h, "pane-liveness-agent-working");
     assert_eq!(
         working["agent_activity"]["state"], "working",
@@ -1199,7 +1199,7 @@ fn pane_state_reports_an_ended_agent_turn_next_to_a_working_claim() {
     );
 
     // The failure: the turn ended and the slot was never updated.
-    set_agent_state(&mut h, crate::protocol::AgentState::Idle);
+    set_agent_state(&mut h, plexi_protocol::AgentState::Idle);
     let ended = pane_state(&mut h, "pane-liveness-agent-turn-ended");
     assert_eq!(
         ended["claimed_state"]["value"], "impl:working",
@@ -2951,9 +2951,9 @@ fn pane_message_submit_does_not_interrupt_busy_agent() {
         .panes
         .get_mut(&pane)
         .expect("pane")
-        .set_agent(Some(crate::protocol::PaneAgentState {
+        .set_agent(Some(plexi_protocol::PaneAgentState {
             pane_id: pane,
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             agent: "codex".into(),
             detail: None,
             session_id: None,
@@ -2997,9 +2997,9 @@ fn pane_message_submit_wakes_idle_agent() {
         .panes
         .get_mut(&pane)
         .expect("pane")
-        .set_agent(Some(crate::protocol::PaneAgentState {
+        .set_agent(Some(plexi_protocol::PaneAgentState {
             pane_id: pane,
-            state: crate::protocol::AgentState::Idle,
+            state: plexi_protocol::AgentState::Idle,
             agent: "codex".into(),
             detail: None,
             session_id: None,
@@ -4204,7 +4204,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
 
 #[test]
 fn set_pip_status_drives_activity_dot_and_overrides_agent() {
-    use crate::protocol::{AgentState, HostRequest, PaneAgentState, PipStatus};
+    use plexi_protocol::{AgentState, HostRequest, PaneAgentState, PipStatus};
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
@@ -4559,7 +4559,7 @@ fn emitted_plugin_event_is_recorded_and_awaitable() {
     let pane_id = h.launch_dev_view("event-probe");
 
     let response_file = temp_response(tmp.path(), "key-pane");
-    h.inject_ipc(crate::protocol::HostRequest::KeyPane {
+    h.inject_ipc(plexi_protocol::HostRequest::KeyPane {
         pane_id,
         key: "e".to_string(),
         response_file: Some(response_file.clone()),
@@ -4625,7 +4625,7 @@ fn resolve_event_bus_caller_takes_the_admitted_caller_never_a_claim() {
 /// which SDK eventually reaches it.
 struct PipeTestView {
     outgoing: Vec<crate::app::view_trait::ViewCommand>,
-    received: std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
+    received: std::sync::Arc<std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>>,
     /// Whether it is a directed-pipe endpoint; a test clears it to make the
     /// view end as one while its pane stays mounted.
     endpoint: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -4650,7 +4650,7 @@ impl crate::app::view_trait::View for PipeTestView {
         std::mem::take(&mut self.outgoing)
     }
 
-    fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+    fn queue_outbound_event(&mut self, event: plexi_protocol::PlexiEvent) {
         self.received
             .lock()
             .expect("pipe test plugin event log")
@@ -4669,7 +4669,7 @@ fn add_pipe_test_pane(
     win_idx: usize,
 ) -> (
     u64,
-    std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
+    std::sync::Arc<std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>>,
 ) {
     let pane_id = h.app.host.alloc_pane_id();
     let (pane, received) = pipe_test_view(pane_id);
@@ -4686,7 +4686,7 @@ fn pipe_test_view(
     pane_id: u64,
 ) -> (
     crate::host::pane::Pane,
-    std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
+    std::sync::Arc<std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>>,
 ) {
     let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
@@ -4741,7 +4741,7 @@ fn queue_pipe_command(h: &mut HostHarness, pane_id: u64, cmd: crate::app::view_t
 /// never a `PaneSpawned` for an id nothing occupies (stint 1632, round 3 R1).
 #[test]
 fn launch_plan_plugin_spawn_pane_reports_the_installed_terminal_or_its_failure() {
-    use crate::protocol::PlexiEvent;
+    use plexi_protocol::PlexiEvent;
     let mut h = HostHarness::new();
     let (requester, received) = add_pipe_test_pane(&mut h, 0);
     h.focus_pane(requester);
@@ -4830,7 +4830,7 @@ fn wrap_pipe_pane_into_subcontext(h: &mut HostHarness) -> (u64, u64, usize) {
 /// host created, and the pane lands in the child's window.
 #[test]
 fn sdk_spawn_pane_into_a_real_subcontext_lands_in_the_child() {
-    use crate::protocol::PlexiEvent;
+    use plexi_protocol::PlexiEvent;
     let mut h = HostHarness::new();
     let (requester, received) = add_pipe_test_pane(&mut h, 0);
     let (_, child, child_win) = wrap_pipe_pane_into_subcontext(&mut h);
@@ -4872,7 +4872,7 @@ fn sdk_spawn_pane_into_a_real_subcontext_lands_in_the_child() {
 /// subcontext the host created.
 #[test]
 fn query_context_state_from_parent_answers_for_a_real_subcontext() {
-    use crate::protocol::PlexiEvent;
+    use plexi_protocol::PlexiEvent;
     let mut h = HostHarness::new();
     let (requester, received) = add_pipe_test_pane(&mut h, 0);
     let (_, child, _) = wrap_pipe_pane_into_subcontext(&mut h);
@@ -4902,7 +4902,7 @@ fn query_context_state_from_parent_answers_for_a_real_subcontext() {
 /// no other view.
 #[test]
 fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
-    use crate::protocol::PlexiEvent;
+    use plexi_protocol::PlexiEvent;
     let mut h = HostHarness::new();
     let context_a = h.app.windows[0].context_id;
     let (requester, received) = add_pipe_test_pane(&mut h, 0);
@@ -5048,7 +5048,7 @@ fn sdk_spawn_pane_reply_reaches_only_its_emitter() {
 #[test]
 fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
     use crate::broker::pane_authority::{Provenance, SecretEligibility};
-    use crate::protocol::PlexiEvent;
+    use plexi_protocol::PlexiEvent;
     use std::collections::HashMap;
     let _features =
         crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
@@ -5184,7 +5184,7 @@ fn spawn_secrets_linked_terminal_and_routine_resolve_no_secret() {
 /// credentials authenticate to the destination's scope.
 #[test]
 fn sdk_terminal_spawn_takes_credentials_only_from_its_validated_destination() {
-    use crate::protocol::PlexiEvent;
+    use plexi_protocol::PlexiEvent;
     crate::app::host_mcp::ensure_test_discovery();
     let mut h = HostHarness::new();
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(h.profile_dir()).unwrap();
@@ -5698,7 +5698,7 @@ fn python_reload_drops_requests_the_old_guest_left_queued() {
     assert_eq!(count(&h), panes + 1, "the new guest's request runs");
 }
 
-type PipeInbox = std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>;
+type PipeInbox = std::sync::Arc<std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>>;
 
 /// The admission a runtime whose input never fills (WASM, an opted-in
 /// builtin) gives an open at intake.
@@ -5742,20 +5742,20 @@ fn request_directed_pipe(h: &mut HostHarness, sender: u64, target: u64, pipe_id:
 /// The host's answer to `request_id` in an inbox: the generation, or why it
 /// was refused.
 fn open_answer(
-    inbox: &std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>,
+    inbox: &std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>,
     request_id: &str,
-) -> Option<Result<u64, crate::protocol::PipeOpenRefusal>> {
+) -> Option<Result<u64, plexi_protocol::PipeOpenRefusal>> {
     inbox
         .lock()
         .expect("pipe test plugin event log")
         .iter()
         .find_map(|event| match event {
-            crate::protocol::PlexiEvent::DirectedPipeOpened {
+            plexi_protocol::PlexiEvent::DirectedPipeOpened {
                 request_id: id,
                 generation,
                 ..
             } if id == request_id => Some(Ok(*generation)),
-            crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+            plexi_protocol::PlexiEvent::DirectedPipeOpenRefused {
                 request_id: id,
                 reason,
                 ..
@@ -5767,20 +5767,20 @@ fn open_answer(
 /// Every answer to `request_id` in an inbox, in order: a request is
 /// answered exactly once.
 fn open_answers(
-    inbox: &std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>,
+    inbox: &std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>,
     request_id: &str,
-) -> Vec<Result<u64, crate::protocol::PipeOpenRefusal>> {
+) -> Vec<Result<u64, plexi_protocol::PipeOpenRefusal>> {
     inbox
         .lock()
         .expect("pipe test plugin event log")
         .iter()
         .filter_map(|event| match event {
-            crate::protocol::PlexiEvent::DirectedPipeOpened {
+            plexi_protocol::PlexiEvent::DirectedPipeOpened {
                 request_id: id,
                 generation,
                 ..
             } if id == request_id => Some(Ok(*generation)),
-            crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+            plexi_protocol::PlexiEvent::DirectedPipeOpenRefused {
                 request_id: id,
                 reason,
                 ..
@@ -5795,7 +5795,7 @@ fn open_answers(
 fn open_directed_test_pipe(
     h: &mut HostHarness,
     sender: u64,
-    sender_inbox: &std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>,
+    sender_inbox: &std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>,
     target: u64,
     pipe_id: &str,
 ) -> u64 {
@@ -5821,14 +5821,14 @@ fn send_on(h: &mut HostHarness, sender: u64, generation: u64, payload: serde_jso
 
 /// `(generation, payload)` of every `PipeMessage` in an inbox, in order.
 fn pipe_messages(
-    inbox: &std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>,
+    inbox: &std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>,
 ) -> Vec<(u64, serde_json::Value)> {
     inbox
         .lock()
         .expect("pipe test plugin event log")
         .iter()
         .filter_map(|event| match event {
-            crate::protocol::PlexiEvent::PipeMessage {
+            plexi_protocol::PlexiEvent::PipeMessage {
                 generation,
                 payload,
                 ..
@@ -5840,14 +5840,14 @@ fn pipe_messages(
 
 /// `(pipe_id, generation, reason)` of every `PipeClosed` in an inbox.
 fn pipe_closed_events(
-    inbox: &std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>,
-) -> Vec<(String, u64, crate::protocol::PipeCloseReason)> {
+    inbox: &std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>,
+) -> Vec<(String, u64, plexi_protocol::PipeCloseReason)> {
     inbox
         .lock()
         .expect("pipe test plugin event log")
         .iter()
         .filter_map(|event| match event {
-            crate::protocol::PlexiEvent::PipeClosed {
+            plexi_protocol::PlexiEvent::PipeClosed {
                 pipe_id,
                 generation,
                 reason,
@@ -5859,14 +5859,14 @@ fn pipe_closed_events(
 
 /// `(pipe_id, generation, peer_pane_id)` of every `DirectedPipeIncoming`.
 fn pipe_incoming(
-    inbox: &std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>,
+    inbox: &std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>,
 ) -> Vec<(String, u64, u64)> {
     inbox
         .lock()
         .expect("pipe test plugin event log")
         .iter()
         .filter_map(|event| match event {
-            crate::protocol::PlexiEvent::DirectedPipeIncoming {
+            plexi_protocol::PlexiEvent::DirectedPipeIncoming {
                 pipe_id,
                 generation,
                 peer_pane_id,
@@ -5897,7 +5897,7 @@ fn push_pipe_test_overlay(h: &mut HostHarness, win_idx: usize, pane_id: u64) -> 
 /// is told of it.
 #[test]
 fn open_directed_pipe_rejects_cross_context_target() {
-    use crate::protocol::PipeOpenRefusal;
+    use plexi_protocol::PipeOpenRefusal;
     let mut h = HostHarness::new();
     let context_a = h.app.windows[0].context_id;
     let context_b = context_a + 1_000;
@@ -6014,7 +6014,7 @@ fn reopening_a_live_pipe_answers_its_generation_and_strangers_cannot_send() {
 /// reach either view.
 #[test]
 fn opening_a_name_in_use_is_refused_and_the_first_connection_stays() {
-    use crate::protocol::{PipeCloseReason, PipeOpenRefusal};
+    use plexi_protocol::{PipeCloseReason, PipeOpenRefusal};
     let mut h = HostHarness::new();
     let context_id = h.app.windows[0].context_id;
     let key = (context_id, "shared-id".to_string());
@@ -6544,7 +6544,7 @@ fn an_open_to_an_exited_python_target_is_refused_and_frees_its_name() {
     h.run_hidden_frames(3);
     assert_eq!(
         open_answers(&opener_inbox, &refused),
-        vec![Err(crate::protocol::PipeOpenRefusal::TargetUnavailable)],
+        vec![Err(plexi_protocol::PipeOpenRefusal::TargetUnavailable)],
         "exactly one refusal"
     );
     assert_eq!(pipe_ends(&h, &(context_id, PIPE.to_string())), None);
@@ -6613,7 +6613,7 @@ fn a_python_target_is_an_endpoint_only_between_init_and_failure() {
     h.run_hidden_frames(3);
     assert_eq!(
         open_answers(&opener_inbox, &refused),
-        vec![Err(crate::protocol::PipeOpenRefusal::TargetUnavailable)],
+        vec![Err(plexi_protocol::PipeOpenRefusal::TargetUnavailable)],
         "exactly one refusal"
     );
     assert_eq!(pipe_ends(&h, &(context_id, PIPE.to_string())), None);
@@ -6683,16 +6683,16 @@ fn an_open_naming_a_pipe_over_the_limit_is_refused_name_too_long() {
     let win = h.app.active_window;
     let (opener, opener_inbox) = add_pipe_test_pane(&mut h, win);
     let (target, target_inbox) = add_pipe_test_pane(&mut h, win);
-    let long = "x".repeat(crate::protocol::MAX_PIPE_ID_BYTES + 1);
+    let long = "x".repeat(plexi_protocol::MAX_PIPE_ID_BYTES + 1);
     let refused = request_directed_pipe(&mut h, opener, target, &long);
     h.run_hidden_frames(3);
     assert_eq!(
         open_answers(&opener_inbox, &refused),
-        vec![Err(crate::protocol::PipeOpenRefusal::NameTooLong)]
+        vec![Err(plexi_protocol::PipeOpenRefusal::NameTooLong)]
     );
     assert!(pipe_incoming(&target_inbox).is_empty());
 
-    let longest = "x".repeat(crate::protocol::MAX_PIPE_ID_BYTES);
+    let longest = "x".repeat(plexi_protocol::MAX_PIPE_ID_BYTES);
     let accepted = request_directed_pipe(&mut h, opener, target, &longest);
     h.run_hidden_frames(3);
     let answers = open_answers(&opener_inbox, &accepted);
@@ -6755,7 +6755,7 @@ fn the_python_sdk_and_host_share_the_pipe_id_limit() {
         python_pane_title(&h, opener),
         Some(format!(
             "opener:sdk={}:True,raw=name_too_long:300",
-            crate::protocol::MAX_PIPE_ID_BYTES
+            plexi_protocol::MAX_PIPE_ID_BYTES
         )),
         "the SDK's limit is the host's, and the refusal names the request"
     );
@@ -6791,7 +6791,7 @@ fn an_open_to_a_builtin_that_takes_no_pipe_events_is_refused() {
     h.run_hidden_frames(3);
     assert_eq!(
         open_answers(&opener_inbox, &refused),
-        vec![Err(crate::protocol::PipeOpenRefusal::TargetUnavailable)],
+        vec![Err(plexi_protocol::PipeOpenRefusal::TargetUnavailable)],
         "exactly one refusal"
     );
     assert_eq!(pipe_ends(&h, &(context_id, PIPE.to_string())), None);
@@ -7245,7 +7245,7 @@ fn write_relaunching_pipe_sender_plugin(dir: &std::path::Path) {
 /// what is sent on it.
 #[test]
 fn python_relaunch_retires_the_old_guests_directed_pipes() {
-    use crate::protocol::{PipeCloseReason, PlexiEvent};
+    use plexi_protocol::{PipeCloseReason, PlexiEvent};
     const PIPE: &str = "stint1681.duplex";
     let sender_dir = tempfile::tempdir().expect("sender dir");
     write_relaunching_pipe_sender_plugin(sender_dir.path());
@@ -7336,7 +7336,7 @@ fn python_relaunch_retires_the_old_guests_directed_pipes() {
 /// records it, and a send the survivor makes on it afterwards goes nowhere.
 #[test]
 fn pane_close_retires_directed_pipes_and_tells_the_peer() {
-    use crate::protocol::PipeCloseReason;
+    use plexi_protocol::PipeCloseReason;
     crate::host::event_log::test_capture_events();
     let mut h = HostHarness::new();
     let context_id = h.app.windows[0].context_id;
@@ -7387,7 +7387,7 @@ fn pane_close_retires_directed_pipes_and_tells_the_peer() {
 /// same context is told.
 #[test]
 fn deleting_a_page_retires_directed_pipes_of_its_panes() {
-    use crate::protocol::PipeCloseReason;
+    use plexi_protocol::PipeCloseReason;
     let mut h = HostHarness::new();
     let context_id = h.app.windows[0].context_id;
     let page = push_test_page(&mut h, context_id, 1);
@@ -7439,7 +7439,7 @@ fn deleting_a_context_retires_directed_pipes_of_its_panes() {
 /// id, different instance) is not an end.
 #[test]
 fn overlay_dismissal_retires_the_overlays_directed_pipes() {
-    use crate::protocol::PipeCloseReason;
+    use plexi_protocol::PipeCloseReason;
     let mut h = HostHarness::new();
     let (peer, peer_inbox) = add_pipe_test_pane(&mut h, 0);
     let (slot, covered_inbox) = add_pipe_test_pane(&mut h, 0);
@@ -7479,7 +7479,7 @@ fn overlay_dismissal_retires_the_overlays_directed_pipes() {
 /// the overlay, is told.
 #[test]
 fn a_covered_pipe_end_is_reached_and_retired_as_itself() {
-    use crate::protocol::PipeCloseReason;
+    use plexi_protocol::PipeCloseReason;
     let mut h = HostHarness::new();
     let (opener, opener_inbox) = add_pipe_test_pane(&mut h, 0);
     let (slot, covered_inbox) = add_pipe_test_pane(&mut h, 0);
@@ -7535,7 +7535,7 @@ fn push_test_page(h: &mut HostHarness, context_id: u64, grid_x: u32) -> usize {
 /// send on the new generation reaches the replacement.
 #[test]
 fn a_stale_send_never_reaches_a_reopened_connection_in_either_dispatch_order() {
-    use crate::protocol::PipeCloseReason;
+    use plexi_protocol::PipeCloseReason;
     for reopen_first in [true, false] {
         let mut h = HostHarness::new();
         let context_id = h.app.windows[0].context_id;
@@ -7581,7 +7581,7 @@ fn a_stale_send_never_reaches_a_reopened_connection_in_either_dispatch_order() {
 /// is dropped; a fresh send on the new generation arrives.
 #[test]
 fn a_covered_peers_queued_send_is_dropped_after_reveal_and_reopen() {
-    use crate::protocol::PipeCloseReason;
+    use plexi_protocol::PipeCloseReason;
     let mut h = HostHarness::new();
     let context_id = h.app.windows[0].context_id;
     let page = push_test_page(&mut h, context_id, 1);
@@ -7630,7 +7630,7 @@ fn a_covered_peers_queued_send_is_dropped_after_reveal_and_reopen() {
 /// instances of the deleted slot, are told nothing.
 #[test]
 fn deleting_a_page_tells_each_surviving_end_once_and_no_deleted_end() {
-    use crate::protocol::PipeCloseReason;
+    use plexi_protocol::PipeCloseReason;
     let mut h = HostHarness::new();
     let context_id = h.app.windows[0].context_id;
     let page = push_test_page(&mut h, context_id, 1);
@@ -7695,7 +7695,7 @@ fn lay_out_pipe_test_views(h: &mut HostHarness, win_idx: usize, n: usize) -> Vec
 /// subcontext dissolves into its parent.
 #[test]
 fn moving_an_end_to_another_context_ends_its_connections() {
-    use crate::protocol::{PipeCloseReason, PipeOpenRefusal};
+    use plexi_protocol::{PipeCloseReason, PipeOpenRefusal};
     let mut h = HostHarness::new();
     let parent = h.app.windows[0].context_id;
     let views = lay_out_pipe_test_views(&mut h, 0, 4);
@@ -9996,7 +9996,7 @@ fn update_restart_with_nothing_unsaved_starts_at_once() {
 /// confirming it restarts into the update rather than just quitting.
 #[test]
 fn update_restart_with_a_working_agent_confirms_then_restarts() {
-    use crate::protocol::{AgentState, PaneAgentState};
+    use plexi_protocol::{AgentState, PaneAgentState};
     crate::app::quit::test_restart_scheduler::take();
     let mut h = HostHarness::new();
     let id = h.add_focused_terminal();
@@ -10030,7 +10030,7 @@ fn update_restart_with_a_working_agent_confirms_then_restarts() {
 
 /// A focused terminal running a working agent, with an update ready.
 fn working_agent_with_update_ready() -> HostHarness {
-    use crate::protocol::{AgentState, PaneAgentState};
+    use plexi_protocol::{AgentState, PaneAgentState};
     let mut h = HostHarness::new();
     let id = h.add_focused_terminal();
     h.app.windows[0]
@@ -11921,7 +11921,7 @@ fn plugin_commands_execute_while_window_hidden() {
             options: Vec::new(),
             input_prompt: None,
             required: false,
-            scope: crate::protocol::NotifyScope::Global,
+            scope: plexi_protocol::NotifyScope::Global,
             image_inline: None,
             image_pipe_id: None,
             timeout_secs: None,
@@ -14120,7 +14120,7 @@ mod routine_firing {
 
 mod agent_boot {
     use super::*;
-    use crate::protocol::{AgentState, HostRequest};
+    use plexi_protocol::{AgentState, HostRequest};
 
     /// Spawn a terminal with `--agent` semantics and return its response file.
     fn spawn_agent_pane(
@@ -14886,8 +14886,8 @@ mod agent_boot {
         );
     }
 
-    fn pi_state(pane_id: u64, state: AgentState) -> crate::protocol::PaneAgentState {
-        crate::protocol::PaneAgentState {
+    fn pi_state(pane_id: u64, state: AgentState) -> plexi_protocol::PaneAgentState {
+        plexi_protocol::PaneAgentState {
             pane_id,
             state,
             agent: "pi".to_string(),
@@ -15102,7 +15102,7 @@ mod agent_boot {
             .get_mut(&pane_id)
             .and_then(|pane| pane.as_terminal_mut())
             .expect("terminal");
-        terminal.agent = Some(crate::protocol::PaneAgentState {
+        terminal.agent = Some(plexi_protocol::PaneAgentState {
             pane_id,
             state: AgentState::Idle,
             agent: "codex".to_string(),
@@ -15111,7 +15111,7 @@ mod agent_boot {
         });
         terminal.agent_reported_at =
             Some(std::time::Instant::now() - crate::host::pane::HOOK_AGENT_FRESHNESS);
-        terminal.observed_agent = Some(crate::protocol::PaneAgentState {
+        terminal.observed_agent = Some(plexi_protocol::PaneAgentState {
             pane_id,
             state: AgentState::Working,
             agent: "codex".to_string(),
@@ -15571,9 +15571,9 @@ mod pane_send_submit_tests {
             .panes
             .get_mut(&term)
             .expect("terminal pane")
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 pane_id: term,
-                state: crate::protocol::AgentState::Idle,
+                state: plexi_protocol::AgentState::Idle,
                 agent: "codex".to_string(),
                 detail: None,
                 session_id: None,
@@ -16573,7 +16573,7 @@ mod pane_lifecycle_events {
         }
         assert_eq!(
             h.app.windows[0].panes[&pane_id].agent().unwrap().state,
-            crate::protocol::AgentState::Idle
+            plexi_protocol::AgentState::Idle
         );
     }
 
@@ -16584,7 +16584,7 @@ mod pane_lifecycle_events {
         let tmp = tempfile::tempdir().unwrap();
         for (n, bytes) in [vec![65, 255], vec![66]].into_iter().enumerate() {
             let response = temp_response(tmp.path(), &format!("slot-{n}"));
-            h.inject_ipc(crate::protocol::HostRequest::SlotWrite {
+            h.inject_ipc(plexi_protocol::HostRequest::SlotWrite {
                 pane_id,
                 slot_name: "status".into(),
                 content: bytes,
@@ -16785,7 +16785,7 @@ mod pane_lifecycle_events {
                 "pr_url": { "type": "string" }
             }
         });
-        h.inject_from_pane(master_pane, crate::protocol::HostRequest::AgentSpawn {
+        h.inject_from_pane(master_pane, plexi_protocol::HostRequest::AgentSpawn {
             anchor_pane: None,
             role: "worker".into(),
             harness: "codex".into(),
@@ -16838,12 +16838,12 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::protocol::ContextStatus::Working
+            plexi_protocol::ContextStatus::Working
         );
 
         // 1. Invalid result payload is rejected synchronously by schema validation.
         let bad_done = temp_response(dir.path(), "agent-done-bad");
-        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
+        h.inject_ipc(plexi_protocol::HostRequest::AgentDone {
             pane_id: worker_id,
             result: Some(r#"{"wrong": 123}"#.into()),
             summary: Some("incomplete".into()),
@@ -16856,7 +16856,7 @@ mod pane_lifecycle_events {
 
         // 2. Valid result payload commits result, writes `completed` + `summary` slots.
         let good_done = temp_response(dir.path(), "agent-done-good");
-        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
+        h.inject_ipc(plexi_protocol::HostRequest::AgentDone {
             pane_id: worker_id,
             result: Some(r#"{"pr_url": "https://github.com/org/repo/pull/802"}"#.into()),
             summary: Some("Shipped agent squads".into()),
@@ -16897,7 +16897,7 @@ mod pane_lifecycle_events {
 
         // 4. Master can still read `completed` and `summary` slots after ephemeral close.
         let summary_slot = temp_response(dir.path(), "slot-summary");
-        h.inject_ipc(crate::protocol::HostRequest::SlotRead {
+        h.inject_ipc(plexi_protocol::HostRequest::SlotRead {
             pane_id: worker_id,
             slot_name: "summary".into(),
             response_file: summary_slot.clone(),
@@ -16918,7 +16918,7 @@ mod pane_lifecycle_events {
         let dir = tempfile::tempdir().unwrap();
 
         let spawn_reply = temp_response(dir.path(), "agent-spawn-crash");
-        h.inject_from_pane(master_pane, crate::protocol::HostRequest::AgentSpawn {
+        h.inject_from_pane(master_pane, plexi_protocol::HostRequest::AgentSpawn {
             anchor_pane: None,
             role: "crasher".into(),
             harness: "claude".into(),
@@ -16970,7 +16970,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::protocol::ContextStatus::Error,
+            plexi_protocol::ContextStatus::Error,
             "crashed worker must roll up Error status onto parent PortalPane"
         );
     }
@@ -16987,7 +16987,7 @@ mod pane_lifecycle_events {
         let initial_needs_you_count = mon.host_records().questions(true).len();
 
         let spawn_reply = temp_response(dir.path(), "agent-spawn-ask");
-        h.inject_from_pane(master_pane, crate::protocol::HostRequest::AgentSpawn {
+        h.inject_from_pane(master_pane, plexi_protocol::HostRequest::AgentSpawn {
             anchor_pane: None,
             role: "implementer".into(),
             harness: "codex".into(),
@@ -17023,7 +17023,7 @@ mod pane_lifecycle_events {
         h.hidden_frame();
 
         let info_reply = temp_response(dir.path(), "pane-info");
-        h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
+        h.inject_ipc(plexi_protocol::HostRequest::GetPaneInfo {
             pane_id: worker_id,
             response_file: info_reply.clone(),
         });
@@ -17035,7 +17035,7 @@ mod pane_lifecycle_events {
         // Tier 1 (`plexi agent ask`): worker transitions to Blocked, writes `question` slot,
         // rolls up `ContextStatus::Blocked` on parent PortalPane, and does NOT file human NeedsYou.
         let ask_reply = temp_response(dir.path(), "agent-ask");
-        h.inject_ipc(crate::protocol::HostRequest::AgentAsk {
+        h.inject_ipc(plexi_protocol::HostRequest::AgentAsk {
             pane_id: worker_id,
             question: "Should we use BTreeMap or HashMap?".into(),
             response_file: ask_reply.clone(),
@@ -17059,12 +17059,12 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::protocol::ContextStatus::Blocked
+            plexi_protocol::ContextStatus::Blocked
         );
 
         let fleet_reply = temp_response(dir.path(), "fleet");
-        h.inject_ipc(crate::protocol::HostRequest::AgentFleet {
-            filter: crate::agent::fleet::FleetFilter::All,
+        h.inject_ipc(plexi_protocol::HostRequest::AgentFleet {
+            filter: plexi_protocol::FleetFilter::All,
             response_file: fleet_reply.clone(),
         });
         h.hidden_frame();
@@ -17109,7 +17109,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::protocol::ContextStatus::NeedsYou
+            plexi_protocol::ContextStatus::NeedsYou
         );
     }
 
@@ -17125,7 +17125,7 @@ mod pane_lifecycle_events {
 
         let spawn_worker = |h: &mut HostHarness, role: &str| -> (u64, u64) {
             let reply = temp_response(dir.path(), &format!("spawn-{role}"));
-            h.inject_from_pane(master_pane, crate::protocol::HostRequest::AgentSpawn {
+            h.inject_from_pane(master_pane, plexi_protocol::HostRequest::AgentSpawn {
                 anchor_pane: None,
                 role: role.into(),
                 harness: "codex".into(),
@@ -17185,7 +17185,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::protocol::ContextStatus::Blocked
+            plexi_protocol::ContextStatus::Blocked
         );
         assert_eq!(
             portal_state.status_summary_badge().as_deref(),
@@ -17229,7 +17229,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::protocol::ContextStatus::NeedsYou
+            plexi_protocol::ContextStatus::NeedsYou
         );
         assert_eq!(
             portal_state.status_summary_badge().as_deref(),
@@ -17276,7 +17276,7 @@ mod pane_lifecycle_events {
         };
         assert_eq!(
             portal_state.status,
-            crate::protocol::ContextStatus::Error
+            plexi_protocol::ContextStatus::Error
         );
         assert_eq!(
             portal_state.status_summary_badge().as_deref(),
@@ -17293,7 +17293,7 @@ mod flight_recorder_session {
     use super::*;
     use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
     use crate::plexi_ai::tool_dispatch::{self, PluginEventSender, ToolCallResult};
-    use crate::protocol::AiTool;
+    use plexi_protocol::AiTool;
     use std::time::{Duration, Instant};
 
     fn pump_until(h: &mut HostHarness, mut done: impl FnMut() -> bool) {
@@ -17357,7 +17357,7 @@ mod flight_recorder_session {
             },
         );
         let reply = workspace.join("flight-reply.json");
-        let request: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        let request: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
             "type":"call_plugin_tool", "plugin_id":"flight-probe", "tool":"probe.todo",
             "input_json": r#"{"text":"Buy groceries"}"#,
             "call_credential": credential,
@@ -17371,9 +17371,9 @@ mod flight_recorder_session {
             ApprovalChoice::Once,
         )
         .unwrap();
-        let event: crate::protocol::PlexiEvent =
+        let event: plexi_protocol::PlexiEvent =
             serde_json::from_str(&rx.recv_timeout(tool_timeout).unwrap()).unwrap();
-        let crate::protocol::PlexiEvent::ToolCall { call_id, .. } = event else {
+        let plexi_protocol::PlexiEvent::ToolCall { call_id, .. } = event else {
             panic!("expected tool call");
         };
         tool_dispatch::resolve_pending(&call_id, ToolCallResult::ok(r#"{"added":true}"#));
@@ -18177,7 +18177,7 @@ pub(super) fn assert_claude_question_permission_hook(settings: &serde_json::Valu
 mod agent_state_restoration_tests {
     use super::*;
     use crate::host::context::{Context, ContextName};
-    use crate::protocol::{AgentBlockedReason, AgentState, HostRequest};
+    use plexi_protocol::{AgentBlockedReason, AgentState, HostRequest};
     use crate::workspace::{
         SavedAgentSession, SavedPane, SavedPaneKind, SavedWindow, WorkspaceFile,
     };
@@ -18704,7 +18704,7 @@ mod agent_state_restoration_tests {
         };
         assert_eq!(
             portal_state.status,
-            crate::protocol::ContextStatus::Blocked,
+            plexi_protocol::ContextStatus::Blocked,
             "Standby child pane's Blocked state must roll up onto parent PortalPane immediately on restore"
         );
 
@@ -18975,7 +18975,7 @@ mod agent_state_restoration_tests {
         assert_eq!(rec.summary.as_deref(), Some("Auth audit passed"));
         assert!(rec.slots.contains_key("summary"));
 
-        let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let fleet = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert!(
             fleet
                 .tasks
@@ -19926,7 +19926,7 @@ fn an_open_one_end_cannot_register_is_refused_and_rolled_back() {
 /// and refused `target_unavailable`; the opener is never told it opened.
 #[test]
 fn an_open_whose_target_cannot_be_told_is_undone_and_refused() {
-    use crate::protocol::PipeOpenRefusal;
+    use plexi_protocol::PipeOpenRefusal;
     let receiver_dir = tempfile::tempdir().expect("receiver dir");
     write_directed_pipe_receiver_plugin(receiver_dir.path());
     let mut h = HostHarness::new();
@@ -19986,7 +19986,7 @@ fn an_open_whose_target_cannot_be_told_is_undone_and_refused() {
 /// context (a view in no tile) is answered `opener_unplaced`, not ignored.
 #[test]
 fn an_open_from_an_unplaced_view_is_refused() {
-    use crate::protocol::PipeOpenRefusal;
+    use plexi_protocol::PipeOpenRefusal;
     let mut h = HostHarness::new();
     let win = h.app.active_window;
     let (target, _) = add_pipe_test_pane(&mut h, win);
@@ -20116,7 +20116,7 @@ fn python_and_wasm_views_open_exchange_refuse_and_close_directed_pipes() {
     wasm_runtime(&mut h, wasm).init_now_for_test();
     let (controller, controller_inbox) = add_pipe_test_pane(&mut h, win);
     let ctl = open_directed_test_pipe(&mut h, controller, &controller_inbox, wasm, "ctl");
-    let logs = |inbox: &std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>| -> Vec<String> {
+    let logs = |inbox: &std::sync::Mutex<Vec<plexi_protocol::PlexiEvent>>| -> Vec<String> {
         pipe_messages(inbox)
             .into_iter()
             .filter(|(generation, _)| *generation == ctl)
@@ -20313,7 +20313,7 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
 
     // 2. `pane zoom` CLI (`HostRequest::PaneZoom`) toggles both ways.
     let zoom_resp = tempfile::NamedTempFile::new().unwrap();
-    h.inject_ipc(crate::protocol::HostRequest::PaneZoom {
+    h.inject_ipc(plexi_protocol::HostRequest::PaneZoom {
         pane_id: term,
         response_file: zoom_resp.path().to_string_lossy().into_owned(),
     });
@@ -20322,7 +20322,7 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
         h.app.windows[0].zoomed_pane.is_some(),
         "pane zoom must zoom in when unzoomed"
     );
-    h.inject_ipc(crate::protocol::HostRequest::PaneZoom {
+    h.inject_ipc(plexi_protocol::HostRequest::PaneZoom {
         pane_id: term,
         response_file: zoom_resp.path().to_string_lossy().into_owned(),
     });
@@ -20416,9 +20416,9 @@ fn working_agent_quit_requires_confirmation_and_cancel_preserves_panes() {
         .panes
         .get_mut(&pane)
         .unwrap()
-        .set_agent(Some(crate::protocol::PaneAgentState {
+        .set_agent(Some(plexi_protocol::PaneAgentState {
             agent: "test-agent".into(),
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             pane_id: pane,
             detail: None,
             session_id: None,
@@ -20514,10 +20514,10 @@ fn working_agent_window_close_and_keyboard_quit_share_confirmation() {
             .panes
             .get_mut(&pane)
             .unwrap()
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 pane_id: pane,
                 agent: "codex".into(),
-                state: crate::protocol::AgentState::Working,
+                state: plexi_protocol::AgentState::Working,
                 detail: Some("Running tests".into()),
                 session_id: None,
             }));
@@ -20552,7 +20552,7 @@ fn agent_tool_call_protocol_accepts_blocking_and_async_requests() {
             "asynchronous": asynchronous,
             "response_file": "/tmp/unused-agent-call-reply"
         });
-        assert!(serde_json::from_value::<crate::protocol::HostRequest>(request).is_ok());
+        assert!(serde_json::from_value::<plexi_protocol::HostRequest>(request).is_ok());
     }
 }
 
@@ -21098,7 +21098,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
 ) {
     let _experiments =
         crate::release::set_test_experiments(&[crate::release::ReleaseFeature::AgentMesh]);
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
     let mut h = HostHarness::new();
     let human_shell = h.add_focused_terminal();
     let dir = tempfile::tempdir().unwrap();
@@ -21177,7 +21177,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     }
 
     // Verify `agents_view` surfaces `pending_child_results_count == 2` for GUI badge ("2 results waiting").
-    let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+    let fleet = h.app.agents_view(plexi_protocol::FleetFilter::All);
     let lead_row = fleet
         .tasks
         .iter()
@@ -21371,7 +21371,7 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
         "pane tree must not show 'result waiting' on plain-shell spawner: {tree_text}"
     );
 
-    let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+    let view = h.app.agents_view(plexi_protocol::FleetFilter::All);
     assert!(
         view.tasks
             .iter()
@@ -21637,7 +21637,7 @@ allow = ["pane.send"]
         .unwrap();
     assert_eq!(
         term_child_after.agent.as_ref().map(|a| a.state.clone()),
-        Some(crate::protocol::AgentState::Idle),
+        Some(plexi_protocol::AgentState::Idle),
         "interactive agent pane transitions to Idle on done"
     );
 
@@ -21730,7 +21730,7 @@ allow = ["pane.send"]
 
     h.inject_ipc(HostRequest::SetAgentState {
         pane_id: failed_child_pane_id,
-        state: crate::protocol::AgentState::Failed,
+        state: plexi_protocol::AgentState::Failed,
         agent: "pi".to_string(),
         detail: Some("harness exited with code 7 without agent done".to_string()),
         session_id: None,
@@ -21757,7 +21757,7 @@ allow = ["pane.send"]
         .expect("failed child terminal");
     assert_eq!(
         failed_child.agent.as_ref().map(|agent| agent.state.clone()),
-        Some(crate::protocol::AgentState::Failed),
+        Some(plexi_protocol::AgentState::Failed),
         "nonzero harness exit must persist Failed on the interactive task child"
     );
 }
@@ -21839,7 +21839,7 @@ ask = ["pane.send"]
                         claude_memory: None,
                         permission_posture: None,
                         session_id: Some("sess-lead-10".to_string()),
-                        last_state: crate::protocol::AgentState::Idle,
+                        last_state: plexi_protocol::AgentState::Idle,
                         last_blocked_reason: None,
                         last_detail: None,
                         parent_pane_id: None,
@@ -22522,7 +22522,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
 
     h.inject_ipc(HostRequest::SetAgentState {
         pane_id: oneshot_pane,
-        state: crate::protocol::AgentState::ExitedUnreported,
+        state: plexi_protocol::AgentState::ExitedUnreported,
         agent: "script".to_string(),
         detail: Some("harness exited with code 0 without agent done".to_string()),
         session_id: None,
@@ -22600,7 +22600,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
 mod restore_followups_0983b {
     use super::*;
     use crate::host::context::{Context, ContextName};
-    use crate::protocol::{AgentState, HostRequest};
+    use plexi_protocol::{AgentState, HostRequest};
     use crate::workspace::{
         SavedAgentSession, SavedPane, SavedPaneKind, SavedWindow, WorkspaceFile,
     };
@@ -22849,7 +22849,7 @@ mod restore_followups_0983b {
             restored_term.fleet_seen,
             "restored child pane must preserve fleet_seen=true"
         );
-        let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view = h.app.agents_view(plexi_protocol::FleetFilter::All);
         let row = view
             .tasks
             .iter()
@@ -22888,7 +22888,7 @@ mod program_status_agent {
     fn state_of(
         h: &HostHarness,
         pane: u64,
-    ) -> Option<(crate::protocol::AgentState, Option<String>)> {
+    ) -> Option<(plexi_protocol::AgentState, Option<String>)> {
         h.app.windows[0]
             .panes
             .get(&pane)
@@ -22928,7 +22928,7 @@ mod program_status_agent {
         apply(&mut h, pane, "state=working:app=claude");
         assert_eq!(
             state_of(&h, pane).unwrap().0,
-            crate::protocol::AgentState::Working
+            plexi_protocol::AgentState::Working
         );
         // "cGVybWlzc2lvbiB0byBydW4=" = "permission to run"
         apply(
@@ -22937,17 +22937,17 @@ mod program_status_agent {
             "state=blocked:kind=permission:msg=cGVybWlzc2lvbiB0byBydW4=",
         );
         let (state, detail) = state_of(&h, pane).unwrap();
-        assert_eq!(state, crate::protocol::AgentState::NeedsYou);
+        assert_eq!(state, plexi_protocol::AgentState::NeedsYou);
         assert_eq!(detail.as_deref(), Some("permission: permission to run"));
         apply(&mut h, pane, "state=working");
         assert_eq!(
             state_of(&h, pane).unwrap().0,
-            crate::protocol::AgentState::Working
+            plexi_protocol::AgentState::Working
         );
         apply(&mut h, pane, "state=done");
         assert_eq!(
             state_of(&h, pane).unwrap().0,
-            crate::protocol::AgentState::Completed
+            plexi_protocol::AgentState::Completed
         );
     }
 
@@ -22960,9 +22960,9 @@ mod program_status_agent {
             .get_mut(&pane)
             .and_then(|p| p.as_terminal_mut())
             .expect("terminal")
-            .agent = Some(crate::protocol::PaneAgentState {
+            .agent = Some(plexi_protocol::PaneAgentState {
             pane_id: pane,
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             agent: "codex".to_string(),
             detail: None,
             session_id: None,
@@ -22970,14 +22970,14 @@ mod program_status_agent {
         apply(&mut h, pane, "state=blocked:kind=auth");
         assert_eq!(
             state_of(&h, pane).unwrap().0,
-            crate::protocol::AgentState::NeedsYou
+            plexi_protocol::AgentState::NeedsYou
         );
         apply(&mut h, pane, "state=clear");
         let terminal = h.app.windows[0].panes[&pane].as_terminal().unwrap();
         assert!(terminal.reported_7501.is_none());
         assert_eq!(
             state_of(&h, pane).unwrap().0,
-            crate::protocol::AgentState::Working
+            plexi_protocol::AgentState::Working
         );
     }
 }
@@ -24602,7 +24602,7 @@ fn end_host_induced_window(t: &mut crate::host::pane::TerminalPane) {
 #[cfg(test)]
 mod host_induced_terminal_output_tests {
     use super::*;
-    use crate::protocol::{AgentState, PaneAgentState};
+    use plexi_protocol::{AgentState, PaneAgentState};
     use std::time::{Duration, Instant};
 
     fn terminal(h: &mut HostHarness, id: PaneId) -> &mut crate::host::pane::TerminalPane {
@@ -25093,7 +25093,7 @@ mod terminal_spawn_failure_output {
 mod screen_change_activity_tests {
     use super::*;
     use crate::host::pane::TerminalPane;
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
     use std::time::{Duration, Instant};
 
     fn quiet_terminal(h: &mut HostHarness, dir: &std::path::Path) -> PaneId {
@@ -25409,7 +25409,7 @@ pub(super) fn researcher_history_record(
         session_id: Some(session_id.into()),
         cwd: cwd.to_path_buf(),
         ephemeral: false,
-        last_state: crate::protocol::AgentState::Idle,
+        last_state: plexi_protocol::AgentState::Idle,
         last_blocked_reason: None,
         last_detail: None,
         summary: None,
@@ -25581,7 +25581,7 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
         t.observed_agent = None;
         t.agent_completed = true;
         t.agent_session_id = Some("sess-new".into());
-        t.activity = busy.then_some(crate::protocol::AgentState::Working);
+        t.activity = busy.then_some(plexi_protocol::AgentState::Working);
         t.backend.enable_input_tap();
         assert!(!t.exited);
         let outcome = h
@@ -25612,7 +25612,7 @@ fn named_agent_resumes_exited_chat_before_closed_history() {
         assert!(old.standby_session.is_none());
         assert_eq!(
             old.activity,
-            busy.then_some(crate::protocol::AgentState::Working)
+            busy.then_some(plexi_protocol::AgentState::Working)
         );
         let resumed = terminal(&h, pane_id);
         assert!(resumed.agent_launch.is_some());
@@ -25898,7 +25898,7 @@ fn named_agent_focuses_standby_pane_without_waking_it() {
         claude_memory: None,
         permission_posture: None,
         session_id: Some("sess-standby".to_string()),
-        last_state: crate::protocol::AgentState::Idle,
+        last_state: plexi_protocol::AgentState::Idle,
         last_blocked_reason: None,
         last_detail: None,
         parent_pane_id: None,
@@ -26269,7 +26269,7 @@ fn named_agent_running_follows_the_host_launch_observation() {
 
     write_to_terminal(&mut h, shell, "sleep 30\n");
     tick_until(&mut h, shell, "the user's sleep runs", |t| {
-        t.activity == Some(crate::protocol::AgentState::Working)
+        t.activity == Some(plexi_protocol::AgentState::Working)
     });
     let started = palette_open_from(&mut h, &fx, caller, 1);
     assert_ne!(started, shell, "a user's command is not the agent");
@@ -26310,9 +26310,9 @@ fn named_agent_counts_detected_agent_after_launch_ended() {
         .get_mut(&shell)
         .and_then(Pane::as_terminal_mut)
         .expect("terminal")
-        .observed_agent = Some(crate::protocol::PaneAgentState {
+        .observed_agent = Some(plexi_protocol::PaneAgentState {
         pane_id: shell,
-        state: crate::protocol::AgentState::Working,
+        state: plexi_protocol::AgentState::Working,
         agent: "pi".into(),
         detail: None,
         session_id: None,

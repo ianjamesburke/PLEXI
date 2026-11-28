@@ -1071,7 +1071,7 @@ impl PlexiApp {
             let is_ask = notif.required
                 || !notif.options.is_empty()
                 || notif.input_prompt.is_some()
-                || !matches!(notif.kind, crate::protocol::NotifyKind::Message);
+                || !matches!(notif.kind, plexi_protocol::NotifyKind::Message);
             let category = if is_ask {
                 QueueCategory::Ask
             } else {
@@ -1196,7 +1196,7 @@ impl PlexiApp {
         }
 
         // 5. Live pane agent states not already represented above.
-        let mut agent_entries: Vec<(u64, u64, String, crate::protocol::PaneAgentState)> =
+        let mut agent_entries: Vec<(u64, u64, String, plexi_protocol::PaneAgentState)> =
             Vec::new();
         for win in &self.windows {
             for (&pid, pane) in win.panes.iter() {
@@ -1215,9 +1215,9 @@ impl PlexiApp {
             if !self.attention_queue.dismissed_ids.is_empty()
                 && !matches!(
                     ag.state,
-                    crate::protocol::AgentState::Failed
-                        | crate::protocol::AgentState::Blocked
-                        | crate::protocol::AgentState::ExitedUnreported
+                    plexi_protocol::AgentState::Failed
+                        | plexi_protocol::AgentState::Blocked
+                        | plexi_protocol::AgentState::ExitedUnreported
                 )
             {
                 self.attention_queue
@@ -1225,7 +1225,7 @@ impl PlexiApp {
                     .remove(&format!("agent-failed-{pid}"));
             }
             let (cat, prefix) = match ag.state {
-                crate::protocol::AgentState::NeedsYou => {
+                plexi_protocol::AgentState::NeedsYou => {
                     if bars
                         .iter()
                         .any(|b| b.category == QueueCategory::Ask && b.pane_id == pid)
@@ -1234,20 +1234,20 @@ impl PlexiApp {
                     }
                     (QueueCategory::Ask, "agent-ask")
                 }
-                crate::protocol::AgentState::Failed
-                | crate::protocol::AgentState::Blocked
-                | crate::protocol::AgentState::ExitedUnreported => {
+                plexi_protocol::AgentState::Failed
+                | plexi_protocol::AgentState::Blocked
+                | plexi_protocol::AgentState::ExitedUnreported => {
                     if bars.iter().any(|b| {
                         b.pane_id == pid
                             && (b.category == QueueCategory::Failed
-                                || (ag.state == crate::protocol::AgentState::Blocked
+                                || (ag.state == plexi_protocol::AgentState::Blocked
                                     && b.category == QueueCategory::Ask))
                     }) {
                         continue;
                     }
                     (QueueCategory::Failed, "agent-failed")
                 }
-                crate::protocol::AgentState::Completed => {
+                plexi_protocol::AgentState::Completed => {
                     if bars.iter().any(|b| b.pane_id == pid) {
                         continue;
                     }
@@ -3984,7 +3984,7 @@ mod tests {
                     // host key IPC (enters after raw_input_hook, inside `logic`).
                     for key in [digit_str(option_idx), "enter".to_string()] {
                         let response = self.root.path().join(format!("host-key-{key}.json"));
-                        self.h.inject_ipc(crate::protocol::HostRequest::HostKey {
+                        self.h.inject_ipc(plexi_protocol::HostRequest::HostKey {
                             key: key.clone(),
                             response_file: response.to_string_lossy().into_owned(),
                         });
@@ -4005,7 +4005,7 @@ mod tests {
                 4 => {
                     // pane key IPC to the terminal pane writes PTY bytes; it must not reach the overlay.
                     let response = self.root.path().join("key-pane.json");
-                    self.h.inject_ipc(crate::protocol::HostRequest::KeyPane {
+                    self.h.inject_ipc(plexi_protocol::HostRequest::KeyPane {
                         pane_id: self.pane_id,
                         key: digit_str(option_idx),
                         response_file: Some(response.to_string_lossy().into_owned()),
@@ -4016,7 +4016,7 @@ mod tests {
                 }
                 5 => {
                     // Mixed frame: a physical key beside injected input fails closed.
-                    self.h.inject_ipc(crate::protocol::HostRequest::HostKey {
+                    self.h.inject_ipc(plexi_protocol::HostRequest::HostKey {
                         key: digit_str(option_idx),
                         response_file: self
                             .root
@@ -4235,9 +4235,9 @@ mod tests {
     }
 
     fn report_attention(h: &mut HostHarness, pane_id: u64) {
-        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
             pane_id,
-            state: crate::protocol::AgentState::NeedsYou,
+            state: plexi_protocol::AgentState::NeedsYou,
             agent: "test-agent".into(),
             detail: Some("Which branch should I use?".into()),
             session_id: None,
@@ -4248,8 +4248,8 @@ mod tests {
         h.app.sync_attention_queue();
     }
 
-    fn report_failure_state(h: &mut HostHarness, pane_id: u64, state: crate::protocol::AgentState) {
-        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+    fn report_failure_state(h: &mut HostHarness, pane_id: u64, state: plexi_protocol::AgentState) {
+        h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
             pane_id,
             state,
             agent: "test-agent".into(),
@@ -4266,7 +4266,7 @@ mod tests {
     fn failed_activation_dismisses_and_rearms_after_recovery() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
-        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
+        report_failure_state(&mut h, pane_id, plexi_protocol::AgentState::Failed);
         let id = format!("agent-failed-{pane_id}");
         let bar = h
             .app
@@ -4283,10 +4283,10 @@ mod tests {
         );
         assert!(!h.app.attention_queue.items.iter().any(|b| b.id == id));
         assert_eq!(h.app.attention_queue.items.len(), count - 1);
-        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
+        report_failure_state(&mut h, pane_id, plexi_protocol::AgentState::Failed);
         assert!(!h.app.attention_queue.items.iter().any(|b| b.id == id));
-        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Working);
-        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
+        report_failure_state(&mut h, pane_id, plexi_protocol::AgentState::Working);
+        report_failure_state(&mut h, pane_id, plexi_protocol::AgentState::Failed);
         assert!(h.app.attention_queue.items.iter().any(|b| b.id == id));
     }
 
@@ -4294,14 +4294,14 @@ mod tests {
     fn failed_bar_rearms_when_reports_arrive_before_queue_sync() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
-        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
+        report_failure_state(&mut h, pane_id, plexi_protocol::AgentState::Failed);
         let id = format!("agent-failed-{pane_id}");
         assert!(h.app.dismiss_queue_bar(&id));
         for state in [
-            crate::protocol::AgentState::Working,
-            crate::protocol::AgentState::Failed,
+            plexi_protocol::AgentState::Working,
+            plexi_protocol::AgentState::Failed,
         ] {
-            h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+            h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
                 pane_id,
                 state,
                 agent: "test-agent".into(),
@@ -4353,9 +4353,9 @@ mod tests {
     fn blocked_run_without_choices_opens_pane_without_resolving_record() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
-        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
             pane_id,
-            state: crate::protocol::AgentState::Blocked,
+            state: plexi_protocol::AgentState::Blocked,
             agent: "codex".into(),
             detail: Some("Waiting for approval".into()),
             session_id: None,
@@ -4407,9 +4407,9 @@ mod tests {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
         report_attention(&mut h, pane_id);
-        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
             pane_id,
-            state: crate::protocol::AgentState::NeedsYou,
+            state: plexi_protocol::AgentState::NeedsYou,
             agent: "test-agent".into(),
             detail: Some("Which test should I run?".into()),
             session_id: None,
@@ -4499,7 +4499,7 @@ mod tests {
                 sender_pane_id: pane_id,
                 title: "Approval".into(),
                 tombstoned: true,
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Continue".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -4532,7 +4532,7 @@ mod tests {
                 sender_pane_id: pane_id,
                 title: "Choice".into(),
                 response_file: Some("/dev/null/not-a-response".into()),
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Continue".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -4601,7 +4601,7 @@ mod tests {
                 notify_id: "builtin".into(),
                 sender_pane_id: pane_id,
                 title: "Choice".into(),
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Continue".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -4633,13 +4633,13 @@ mod tests {
                 sender_pane_id: source,
                 title: "Choice".into(),
                 options: vec![
-                    crate::protocol::NotifyOption {
+                    plexi_protocol::NotifyOption {
                         label: "Unsupported".into(),
                         value: "bad".into(),
                         shortcut: None,
                         host_action: None,
                     },
-                    crate::protocol::NotifyOption {
+                    plexi_protocol::NotifyOption {
                         label: "Open pane".into(),
                         value: "go".into(),
                         shortcut: None,
@@ -4675,7 +4675,7 @@ mod tests {
                 sender_pane_id: source,
                 title: "Choice".into(),
                 response_file: Some("/dev/null/not-a-response".into()),
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Go".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -4736,7 +4736,7 @@ mod tests {
                 notify_id: "persist-failure".into(),
                 sender_pane_id: source,
                 title: "Choice".into(),
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Go".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -4775,7 +4775,7 @@ mod tests {
                 sender_pane_id: source,
                 title: "Choice".into(),
                 response_file: Some(path.to_string_lossy().into_owned()),
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Go".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -4837,7 +4837,7 @@ mod tests {
                 source_context_id: context,
                 response_file: Some(response.to_string_lossy().into_owned()),
                 required: true,
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Continue".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -4971,7 +4971,7 @@ mod tests {
                 sender_pane_id: u64::MAX,
                 title: "Choice".into(),
                 response_file: Some(path.to_string_lossy().into_owned()),
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Continue".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -4998,7 +4998,7 @@ mod tests {
                 sender_pane_id: u64::MAX,
                 title: "Choice".into(),
                 response_file: Some("/dev/null/not-a-response".into()),
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Continue".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -5037,7 +5037,7 @@ mod tests {
                 sender_pane_id: pane_id,
                 title: "Choice".into(),
                 response_file: Some("/dev/null/not-a-response".into()),
-                options: vec![crate::protocol::NotifyOption {
+                options: vec![plexi_protocol::NotifyOption {
                     label: "Continue".into(),
                     value: "go".into(),
                     shortcut: None,
@@ -5538,9 +5538,9 @@ mod tests {
         if let Some((harness, role)) = agent {
             term.agent_harness = Some(harness.into());
             term.agent_role = Some(role.into());
-            term.agent = Some(crate::protocol::PaneAgentState {
+            term.agent = Some(plexi_protocol::PaneAgentState {
                 pane_id: id,
-                state: crate::protocol::AgentState::Idle,
+                state: plexi_protocol::AgentState::Idle,
                 agent: harness.into(),
                 detail: None,
                 session_id: None,
@@ -6474,7 +6474,7 @@ mod tests {
 
     #[test]
     fn claude_question_suppresses_only_the_native_fallback_while_live() {
-        use crate::protocol::{AgentState, HostRequest};
+        use plexi_protocol::{AgentState, HostRequest};
         let mut h = HostHarness::new();
         let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
         let pane = h.add_focused_terminal();
@@ -6591,7 +6591,7 @@ mod tests {
         assert_eq!(call(&mut h, other, "list", &json!({}))["items"], json!([]));
         assert_eq!(call(&mut h, other, "show", &by_id)["ok"], false);
 
-        assert_eq!(fleet_state(&h), crate::protocol::AgentState::NeedsYou);
+        assert_eq!(fleet_state(&h), plexi_protocol::AgentState::NeedsYou);
         let terminal = h.app.windows[0]
             .panes
             .get_mut(&pane)
@@ -6600,7 +6600,7 @@ mod tests {
             .unwrap();
         let grant = terminal.authority().unwrap().grant().clone();
         terminal.replace_grant_for_test(grant);
-        assert_ne!(fleet_state(&h), crate::protocol::AgentState::NeedsYou);
+        assert_ne!(fleet_state(&h), plexi_protocol::AgentState::NeedsYou);
         h.app.sync_attention_queue();
         let historical = h
             .app
@@ -6754,7 +6754,7 @@ mod tests {
         let response = h.workspace_root().join("ask.json");
         h.inject_from_pane(
             pane_id,
-            crate::protocol::HostRequest::AgentAsk {
+            plexi_protocol::HostRequest::AgentAsk {
                 pane_id,
                 question: question.into(),
                 response_file: response.to_string_lossy().into_owned(),
@@ -6805,13 +6805,13 @@ mod tests {
 
     #[test]
     fn agent_ask_refuses_shell_after_own_state_report() {
-        use crate::protocol::AgentState;
+        use plexi_protocol::AgentState;
 
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
         h.inject_from_pane(
             pane_id,
-            crate::protocol::HostRequest::SetAgentState {
+            plexi_protocol::HostRequest::SetAgentState {
                 pane_id,
                 state: AgentState::Working,
                 agent: "codex".into(),
@@ -6870,7 +6870,7 @@ mod tests {
         let terminal = h.app.terminal_incarnation(pane_id).unwrap();
         assert_eq!(
             terminal.agent.as_ref().unwrap().state,
-            crate::protocol::AgentState::Blocked
+            plexi_protocol::AgentState::Blocked
         );
         let slot = std::fs::read(&terminal.slots["question"]).unwrap();
         let slot: serde_json::Value = serde_json::from_slice(&slot).unwrap();

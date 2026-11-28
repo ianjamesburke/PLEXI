@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Print libtest filters, one per line; pass them AFTER cargo test --bin plexi --.
+# Print libtest filters, one per line; pass them AFTER cargo test --bin plexi --. A `package:<crate>` line names a member crate to test with `cargo test -p <crate>` instead.
 # Taxonomy and scene selection: src/testing/TESTING.md.
 # Unknown src/ module relationships report ::, never no tests; replace that
 # broad fallback with reviewed relevant filters.

@@ -5,13 +5,13 @@ on:
   push:
     branches: [alpha]
     paths:
-      - 'src/protocol/**'
+      - 'crates/plexi-protocol/**'
       - 'sdk/protocol/**'
       - 'tools/gen_protocol_py.py'
   pull_request:
     branches: [alpha]
     paths:
-      - 'src/protocol/**'
+      - 'crates/plexi-protocol/**'
       - 'sdk/protocol/**'
       - 'tools/gen_protocol_py.py'
 

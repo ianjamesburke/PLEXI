@@ -4,6 +4,8 @@
 # "::" is the src catch-all: scoped-tests.sh reports it as broad; `just test-for` falls back
 # to the file's own module. scripts/test_filter_check.py fails when a pattern here matches
 # no tracked file, so the table cannot drift from the tree.
+# A `package:<crate>` filter selects that workspace member's whole suite (`cargo test -p <crate>`);
+# `just test-for` runs it beside any libtest filters in the same row.
 docs/*|.agents/*|.claude/*	
 src/overlays/*	overlays:: testing::
 src/testing/harness_tests.rs	testing::harness_tests::
@@ -14,6 +16,7 @@ src/cli/*	cli:: cli_tests:: testing::
 src/app/text_editor_view.rs	editor:: editor_gate ui_tests:: app::text_editor_view::
 src/editor/*	editor:: editor_gate ui_tests::
 src/config/*|src/workspace/*	config:: workspace:: testing::
+crates/plexi-protocol/*	package:plexi-protocol
 src/*	::
 plugins/*|sdk/python/*	
 scripts/*	

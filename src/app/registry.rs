@@ -463,12 +463,12 @@ pub enum DefaultNotifyScope {
     Global,
 }
 
-impl From<DefaultNotifyScope> for crate::protocol::NotifyScope {
+impl From<DefaultNotifyScope> for plexi_protocol::NotifyScope {
     fn from(d: DefaultNotifyScope) -> Self {
         match d {
-            DefaultNotifyScope::Window => crate::protocol::NotifyScope::Window,
-            DefaultNotifyScope::Context => crate::protocol::NotifyScope::Context,
-            DefaultNotifyScope::Global => crate::protocol::NotifyScope::Global,
+            DefaultNotifyScope::Window => plexi_protocol::NotifyScope::Window,
+            DefaultNotifyScope::Context => plexi_protocol::NotifyScope::Context,
+            DefaultNotifyScope::Global => plexi_protocol::NotifyScope::Global,
         }
     }
 }
@@ -1067,11 +1067,11 @@ impl PluginRegistry {
 
     /// Return the manifest-declared notification scope for a plugin.
     /// Defaults to `Window` when the manifest omits `[launch] notification_scope`.
-    pub fn default_notification_scope_for(&self, plugin_id: &str) -> crate::protocol::NotifyScope {
+    pub fn default_notification_scope_for(&self, plugin_id: &str) -> plexi_protocol::NotifyScope {
         self.plugins
             .get(plugin_id)
             .map(|a| a.launch.notification_scope.clone().into())
-            .unwrap_or(crate::protocol::NotifyScope::Window)
+            .unwrap_or(plexi_protocol::NotifyScope::Window)
     }
 
     /// Check whether a plugin's declared capabilities are satisfiable by the
@@ -2815,7 +2815,7 @@ default = true
 
         let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("no-scope");
-        assert_eq!(scope, crate::protocol::NotifyScope::Window);
+        assert_eq!(scope, plexi_protocol::NotifyScope::Window);
     }
 
     #[test]
@@ -2831,7 +2831,7 @@ default = true
 
         let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("stand-up");
-        assert_eq!(scope, crate::protocol::NotifyScope::Global);
+        assert_eq!(scope, plexi_protocol::NotifyScope::Global);
     }
 
     #[test]
@@ -2870,7 +2870,7 @@ default = true
 
         let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("ctx-scoped");
-        assert_eq!(scope, crate::protocol::NotifyScope::Context);
+        assert_eq!(scope, plexi_protocol::NotifyScope::Context);
     }
 
     #[test]

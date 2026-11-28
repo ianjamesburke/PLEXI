@@ -163,12 +163,12 @@ fn screenshot_sidebar_ancestry_overflow_scale_matrix() {
                 for (index, pane_id) in panes.iter().enumerate() {
                     if let Some(Pane::View(pane)) = win.panes.get_mut(pane_id) {
                         let state = match index % 5 {
-                            0 => Some(crate::protocol::AgentState::Working),
-                            1 => Some(crate::protocol::AgentState::NeedsYou),
-                            2 => Some(crate::protocol::AgentState::Blocked),
+                            0 => Some(plexi_protocol::AgentState::Working),
+                            1 => Some(plexi_protocol::AgentState::NeedsYou),
+                            2 => Some(plexi_protocol::AgentState::Blocked),
                             _ => None,
                         };
-                        pane.agent = state.map(|state| crate::protocol::PaneAgentState {
+                        pane.agent = state.map(|state| plexi_protocol::PaneAgentState {
                             pane_id: *pane_id,
                             state,
                             agent: "fixture".into(),
@@ -566,11 +566,11 @@ fn seeded_notification(
         source_window_id,
         title: "Preview badge".to_string(),
         body: "Seeded sidebar notification".to_string(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::protocol::NotifyScope::Context,
+        scope: plexi_protocol::NotifyScope::Context,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -634,9 +634,9 @@ fn screenshot_sidebar_row_states() {
     // Agent activity across the pips, and badges on two rows.
     h.with_app_mut(|app| {
         let statuses = [
-            crate::protocol::PipStatus::Yellow,
-            crate::protocol::PipStatus::Green,
-            crate::protocol::PipStatus::Red,
+            plexi_protocol::PipStatus::Yellow,
+            plexi_protocol::PipStatus::Green,
+            plexi_protocol::PipStatus::Red,
         ];
         for (i, pane) in app.windows[0].panes.values_mut().enumerate() {
             if let Pane::View(view_pane) = pane {
@@ -848,11 +848,11 @@ fn screenshot_sidebar_x_end_at_default_width() {
                 source_window_id,
                 title: "Preview badge".to_string(),
                 body: "Seeded sidebar notification".to_string(),
-                kind: crate::protocol::NotifyKind::Message,
+                kind: plexi_protocol::NotifyKind::Message,
                 options: vec![],
                 input_prompt: None,
                 required: false,
-                scope: crate::protocol::NotifyScope::Context,
+                scope: plexi_protocol::NotifyScope::Context,
                 image_inline: None,
                 image_pipe_id: None,
                 response_file: None,

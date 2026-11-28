@@ -44,7 +44,7 @@ use crate::broker::{
 use crate::host::plugin_timeline::{EventDelivery, PluginTimeline};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
-use crate::protocol::{parse_enum, AiMessage, ModelTier, PayloadMode, TriggerMode};
+use plexi_protocol::{parse_enum, AiMessage, ModelTier, PayloadMode, TriggerMode};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
@@ -1947,7 +1947,7 @@ default = "ask"
             );
             harness
                 .app
-                .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::SendToPane {
+                .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, plexi_protocol::HostRequest::SendToPane {
                     generated_operation_id: false,
                     pane_id: terminal,
                     text: SENTINEL.to_string(),
@@ -2321,7 +2321,7 @@ default_tier = "low"
     fn revoking_an_agent_stream_grant_withholds_its_queued_delivery() {
         use crate::broker::{ActorScope, ActorType, GrantDuration, GrantRecord, GrantSource};
         use crate::host::plugin_timeline::EmittedEvent;
-        use crate::protocol::{EventStreamDecl, PluginEventActor};
+        use plexi_protocol::{EventStreamDecl, PluginEventActor};
 
         let ws = tempfile::tempdir().unwrap();
         let agent_dir = ws
@@ -2492,7 +2492,7 @@ default_tier = "low"
     #[test]
     fn self_caused_deliveries_do_not_trigger_turns() {
         use crate::host::plugin_timeline::EventDelivery;
-        use crate::protocol::PluginEventActor;
+        use plexi_protocol::PluginEventActor;
 
         let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         let mut host =

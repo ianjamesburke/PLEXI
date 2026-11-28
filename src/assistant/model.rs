@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use super::commands::{self, ParsedCommand};
 use crate::plexi_ai::broker::ReasoningEffort;
-use crate::protocol::ModelTier;
+use plexi_protocol::ModelTier;
 
 /// Who produced a transcript row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1766,7 +1766,7 @@ mod tests {
         assert_eq!(
             effects,
             vec![AssistantEffect::SetSessionModel(
-                crate::protocol::ModelTier::High
+                plexi_protocol::ModelTier::High
             )]
         );
     }

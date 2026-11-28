@@ -8,7 +8,7 @@
 
 use super::PlexiApp;
 use crate::host::pane::Pane;
-use crate::protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
+use plexi_protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::Tile;

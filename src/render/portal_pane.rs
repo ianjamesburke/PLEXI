@@ -7,8 +7,8 @@
 //! description, status summary and counts live in the body's hover tooltip,
 //! so no free-running text competes for the tile's width.
 
-use crate::protocol::ContextStatus;
-use crate::protocol::AgentState;
+use plexi_protocol::ContextStatus;
+use plexi_protocol::AgentState;
 use crate::render::terminal_pane::{render_name_bar_and_tabs, NameBarParams};
 use crate::spatial::tiling::{
     paint_portal_minimap, PaneId, PortalPreview, TabBarAction, TabGroupInfo,

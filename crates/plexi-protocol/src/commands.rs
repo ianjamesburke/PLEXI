@@ -68,6 +68,26 @@ pub enum FleetFilter {
     Done,
 }
 
+impl FleetFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::NeedsAttention => "Needs attention",
+            Self::Working => "Working",
+            Self::Done => "Done",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::NeedsAttention,
+            Self::NeedsAttention => Self::Working,
+            Self::Working => Self::Done,
+            Self::Done => Self::All,
+        }
+    }
+}
+
 /// App-reported "pip" status — a traffic-light health indicator a plugin sets for
 /// itself via the SDK (`App.set_pip_status`). Optional: when unset the host
 /// falls back to derived activity. Distinct from `AgentState` (the hook-script
@@ -1633,7 +1653,7 @@ pub enum HostRequest {
     /// `play`, `pause`, or `seek` to an absolute position in milliseconds.
     SetVideoState {
         handle_id: u64,
-        state: crate::protocol::VideoState,
+        state: crate::VideoState,
     },
     /// Close a previously-opened video handle (#345). Tears down the
     /// decoder thread and the associated binary pipe drains. No response
@@ -2210,7 +2230,7 @@ mod tests {
     //! text additions (#200 + #146). These pin the on-the-wire shape — every
     //! field is required and must be present. No `#[serde(default)]` papering
     //! over missing fields.
-    use crate::protocol::PlexiEvent;
+    use crate::PlexiEvent;
 
     use super::*;
     #[test]
@@ -2607,7 +2627,7 @@ mod tests {
         match &cmd {
             HostRequest::SetVideoState { handle_id, state } => {
                 assert_eq!(*handle_id, 7);
-                assert_eq!(*state, crate::protocol::VideoState::Play);
+                assert_eq!(*state, crate::VideoState::Play);
             }
             other => panic!("expected SetVideoState, got {other:?}"),
         }
@@ -2620,7 +2640,7 @@ mod tests {
         let pause_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"pause"}}"#;
         let cmd: HostRequest = serde_json::from_str(pause_json).expect("deserialise pause");
         if let HostRequest::SetVideoState { state, .. } = &cmd {
-            assert_eq!(*state, crate::protocol::VideoState::Pause);
+            assert_eq!(*state, crate::VideoState::Pause);
         } else {
             panic!("expected SetVideoState pause, got {cmd:?}");
         }
@@ -2630,7 +2650,7 @@ mod tests {
         if let HostRequest::SetVideoState { state, .. } = &cmd {
             assert_eq!(
                 *state,
-                crate::protocol::VideoState::Seek { position_ms: 1500 }
+                crate::VideoState::Seek { position_ms: 1500 }
             );
         } else {
             panic!("expected SetVideoState seek, got {cmd:?}");
@@ -3989,7 +4009,7 @@ mod tests {
 
 #[cfg(test)]
 mod component_event_tests {
-    use crate::protocol::events::PlexiEvent;
+    use crate::events::PlexiEvent;
 
     #[test]
     fn component_event_serializes_correctly() {
@@ -4038,7 +4058,7 @@ mod component_event_tests {
 #[cfg(test)]
 mod ai_stream_chunk_tests {
     use super::*;
-    use crate::protocol::events::PlexiEvent;
+    use crate::events::PlexiEvent;
 
     /// AiStreamChunk round-trips through serde with all fields present.
     #[test]

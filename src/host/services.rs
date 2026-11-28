@@ -196,7 +196,7 @@ pub struct FilePickRequest {
     pub filter: Vec<String>,
     /// Allow selecting more than one file (`Open` mode only).
     pub multiple: bool,
-    pub mode: crate::protocol::FilePickerMode,
+    pub mode: plexi_protocol::FilePickerMode,
 }
 
 /// What the picker resolved to. `Picked` paths are exactly what the dialog
@@ -225,7 +225,7 @@ pub struct RfdPickerService;
 
 impl PickerService for RfdPickerService {
     fn pick(&self, request: &FilePickRequest) -> FilePickOutcome {
-        use crate::protocol::FilePickerMode;
+        use plexi_protocol::FilePickerMode;
         let mut dialog = rfd::AsyncFileDialog::new();
         if !request.filter.is_empty() && request.mode != FilePickerMode::Folder {
             let extensions: Vec<&str> = request.filter.iter().map(String::as_str).collect();
@@ -415,7 +415,7 @@ fn picker_override_slot() -> &'static std::sync::Mutex<Option<std::sync::Arc<dyn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::FilePickerMode;
+    use plexi_protocol::FilePickerMode;
 
     fn any_request() -> FilePickRequest {
         FilePickRequest {

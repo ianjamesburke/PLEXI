@@ -577,7 +577,7 @@ fn create_context_ipc_anchor_pane_places_portal() {
         "anchor_pane": pane_b,
         "portal_direction": "down",
     });
-    let req: crate::protocol::HostRequest =
+    let req: plexi_protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
@@ -2639,7 +2639,7 @@ fn push_pane_ipc_targets_caller_pane_not_focused() {
         "name": "pushed",
         "pane_id": pane_b,
     });
-    let req: crate::protocol::HostRequest =
+    let req: plexi_protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2689,7 +2689,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
         "type": "push_pane_to_subcontext",
         "pane_id": 999_999u64,
     });
-    let req: crate::protocol::HostRequest =
+    let req: plexi_protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2712,7 +2712,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
 #[test]
 fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     fn push_ipc(h: &mut crate::testing::HostHarness, pane_id: crate::spatial::tiling::PaneId) {
-        let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
             "type": "push_pane_to_subcontext",
             "pane_id": pane_id,
         }))
@@ -2802,7 +2802,7 @@ fn set_context_description_ipc_targets_caller_context() {
         "description": "set from a background pane",
         "context_id": other_id,
     });
-    let req: crate::protocol::HostRequest =
+    let req: plexi_protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_ipc(req);
     h.app.drain_pane_cmd_channel();
@@ -2867,7 +2867,7 @@ fn set_context_root_ipc_targets_caller_context() {
         "root": tmp.path(),
         "context_id": other_id,
     });
-    let req: crate::protocol::HostRequest =
+    let req: plexi_protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_from_pane(pane_id, req.clone());
     h.app.drain_pane_cmd_channel();
@@ -3079,7 +3079,7 @@ fn context_sub_creates_exactly_n_panes() {
         "panes": ["echo pane-a", "echo pane-b", "echo pane-c"],
         "anchor_pane": anchor,
     });
-    let req: crate::protocol::HostRequest =
+    let req: plexi_protocol::HostRequest =
         serde_json::from_value(payload).expect("CLI payload must deserialize");
     h.inject_in_process(req);
     h.app.drain_pane_cmd_channel();
@@ -3126,7 +3126,7 @@ fn context_sub_panes_share_one_tiled_window() {
     let parent_id = h.app.router.active().context_id;
     let root = tempfile::tempdir().expect("squad root");
 
-    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "tiled",
         "root": root.path(),
@@ -3231,7 +3231,7 @@ fn context_sub_child_is_registered_one_level_below_parent() {
     let parent_depth = h.app.router.active().depth;
     let root = tempfile::tempdir().expect("squad root");
 
-    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "envcheck",
         "root": root.path(),
@@ -3309,7 +3309,7 @@ fn context_sub_unknown_parent_creates_nothing() {
     let contexts_before = h.app.router.len();
     let windows_before = h.app.windows.len();
 
-    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "orphan",
         "root": "/tmp",
@@ -3366,7 +3366,7 @@ fn child_context_takes_its_name_from_the_spec_not_the_path() {
             portal_first: false,
             anchor_pane: None,
             panes: vec![None, None],
-            layout: crate::protocol::SubContextLayout::Tiled,
+            layout: plexi_protocol::SubContextLayout::Tiled,
             source: crate::broker::pane_authority::GrantSource::DesktopInput,
         })
         .expect("child create should succeed");
@@ -3439,7 +3439,7 @@ fn context_sub_focus_returns_to_the_callers_window_not_the_active_one() {
     );
 
     let root = tempfile::tempdir().expect("squad root");
-    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "bgsquad",
         "root": root.path(),
@@ -3478,7 +3478,7 @@ fn context_sub_omitted_layout_picks_columns_for_three_and_grid_for_four() {
     for count in [3usize, 5, 6, 7] {
         let name = format!("squad-{count}");
         let panes = vec![serde_json::Value::Null; count];
-        let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+        let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
             "type": "create_sub_context",
             "name": name,
             "root": root.path(),
@@ -3516,7 +3516,7 @@ fn context_sub_omitted_layout_picks_columns_for_three_and_grid_for_four() {
         }
     }
 
-    let req4: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let req4: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "squad-4",
         "root": root.path(),
@@ -3559,7 +3559,7 @@ fn context_sub_assigns_distinct_default_pane_names() {
     let root = tempfile::tempdir().expect("squad root");
     let resp_path = root.path().join("sub-resp.json");
 
-    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "create_sub_context",
         "name": "agentsquad",
         "root": root.path(),
@@ -4069,7 +4069,7 @@ fn registry_watcher_covers_an_inactive_contexts_root_and_rescans_it_alone() {
 fn ipc_json_reply(
     h: &mut crate::testing::HostHarness,
     dir: &std::path::Path,
-    make: impl FnOnce(String) -> crate::protocol::HostRequest,
+    make: impl FnOnce(String) -> plexi_protocol::HostRequest,
 ) -> serde_json::Value {
     let response_file = dir
         .join(format!("reply-{}.json", uuid::Uuid::new_v4()))
@@ -4094,14 +4094,14 @@ fn get_pane_info_reports_host_context_after_push() {
     let parent_id = h.app.router.active().context_id;
 
     let before = ipc_json_reply(&mut h, tmp.path(), |rf| {
-        crate::protocol::HostRequest::GetPaneInfo {
+        plexi_protocol::HostRequest::GetPaneInfo {
             pane_id: pushed,
             response_file: rf,
         }
     });
     assert_eq!(before["context_id"].as_u64(), Some(parent_id));
 
-    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "push_pane_to_subcontext",
         "name": "pushed-child",
         "pane_id": pushed,
@@ -4128,7 +4128,7 @@ fn get_pane_info_reports_host_context_after_push() {
         .description = Some("probe".to_string());
 
     let after = ipc_json_reply(&mut h, tmp.path(), |rf| {
-        crate::protocol::HostRequest::GetPaneInfo {
+        plexi_protocol::HostRequest::GetPaneInfo {
             pane_id: pushed,
             response_file: rf,
         }
@@ -4153,7 +4153,7 @@ fn zoom_into_unknown_context_replies_error_and_does_not_move() {
     let depth_before = h.app.router.current_depth();
 
     let reply = ipc_json_reply(&mut h, tmp.path(), |rf| {
-        crate::protocol::HostRequest::ZoomIntoContext {
+        plexi_protocol::HostRequest::ZoomIntoContext {
             context_id: 999_999,
             response_file: Some(rf),
         }
@@ -4175,7 +4175,7 @@ fn zoom_into_live_context_replies_context_id() {
     let _anchor = h.add_test_pane();
     let pushed = h.add_test_pane();
     let parent_id = h.app.router.active().context_id;
-    let req: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "push_pane_to_subcontext",
         "pane_id": pushed,
     }))
@@ -4198,7 +4198,7 @@ fn zoom_into_live_context_replies_context_id() {
         .context_id;
 
     let reply = ipc_json_reply(&mut h, tmp.path(), |rf| {
-        crate::protocol::HostRequest::ZoomIntoContext {
+        plexi_protocol::HostRequest::ZoomIntoContext {
             context_id: child_id,
             response_file: Some(rf),
         }
@@ -4215,24 +4215,24 @@ fn zoom_into_live_context_replies_context_id() {
 /// fire-and-forget payload (without) both deserialize.
 #[test]
 fn zoom_into_context_payload_deserializes_with_and_without_reply() {
-    let with: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let with: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "zoom_into_context", "context_id": 4, "response_file": "/tmp/x.json",
     }))
     .expect("with response_file");
     assert!(matches!(
         with,
-        crate::protocol::HostRequest::ZoomIntoContext {
+        plexi_protocol::HostRequest::ZoomIntoContext {
             context_id: 4,
             response_file: Some(_)
         }
     ));
-    let without: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let without: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "zoom_into_context", "context_id": 4,
     }))
     .expect("without response_file");
     assert!(matches!(
         without,
-        crate::protocol::HostRequest::ZoomIntoContext {
+        plexi_protocol::HostRequest::ZoomIntoContext {
             context_id: 4,
             response_file: None
         }
@@ -4281,7 +4281,7 @@ fn spawn_stamp_matches_placement_for_caller_in_inactive_context() {
     for layout in ["split_h", "tab", "new_window"] {
         let total_before: usize = app.windows.iter().map(|w| w.panes.len()).sum();
         let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(
-            crate::protocol::HostRequest::SpawnPane {
+            plexi_protocol::HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some(layout.to_string()),
             args: vec![],
@@ -4510,7 +4510,7 @@ fn host_key_ipc_drives_numbered_context_switch_without_pane_input() {
 
     let response_dir = tempfile::tempdir().expect("response directory");
     let response_file = response_dir.path().join("host-key.json");
-    h.inject_ipc(crate::protocol::HostRequest::HostKey {
+    h.inject_ipc(plexi_protocol::HostRequest::HostKey {
         key: "cmd+2".to_string(),
         response_file: response_file.to_string_lossy().into_owned(),
     });
@@ -4789,7 +4789,7 @@ fn context_targets_invalid_view_context_never_spawns_in_active() {
     h.add_test_pane();
     let count = h.app.windows[0].panes.len();
     let file = h.profile_dir().join("context-target-reply.json");
-    let request: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+    let request: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
         "type": "spawn_pane", "type_id": "agents", "target_context": u64::MAX, "args": [],
         "response_file": file,
     }))

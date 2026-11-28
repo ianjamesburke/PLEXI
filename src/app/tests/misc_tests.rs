@@ -254,7 +254,7 @@ fn socket_line_queues_request_and_requests_repaint() {
     );
     handle_socket_line(r#"{"type":"wake"}"#, &mailbox, None, &mut std::io::sink());
     assert!(
-        matches!(rx.try_recv(), Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) if matches!(*request, crate::protocol::HostRequest::Wake)),
+        matches!(rx.try_recv(), Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) if matches!(*request, plexi_protocol::HostRequest::Wake)),
         "request must be queued on the pane-IPC channel"
     );
     assert!(
@@ -375,7 +375,7 @@ fn pane_send_explicit_operation_id_needs_a_brokered_caller() {
     let target = h.add_focused_terminal();
     h.terminal_backend(target).enable_input_tap();
     let profile = tempfile::tempdir().unwrap();
-    let send = |reply: &std::path::Path| crate::protocol::HostRequest::SendToPane {
+    let send = |reply: &std::path::Path| plexi_protocol::HostRequest::SendToPane {
         pane_id: target,
         text: "hello".into(),
         submit: false,
@@ -626,7 +626,7 @@ fn socket_connection_dispatches_newline_framed_json_once() {
     let rx = run_socket_connection(b"{\"type\":\"wake\"}\n");
     assert!(matches!(
         rx.try_recv(),
-        Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) if matches!(*request, crate::protocol::HostRequest::Wake)
+        Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) if matches!(*request, plexi_protocol::HostRequest::Wake)
     ));
     assert!(
         rx.try_recv().is_err(),
@@ -642,7 +642,7 @@ fn wake_request_is_noop_on_host() {
     let windows_before = h.app.windows.len();
     let panes_before: usize = h.app.windows.iter().map(|w| w.panes.len()).sum();
 
-    h.inject_ipc(crate::protocol::HostRequest::Wake);
+    h.inject_ipc(plexi_protocol::HostRequest::Wake);
     h.app.drain_pane_cmd_channel();
 
     assert_eq!(
@@ -676,7 +676,7 @@ fn file_handler_config_routes_extension_to_plugin() {
     let path = dir.path().join("note.md");
     std::fs::write(&path, "# note").expect("write note");
     let path = path.to_string_lossy().to_string();
-    app.dispatch_open_artifact(0, path, crate::protocol::ArtifactOpenMode::OpenInPane);
+    app.dispatch_open_artifact(0, path, plexi_protocol::ArtifactOpenMode::OpenInPane);
 
     let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
     assert_eq!(
@@ -718,7 +718,7 @@ fn stable_routes_only_images_to_native_viewer_apps() {
         std::fs::write(&path, b"media bytes").expect("write media");
         let path = path.to_string_lossy().to_string();
 
-        app.dispatch_open_artifact(0, path, crate::protocol::ArtifactOpenMode::OpenInPane);
+        app.dispatch_open_artifact(0, path, plexi_protocol::ArtifactOpenMode::OpenInPane);
 
         let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
         if opens_pane {
@@ -783,7 +783,7 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     app.dispatch_open_artifact(
         browser_pane_id,
         selected_path.to_string_lossy().to_string(),
-        crate::protocol::ArtifactOpenMode::OpenInPane,
+        plexi_protocol::ArtifactOpenMode::OpenInPane,
     );
 
     let viewer_tile = app.windows[0].focused_pane.expect("viewer focused");
@@ -903,7 +903,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
     let windows_before = app.windows.len();
 
     // Inject a spawn-pane IPC from context 1's pane (pane_id_ctx1) with layout=new_window.
-    let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(crate::protocol::HostRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(plexi_protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("new_window".to_string()),
         args: vec![],
@@ -989,7 +989,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
 
     // Inject a spawn-pane IPC from window 0's pane (pane_id_ctx1) with layout=tab,
     // while window 1 is active.
-    let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(crate::protocol::HostRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(plexi_protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("tab".to_string()),
         args: vec![],
@@ -1082,7 +1082,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
 
     // Split spawn (not --window), no from_pane_id: falls into the empty-window
     // fallback branch.
-    let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(crate::protocol::HostRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::app::socket_caller::PaneIpcMessage::host(plexi_protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("split_h".to_string()),
         args: vec![],
@@ -1204,7 +1204,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
 
     match rx.try_recv() {
         Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) => {
-            let crate::protocol::HostRequest::LogMarker { source, .. } = *request else {
+            let plexi_protocol::HostRequest::LogMarker { source, .. } = *request else {
                 panic!("expected queued LogMarker request, got {request:?}");
             };
             assert_eq!(source, "test");
@@ -1231,7 +1231,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     assert!(
         matches!(
             rx.try_recv(),
-            Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) if matches!(*request, crate::protocol::HostRequest::ListPanes { .. })
+            Ok(crate::app::socket_caller::PaneIpcMessage::Request { request, .. }) if matches!(*request, plexi_protocol::HostRequest::ListPanes { .. })
         ),
         "post-idle pane list must queue on the pane-IPC channel"
     );
@@ -1309,7 +1309,7 @@ fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
     .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let reply = dir.path().join("build.json");
-    h.inject_ipc(crate::protocol::HostRequest::GetBuildInfo {
+    h.inject_ipc(plexi_protocol::HostRequest::GetBuildInfo {
         response_file: reply.to_string_lossy().into_owned(),
     });
     h.hidden_frame();
@@ -1451,7 +1451,7 @@ fn external_spawn_uses_supplied_cwd_for_plugin_workspace() {
     let mut h = crate::testing::HostHarness::new();
     let expected = h.workspace_root().join("external-caller");
     std::fs::create_dir(&expected).unwrap();
-    h.inject_ipc(crate::protocol::HostRequest::SpawnPane {
+    h.inject_ipc(plexi_protocol::HostRequest::SpawnPane {
         type_id: "file_browser".into(),
         layout: Some("split_h".into()),
         args: vec![],
@@ -1540,7 +1540,7 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
     });
     h.app.active_window = 1;
     h.app.router.set_active(1);
-    h.inject_ipc(crate::protocol::HostRequest::SpawnPane {
+    h.inject_ipc(plexi_protocol::HostRequest::SpawnPane {
         type_id: "file_browser".into(),
         layout: Some("split_h".into()),
         args: vec![],
@@ -1711,7 +1711,7 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
             "artifact" => h.app.dispatch_open_artifact(
                 sender,
                 directory.display().to_string(),
-                crate::protocol::ArtifactOpenMode::OpenInPane,
+                plexi_protocol::ArtifactOpenMode::OpenInPane,
             ),
             "generic" => {
                 h.app
@@ -1724,7 +1724,7 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
                     .unwrap();
             }
             _ => {
-                h.inject_ipc(crate::protocol::HostRequest::SpawnPane {
+                h.inject_ipc(plexi_protocol::HostRequest::SpawnPane {
                     type_id: "file_browser".into(),
                     layout: Some("split_h".into()),
                     args: vec![],
@@ -1783,9 +1783,9 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
 }
 
 fn fire_and_forget_set_agent_state() -> String {
-    serde_json::to_string(&crate::protocol::HostRequest::SetAgentState {
+    serde_json::to_string(&plexi_protocol::HostRequest::SetAgentState {
         pane_id: 1,
-        state: crate::protocol::AgentState::Working,
+        state: plexi_protocol::AgentState::Working,
         agent: "test-agent".into(),
         detail: None,
         session_id: None,
@@ -1913,8 +1913,8 @@ fn file_open_peer_walk_is_stamped_by_the_listener_not_the_wire() {
         crate::app::socket_caller::PaneIpcMessage::Request {
             ingress: crate::app::socket_caller::Ingress::Socket { peer, .. },
             request,
-        } if matches!(**request, crate::protocol::HostRequest::FileOpen { .. }) => {
-            let crate::protocol::HostRequest::FileOpen { response_file, .. } = &**request else {
+        } if matches!(**request, plexi_protocol::HostRequest::FileOpen { .. }) => {
+            let plexi_protocol::HostRequest::FileOpen { response_file, .. } = &**request else {
                 unreachable!()
             };
             assert_eq!(response_file, "y");

@@ -28,7 +28,7 @@ use crate::host::services::{
 };
 use crate::media::audio::{start_output_stream, OutputSession};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, LiveAiBroker};
-use crate::protocol::{
+use plexi_protocol::{
     parse_enum, AiMessage as ProtocolAiMessage, EventStreamDecl as ProtocolEventStreamDecl,
     ModelTier, PluginEventActor, TriggerMode,
 };
@@ -84,8 +84,8 @@ pub enum WasmHostEffect {
         request_id: String,
         plugin_id: String,
         event_names: Vec<String>,
-        payload_mode: crate::protocol::PayloadMode,
-        trigger_mode: crate::protocol::TriggerMode,
+        payload_mode: plexi_protocol::PayloadMode,
+        trigger_mode: plexi_protocol::TriggerMode,
         resource_id: Option<String>,
     },
     UnsubscribeEvents {
@@ -93,7 +93,7 @@ pub enum WasmHostEffect {
         subscription_id: String,
     },
     DeclareTools {
-        tools: Vec<crate::protocol::AiTool>,
+        tools: Vec<plexi_protocol::AiTool>,
     },
     ToolResult {
         call_id: String,
@@ -1348,9 +1348,9 @@ impl WasmPane {
             filter: req.filter,
             multiple: req.multiple,
             mode: match req.mode {
-                WitFilePickerMode::Open => crate::protocol::FilePickerMode::Open,
-                WitFilePickerMode::Folder => crate::protocol::FilePickerMode::Folder,
-                WitFilePickerMode::Save => crate::protocol::FilePickerMode::Save,
+                WitFilePickerMode::Open => plexi_protocol::FilePickerMode::Open,
+                WitFilePickerMode::Folder => plexi_protocol::FilePickerMode::Folder,
+                WitFilePickerMode::Save => plexi_protocol::FilePickerMode::Save,
             },
         };
         let picker = Arc::clone(&self.picker);
@@ -1722,7 +1722,7 @@ impl WasmPane {
 
     fn subscribe_event_streams(&mut self, req: SubscribeEventStreamsEffect) {
         let payload_mode =
-            parse_enum::<crate::protocol::PayloadMode>("payload mode", &req.payload_mode);
+            parse_enum::<plexi_protocol::PayloadMode>("payload mode", &req.payload_mode);
         let trigger_mode = parse_enum::<TriggerMode>("trigger mode", &req.trigger_mode);
         match (payload_mode, trigger_mode) {
             (Ok(payload_mode), Ok(trigger_mode)) => {
@@ -1780,7 +1780,7 @@ impl WasmPane {
                     serde_json::from_str(&tool.output_schema_json).map_err(|error| {
                         format!("tool '{}': invalid output schema: {error}", tool.name)
                     })?;
-                Ok(crate::protocol::AiTool {
+                Ok(plexi_protocol::AiTool {
                     name: tool.name,
                     description: tool.description,
                     input_schema,
@@ -2294,7 +2294,7 @@ impl LiveWasmPane {
         self.inner.input_sender(repaint)
     }
 
-    pub(crate) fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+    pub(crate) fn queue_outbound_event(&mut self, event: plexi_protocol::PlexiEvent) {
         let _ = self.try_queue_outbound_event(event);
     }
 
@@ -2304,14 +2304,14 @@ impl LiveWasmPane {
     /// logged here.
     pub(crate) fn try_queue_outbound_event(
         &mut self,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     ) -> Result<(), String> {
         if !self.is_running() {
             log::info!("wasm input: dropping host event for a guest that is not running");
             return Err("the guest is not running".to_string());
         }
         let event = match event {
-            crate::protocol::PlexiEvent::PluginEventsSubscribed {
+            plexi_protocol::PlexiEvent::PluginEventsSubscribed {
                 request_id,
                 subscription_id,
                 error,
@@ -2320,7 +2320,7 @@ impl LiveWasmPane {
                 subscription_id,
                 error,
             }),
-            crate::protocol::PlexiEvent::PluginEventsUnsubscribed {
+            plexi_protocol::PlexiEvent::PluginEventsUnsubscribed {
                 request_id,
                 removed,
                 error,
@@ -2329,7 +2329,7 @@ impl LiveWasmPane {
                 removed,
                 error,
             }),
-            crate::protocol::PlexiEvent::PluginEvent {
+            plexi_protocol::PlexiEvent::PluginEvent {
                 subscription_id,
                 plugin_id,
                 event,
@@ -2352,21 +2352,21 @@ impl LiveWasmPane {
                 state_ref,
                 created_at,
             }),
-            crate::protocol::PlexiEvent::DeclareEventStreamsResult { streams, error } => {
+            plexi_protocol::PlexiEvent::DeclareEventStreamsResult { streams, error } => {
                 InputEvent::DeclareEventStreamsResult(match (streams, error) {
                     (Some(streams), None) => Ok(streams),
                     (_, Some(error)) => Err(error),
                     _ => Err("declare event streams returned no result".to_string()),
                 })
             }
-            crate::protocol::PlexiEvent::EmitEventResult { sequence, error } => {
+            plexi_protocol::PlexiEvent::EmitEventResult { sequence, error } => {
                 InputEvent::EmitEventResult(match (sequence, error) {
                     (Some(sequence), None) => Ok(sequence),
                     (_, Some(error)) => Err(error),
                     _ => Err("emit event returned no result".to_string()),
                 })
             }
-            crate::protocol::PlexiEvent::PipeMessage {
+            plexi_protocol::PlexiEvent::PipeMessage {
                 pipe_id,
                 generation,
                 payload,
@@ -2385,7 +2385,7 @@ impl LiveWasmPane {
                     payload: PipePayload::Json(payload.to_string()),
                 })
             }
-            crate::protocol::PlexiEvent::PipeClosed {
+            plexi_protocol::PlexiEvent::PipeClosed {
                 pipe_id,
                 generation,
                 reason,
@@ -2402,7 +2402,7 @@ impl LiveWasmPane {
                 };
                 InputEvent::PipeClosed(handle)
             }
-            crate::protocol::PlexiEvent::DirectedPipeOpened {
+            plexi_protocol::PlexiEvent::DirectedPipeOpened {
                 request_id,
                 pipe_id,
                 generation,
@@ -2433,7 +2433,7 @@ impl LiveWasmPane {
                     }
                 }
             }
-            crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+            plexi_protocol::PlexiEvent::DirectedPipeOpenRefused {
                 request_id,
                 pipe_id,
                 reason,
@@ -2452,7 +2452,7 @@ impl LiveWasmPane {
                     reason: reason.as_str().to_string(),
                 })
             }
-            crate::protocol::PlexiEvent::DirectedPipeIncoming {
+            plexi_protocol::PlexiEvent::DirectedPipeIncoming {
                 pipe_id,
                 generation,
                 peer_pane_id,
@@ -3295,7 +3295,7 @@ mod tests {
         let request = live.inner.app.open_directed_for_test("p", 2).expect("open");
         live.inner.app.close_pipe_for_test(handle).expect("close");
         live.inner.queue.clear();
-        let opened = crate::protocol::PlexiEvent::DirectedPipeOpened {
+        let opened = plexi_protocol::PlexiEvent::DirectedPipeOpened {
             request_id: format!("wasm-open-{request}"),
             pipe_id: "p".to_string(),
             generation: 7,
@@ -5049,8 +5049,8 @@ mod tests {
                 request_id: "subscribe-1".to_string(),
                 plugin_id: "python-notes".to_string(),
                 event_names: vec!["note.saved".to_string()],
-                payload_mode: crate::protocol::PayloadMode::Full,
-                trigger_mode: crate::protocol::TriggerMode::Conversation,
+                payload_mode: plexi_protocol::PayloadMode::Full,
+                trigger_mode: plexi_protocol::TriggerMode::Conversation,
                 resource_id: Some("note-1".to_string()),
             }]
         );
@@ -5079,13 +5079,13 @@ mod tests {
             StateSnapshot { entries: vec![] },
             vec![],
         );
-        live.queue_outbound_event(crate::protocol::PlexiEvent::PluginEvent {
+        live.queue_outbound_event(plexi_protocol::PlexiEvent::PluginEvent {
             subscription_id: "sub-1".to_string(),
             plugin_id: "python-notes".to_string(),
             event: "note.saved".to_string(),
             event_id: 9,
             resource_id: "note-1".to_string(),
-            trigger_mode: crate::protocol::TriggerMode::Conversation,
+            trigger_mode: plexi_protocol::TriggerMode::Conversation,
             summary: Some("Saved note".to_string()),
             payload: Some(serde_json::json!({"title": "Hello"})),
             state_ref: None,

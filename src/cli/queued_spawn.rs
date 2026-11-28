@@ -311,7 +311,7 @@ mod tests {
         // The queue write failed; the CLI exits.
         drop(receipt);
         drop(server);
-        h.inject_ipc(crate::protocol::HostRequest::Wake);
+        h.inject_ipc(plexi_protocol::HostRequest::Wake);
         h.hidden_frame();
         assert_eq!(
             crate::rpc::ReplyRegistry::connected(&token),

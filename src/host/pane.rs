@@ -462,19 +462,19 @@ pub(crate) const OBSERVED_AGENT_SETTLE: std::time::Duration = std::time::Duratio
 pub(crate) const HOST_INDUCED_QUIET: std::time::Duration = std::time::Duration::from_millis(750);
 
 fn select_terminal_agent<'a>(
-    reported: Option<&'a crate::protocol::PaneAgentState>,
-    hook: Option<&'a crate::protocol::PaneAgentState>,
+    reported: Option<&'a plexi_protocol::PaneAgentState>,
+    hook: Option<&'a plexi_protocol::PaneAgentState>,
     hook_reported_at: Option<std::time::Instant>,
-    observed: Option<&'a crate::protocol::PaneAgentState>,
+    observed: Option<&'a plexi_protocol::PaneAgentState>,
     now: std::time::Instant,
-) -> Option<&'a crate::protocol::PaneAgentState> {
+) -> Option<&'a plexi_protocol::PaneAgentState> {
     if reported.is_some() {
         return reported;
     }
     let Some(hook) = hook else {
         return observed;
     };
-    if hook.state != crate::protocol::AgentState::Idle {
+    if hook.state != plexi_protocol::AgentState::Idle {
         if hook_reported_at.is_none() && observed.is_some() {
             return observed;
         }
@@ -483,7 +483,7 @@ fn select_terminal_agent<'a>(
     let hook_is_stale = hook_reported_at
         .is_some_and(|reported| now.saturating_duration_since(reported) >= HOOK_AGENT_FRESHNESS);
     let contradicts_idle = observed.is_some_and(|observed| {
-        observed.agent == hook.agent && observed.state == crate::protocol::AgentState::Working
+        observed.agent == hook.agent && observed.state == plexi_protocol::AgentState::Working
     });
     if hook_is_stale && contradicts_idle {
         observed
@@ -496,7 +496,7 @@ fn select_terminal_agent<'a>(
 pub struct PortalPane {
     pub pane_id: PaneId,
     pub target_context_id: u64,
-    pub context_state: Option<crate::protocol::ContextState>,
+    pub context_state: Option<plexi_protocol::ContextState>,
 }
 
 impl Pane {
@@ -609,7 +609,7 @@ impl Pane {
     /// observed Working until the output settles again.
     /// Every consumer — `pane list`, `pane state`, the `pane new --agent`
     /// boot predicate — reads through here, so they stay correct together.
-    pub fn agent(&self) -> Option<&crate::protocol::PaneAgentState> {
+    pub fn agent(&self) -> Option<&plexi_protocol::PaneAgentState> {
         match self {
             Pane::Terminal(t) => t.selected_agent(std::time::Instant::now()),
             Pane::View(a) => a
@@ -621,13 +621,13 @@ impl Pane {
     }
 
     /// Agent report with terminal exit and completion precedence applied.
-    pub(crate) fn effective_agent(&self) -> Option<crate::protocol::PaneAgentState> {
+    pub(crate) fn effective_agent(&self) -> Option<plexi_protocol::PaneAgentState> {
         match self {
             Pane::Terminal(t) => {
                 let mut report = self.agent().cloned().or_else(|| {
-                    t.is_agent_pane().then(|| crate::protocol::PaneAgentState {
+                    t.is_agent_pane().then(|| plexi_protocol::PaneAgentState {
                         pane_id: t.id,
-                        state: crate::protocol::AgentState::Idle,
+                        state: plexi_protocol::AgentState::Idle,
                         agent: t
                             .agent_harness
                             .clone()
@@ -647,7 +647,7 @@ impl Pane {
 
     /// App-reported pip status, checking the outer plugin then any overlay-replaced
     /// pane underneath (mirrors `agent()`).
-    pub fn pip_status(&self) -> Option<crate::protocol::PipStatus> {
+    pub fn pip_status(&self) -> Option<plexi_protocol::PipStatus> {
         match self {
             Pane::View(a) => a
                 .pip_status
@@ -658,15 +658,15 @@ impl Pane {
 
     /// A plugin's yellow health pip keeps its color without implying agent work.
     pub fn static_health_pip(&self) -> bool {
-        self.pip_status() == Some(crate::protocol::PipStatus::Yellow)
+        self.pip_status() == Some(plexi_protocol::PipStatus::Yellow)
             && !self
                 .agent()
-                .is_some_and(|agent| agent.state == crate::protocol::AgentState::Working)
+                .is_some_and(|agent| agent.state == plexi_protocol::AgentState::Working)
     }
 
     /// Activity state for the unified activity dot. Generic terminal process
     /// liveness is tracked separately and does not imply agent activity.
-    pub fn effective_activity(&self) -> Option<&crate::protocol::AgentState> {
+    pub fn effective_activity(&self) -> Option<&plexi_protocol::AgentState> {
         if let Some(pip) = self.pip_status() {
             return Some(pip.as_agent_state());
         }
@@ -674,7 +674,7 @@ impl Pane {
             if t.is_agent_pane()
                 && (t.exited || t.agent_completed || t.slots.contains_key("completed"))
             {
-                use crate::protocol::AgentState;
+                use plexi_protocol::AgentState;
                 return Some(match t.effective_agent_state().0 {
                     AgentState::Working => &AgentState::Working,
                     AgentState::Idle => &AgentState::Idle,
@@ -700,7 +700,7 @@ impl Pane {
         }
     }
 
-    pub fn set_agent(&mut self, agent: Option<crate::protocol::PaneAgentState>) -> bool {
+    pub fn set_agent(&mut self, agent: Option<plexi_protocol::PaneAgentState>) -> bool {
         self.set_agent_with_dirty(agent).0
     }
 
@@ -710,7 +710,7 @@ impl Pane {
     /// session IDs or states.
     pub fn set_agent_with_dirty(
         &mut self,
-        agent: Option<crate::protocol::PaneAgentState>,
+        agent: Option<plexi_protocol::PaneAgentState>,
     ) -> (bool, bool) {
         match self {
             Pane::Terminal(t) => {
@@ -776,7 +776,7 @@ impl Pane {
 
     /// Set the plugin-reported pip status. View panes only (mirrors `set_agent`'s
     /// overlay delegation). Terminals and portals have no pip surface → false.
-    pub fn set_pip_status(&mut self, status: Option<crate::protocol::PipStatus>) -> bool {
+    pub fn set_pip_status(&mut self, status: Option<plexi_protocol::PipStatus>) -> bool {
         match self {
             Pane::View(a) => {
                 if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
@@ -885,7 +885,7 @@ pub struct TerminalPane {
     #[cfg(test)]
     shell_start_unreadable_for_test: bool,
     /// Latest blocked reason reported by hook or `plexi agent ask`.
-    pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
+    pub last_blocked_reason: Option<plexi_protocol::AgentBlockedReason>,
     /// Cached tail preview preserved across Standby / Interrupted restore.
     pub tail_preview: Option<String>,
     /// Set when the agent explicitly completed via `plexi agent done` or clean ephemeral exit.
@@ -916,7 +916,7 @@ pub struct TerminalPane {
     pub(crate) reopen_requested: bool,
     pub(crate) outside_workspace_checked_at: Option<std::time::Instant>,
     pub(crate) outside_workspace_root: Option<PathBuf>,
-    pub agent: Option<crate::protocol::PaneAgentState>,
+    pub agent: Option<plexi_protocol::PaneAgentState>,
     /// Receipt time of the latest lifecycle hook report. Used only to bound
     /// how long hook Idle suppresses contradictory host-observed Working.
     pub(crate) agent_reported_at: Option<std::time::Instant>,
@@ -925,17 +925,17 @@ pub struct TerminalPane {
     /// foreground process name or interpreter script argv, state from the
     /// agent-output settle (`observed_output_state`). Covers both the pre-hook boot
     /// window and stale hook-Idle gaps.
-    pub observed_agent: Option<crate::protocol::PaneAgentState>,
+    pub observed_agent: Option<plexi_protocol::PaneAgentState>,
     /// Last detected foreground identity until the shell is observed idle.
     pub(crate) last_observed_agent: Option<String>,
     /// Agent state mapped from OSC 7501 program-status records, refreshed in
     /// `tick_terminal_activity`. Highest-priority signal: when set it wins over
     /// hook and observed state; `None` leaves the old selection untouched.
-    pub reported_7501: Option<crate::protocol::PaneAgentState>,
+    pub reported_7501: Option<plexi_protocol::PaneAgentState>,
     /// Host-observed terminal activity (foreground process running, exited),
     /// polled via `tcgetpgrp` in `tick_terminal_activity`. Separate from
     /// `agent`, which is hook-reported; `agent` wins when both are present.
-    pub activity: Option<crate::protocol::AgentState>,
+    pub activity: Option<plexi_protocol::AgentState>,
     pub slots: HashMap<String, PathBuf>,
     /// When this pane last produced *any* PTY event, stamped in
     /// `drain_pty_events`. `pane send --submit` settles on the absence of these:
@@ -1297,7 +1297,7 @@ impl TerminalPane {
         }
         if matches!(
             self.activity,
-            Some(crate::protocol::AgentState::Working | crate::protocol::AgentState::Completed)
+            Some(plexi_protocol::AgentState::Working | plexi_protocol::AgentState::Completed)
         ) {
             return false;
         }
@@ -1411,7 +1411,7 @@ impl TerminalPane {
         }
         let session_line = standby_session_line(s, self.standby_resume_command.as_deref());
         let session_line = match (&s.last_state, &s.last_detail) {
-            (crate::protocol::AgentState::Failed, Some(error)) => {
+            (plexi_protocol::AgentState::Failed, Some(error)) => {
                 format!("{session_line}\n{error}")
             }
             _ => session_line,
@@ -1513,11 +1513,11 @@ impl TerminalPane {
     pub(crate) fn report_memory_restore_error(&mut self, error: &str) {
         log::error!("agent_memory: cannot resume pane {}: {error}", self.id);
         if let Some(session) = &mut self.standby_session {
-            session.last_state = crate::protocol::AgentState::Failed;
+            session.last_state = plexi_protocol::AgentState::Failed;
             session.last_detail = Some(error.to_owned());
         }
         if let Some(agent) = &mut self.agent {
-            agent.state = crate::protocol::AgentState::Failed;
+            agent.state = plexi_protocol::AgentState::Failed;
             agent.detail = Some(error.to_owned());
         }
     }
@@ -1561,10 +1561,10 @@ impl TerminalPane {
 
     fn update_fleet_transition(
         &mut self,
-        previous: Option<&crate::protocol::AgentState>,
-        next: Option<&crate::protocol::AgentState>,
+        previous: Option<&plexi_protocol::AgentState>,
+        next: Option<&plexi_protocol::AgentState>,
     ) {
-        use crate::protocol::AgentState;
+        use plexi_protocol::AgentState;
         if previous == next {
             return;
         }
@@ -1585,7 +1585,7 @@ impl TerminalPane {
         }
     }
 
-    pub(crate) fn set_reported_7501(&mut self, reported: Option<crate::protocol::PaneAgentState>) {
+    pub(crate) fn set_reported_7501(&mut self, reported: Option<plexi_protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
         let before = self.selected_agent(now).map(|a| a.state.clone());
         self.reported_7501 = reported;
@@ -1598,7 +1598,7 @@ impl TerminalPane {
     /// a fresher hook or an OSC 7501 report outranks changes nothing visible.
     pub(crate) fn set_observed_agent(
         &mut self,
-        observed: Option<crate::protocol::PaneAgentState>,
+        observed: Option<plexi_protocol::PaneAgentState>,
     ) -> bool {
         let now = std::time::Instant::now();
         let shown = |t: &Self| {
@@ -1616,12 +1616,12 @@ impl TerminalPane {
     }
 
     /// The agent and state the pane shows now.
-    pub(crate) fn shown_agent(&self) -> Option<crate::protocol::PaneAgentState> {
+    pub(crate) fn shown_agent(&self) -> Option<plexi_protocol::PaneAgentState> {
         self.selected_agent(std::time::Instant::now()).cloned()
     }
 
     /// Hook, observed and OSC 7501 state merged by `select_terminal_agent`.
-    fn selected_agent(&self, now: std::time::Instant) -> Option<&crate::protocol::PaneAgentState> {
+    fn selected_agent(&self, now: std::time::Instant) -> Option<&plexi_protocol::PaneAgentState> {
         select_terminal_agent(
             self.reported_7501.as_ref(),
             self.agent.as_ref(),
@@ -1700,25 +1700,25 @@ impl TerminalPane {
     pub(crate) fn observed_output_state(
         &self,
         now: std::time::Instant,
-    ) -> crate::protocol::AgentState {
+    ) -> plexi_protocol::AgentState {
         let settled = self
             .last_agent_activity_at
             .or(self.last_screen_change_at)
             .is_some_and(|at| now.saturating_duration_since(at) >= OBSERVED_AGENT_SETTLE);
         if settled {
-            crate::protocol::AgentState::Idle
+            plexi_protocol::AgentState::Idle
         } else {
-            crate::protocol::AgentState::Working
+            plexi_protocol::AgentState::Working
         }
     }
 
     /// Completion takes precedence over a failed process exit, then the report.
-    pub(crate) fn effective_agent_state(&self) -> (crate::protocol::AgentState, Option<String>) {
+    pub(crate) fn effective_agent_state(&self) -> (plexi_protocol::AgentState, Option<String>) {
         let report = self.selected_agent(std::time::Instant::now());
         let state = report
             .map(|a| a.state.clone())
             .or_else(|| self.standby_session.as_ref().map(|s| s.last_state.clone()))
-            .unwrap_or(crate::protocol::AgentState::Idle);
+            .unwrap_or(plexi_protocol::AgentState::Idle);
         let detail = report.and_then(|a| a.detail.clone()).or_else(|| {
             self.standby_session
                 .as_ref()
@@ -1735,15 +1735,15 @@ impl TerminalPane {
     fn resolve_agent_state(
         completed: bool,
         exit: Option<crate::host::pane_lifecycle::ExitStatus>,
-        state: crate::protocol::AgentState,
+        state: plexi_protocol::AgentState,
         detail: Option<String>,
-    ) -> (crate::protocol::AgentState, Option<String>) {
-        if completed || state == crate::protocol::AgentState::Completed {
-            (crate::protocol::AgentState::Completed, detail)
+    ) -> (plexi_protocol::AgentState, Option<String>) {
+        if completed || state == plexi_protocol::AgentState::Completed {
+            (plexi_protocol::AgentState::Completed, detail)
         } else if let Some(status) = exit.filter(|s| s.is_failure()) {
-            (crate::protocol::AgentState::Failed, Some(status.summary()))
-        } else if exit.is_some() && state == crate::protocol::AgentState::Working {
-            (crate::protocol::AgentState::Interrupted, detail)
+            (plexi_protocol::AgentState::Failed, Some(status.summary()))
+        } else if exit.is_some() && state == plexi_protocol::AgentState::Working {
+            (plexi_protocol::AgentState::Interrupted, detail)
         } else {
             (state, detail)
         }
@@ -2048,7 +2048,7 @@ mod spawn_error_tests {
 #[cfg(test)]
 mod agent_source_tests {
     use super::*;
-    use crate::protocol::{AgentState, PaneAgentState};
+    use plexi_protocol::{AgentState, PaneAgentState};
 
     #[test]
     fn effective_agent_state_precedence_table() {
@@ -2532,7 +2532,7 @@ impl ViewRuntime {
         }
     }
 
-    pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+    pub fn queue_outbound_event(&mut self, event: plexi_protocol::PlexiEvent) {
         match self {
             ViewRuntime::Builtin(app) => app.queue_outbound_event(event),
             ViewRuntime::Python(app) => app.queue_outbound_event(event),
@@ -2587,7 +2587,7 @@ impl ViewRuntime {
     pub(crate) fn deliver_directed_control(
         &mut self,
         slot: ControlSlot,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     ) -> Result<(), String> {
         if !self.is_directed_pipe_endpoint() {
             return Err("not a directed pipe endpoint".to_string());
@@ -2612,7 +2612,7 @@ impl ViewRuntime {
     /// the open is being prepared, so it needs no held room.
     pub(crate) fn deliver_directed_incoming(
         &mut self,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     ) -> Result<(), String> {
         if !self.is_directed_pipe_endpoint() {
             return Err("not a directed pipe endpoint".to_string());
@@ -2630,7 +2630,7 @@ impl ViewRuntime {
     /// Returns None when this runtime does not support NotifyAction.
     pub(crate) fn try_queue_notify_action(
         &mut self,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     ) -> Option<Result<(), crate::host::wasm_python::OutboundEventError>> {
         if !self.supports_notify_action() {
             return None;
@@ -2708,11 +2708,11 @@ impl ViewRuntime {
                 app.dispatch_ui_action(action)
             }
             ViewRuntime::Builtin(app) => {
-                app.queue_outbound_event(crate::protocol::PlexiEvent::Action { action, args });
+                app.queue_outbound_event(plexi_protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
             ViewRuntime::Python(app) => {
-                app.queue_outbound_event(crate::protocol::PlexiEvent::Action { action, args });
+                app.queue_outbound_event(plexi_protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
         }
@@ -2997,10 +2997,10 @@ pub struct ViewPane {
     /// Pane hidden by an overlay plugin. Closing the plugin restores this pane instead
     /// of deleting the tile.
     pub overlay_replaced: Option<Box<Pane>>,
-    pub agent: Option<crate::protocol::PaneAgentState>,
+    pub agent: Option<plexi_protocol::PaneAgentState>,
     /// App-reported pip status (red/yellow/green). Takes priority over derived
     /// activity for the activity dot. `None` = fall back to agent()/host-observed.
-    pub pip_status: Option<crate::protocol::PipStatus>,
+    pub pip_status: Option<plexi_protocol::PipStatus>,
     pub slots: HashMap<String, PathBuf>,
     /// Last semantics committed by the production render path for native plugins.
     pub(crate) semantic_state: SemanticPaneState,

@@ -679,27 +679,27 @@ impl PlexiApp {
                         continue;
                     };
                     let response = match request {
-                        crate::protocol::HostRequest::DeclareEventStreams { streams } => {
+                        plexi_protocol::HostRequest::DeclareEventStreams { streams } => {
                             match crate::host::plugin_timeline::global()
                                 .lock()
                                 .unwrap()
                                 .declare_streams(context_id, &plugin_id, streams)
                             {
                                 Ok(streams) => {
-                                    crate::protocol::PlexiEvent::DeclareEventStreamsResult {
+                                    plexi_protocol::PlexiEvent::DeclareEventStreamsResult {
                                         streams: Some(streams),
                                         error: None,
                                     }
                                 }
                                 Err(error) => {
-                                    crate::protocol::PlexiEvent::DeclareEventStreamsResult {
+                                    plexi_protocol::PlexiEvent::DeclareEventStreamsResult {
                                         streams: None,
                                         error: Some(error),
                                     }
                                 }
                             }
                         }
-                        crate::protocol::HostRequest::EmitEvent {
+                        plexi_protocol::HostRequest::EmitEvent {
                             event,
                             actor,
                             actor_id,
@@ -736,17 +736,17 @@ impl PlexiApp {
                                 .unwrap()
                                 .record_event(context_id, &plugin_id, pane_id, emitted)
                             {
-                                Ok(outcome) => crate::protocol::PlexiEvent::EmitEventResult {
+                                Ok(outcome) => plexi_protocol::PlexiEvent::EmitEventResult {
                                     sequence: Some(outcome.event_id),
                                     error: None,
                                 },
-                                Err(error) => crate::protocol::PlexiEvent::EmitEventResult {
+                                Err(error) => plexi_protocol::PlexiEvent::EmitEventResult {
                                     sequence: None,
                                     error: Some(error),
                                 },
                             }
                         }
-                        crate::protocol::HostRequest::SubscribePluginEvents {
+                        plexi_protocol::HostRequest::SubscribePluginEvents {
                             request_id,
                             plugin_id: publisher_plugin_id,
                             event_names,
@@ -765,7 +765,7 @@ impl PlexiApp {
                             );
                             continue;
                         }
-                        crate::protocol::HostRequest::UnsubscribePluginEvents {
+                        plexi_protocol::HostRequest::UnsubscribePluginEvents {
                             request_id,
                             subscription_id,
                         } => {
@@ -781,14 +781,14 @@ impl PlexiApp {
                                 );
                             match result {
                                 Ok(removed) => {
-                                    crate::protocol::PlexiEvent::PluginEventsUnsubscribed {
+                                    plexi_protocol::PlexiEvent::PluginEventsUnsubscribed {
                                         request_id,
                                         removed,
                                         error: None,
                                     }
                                 }
                                 Err(error) => {
-                                    crate::protocol::PlexiEvent::PluginEventsUnsubscribed {
+                                    plexi_protocol::PlexiEvent::PluginEventsUnsubscribed {
                                         request_id,
                                         removed: false,
                                         error: Some(error),
@@ -904,7 +904,7 @@ impl PlexiApp {
                     // focus is now (stint 1632).
                     self.deliver_to_emitter(
                         emitter,
-                        crate::protocol::PlexiEvent::ViewOpened {
+                        plexi_protocol::PlexiEvent::ViewOpened {
                             pane_id: new_pane_id,
                             type_id: type_id.clone(),
                         },
@@ -1007,9 +1007,9 @@ impl PlexiApp {
                     let (scope, notif_source_win_id) =
                         self.resolve_plugin_notification_provenance(sender_pane_id, scope);
                     // Strip any per-option shortcut that conflicts with navigation keys.
-                    let options: Vec<crate::protocol::NotifyOption> = options.into_iter().map(|mut opt| {
+                    let options: Vec<plexi_protocol::NotifyOption> = options.into_iter().map(|mut opt| {
                         if let Some(ref sc) = opt.shortcut.clone() {
-                            if crate::protocol::is_reserved_shortcut(sc) {
+                            if plexi_protocol::is_reserved_shortcut(sc) {
                                 log::warn!(
                                     "notify:shortcut: view pane {} sent reserved shortcut {:?} on option {:?} — stripped",
                                     sender_pane_id, sc, opt.label
@@ -1019,7 +1019,7 @@ impl PlexiApp {
                         }
                         opt
                     }).collect();
-                    if matches!(kind, crate::protocol::NotifyKind::Choice) && options.is_empty() {
+                    if matches!(kind, plexi_protocol::NotifyKind::Choice) && options.is_empty() {
                         log::warn!("notify: invalid empty choice from pane {sender_pane_id}; resolving explicitly");
                         self.deliver_notify_action(
                             sender_pane_id,
@@ -1101,7 +1101,7 @@ impl PlexiApp {
                         );
                         continue;
                     };
-                    let event = crate::protocol::PlexiEvent::PipeMessage {
+                    let event = plexi_protocol::PlexiEvent::PipeMessage {
                         pipe_id: pipe.pipe_id.clone(),
                         generation,
                         payload,
@@ -1258,7 +1258,7 @@ impl PlexiApp {
                         if let Some(pane) = self.windows[win_idx].panes.get_mut(&sender_pane_id) {
                             if let Some(app) = pane.as_view_mut() {
                                 app.runtime.queue_outbound_event(
-                                    crate::protocol::PlexiEvent::ContextStateResponse { state },
+                                    plexi_protocol::PlexiEvent::ContextStateResponse { state },
                                 );
                             }
                         }
@@ -1579,9 +1579,9 @@ impl PlexiApp {
         target_pane_id: u64,
         request: crate::app::directed_pipes::OpenRequest,
     ) {
-        use crate::protocol::PipeOpenRefusal;
+        use plexi_protocol::PipeOpenRefusal;
         let opener = request.opener;
-        if request.pipe_id.len() > crate::protocol::MAX_PIPE_ID_BYTES {
+        if request.pipe_id.len() > plexi_protocol::MAX_PIPE_ID_BYTES {
             return self.refuse_directed_pipe_open(request, PipeOpenRefusal::NameTooLong);
         }
         // Resolve host-established origins for BOTH ends — never
@@ -1674,7 +1674,7 @@ impl PlexiApp {
                 if let Err(error) = self.answer_directed_pipe_open(
                     opener,
                     admission.answer,
-                    crate::protocol::PlexiEvent::DirectedPipeOpened {
+                    plexi_protocol::PlexiEvent::DirectedPipeOpened {
                         request_id,
                         pipe_id,
                         generation,
@@ -1708,7 +1708,7 @@ impl PlexiApp {
         target: crate::app::view_trait::ViewEmitter,
         request: crate::app::directed_pipes::OpenRequest,
     ) {
-        use crate::protocol::PipeOpenRefusal;
+        use plexi_protocol::PipeOpenRefusal;
         let opener = request.opener;
         let pipe_id = request.pipe_id.clone();
         // An open admitted while the opener's close pool was held by its live
@@ -1783,7 +1783,7 @@ impl PlexiApp {
             }
         }
         if target != opener {
-            let incoming = crate::protocol::PlexiEvent::DirectedPipeIncoming {
+            let incoming = plexi_protocol::PlexiEvent::DirectedPipeIncoming {
                 pipe_id: pipe_id.clone(),
                 generation,
                 peer_pane_id: opener.pane_id,
@@ -1823,7 +1823,7 @@ impl PlexiApp {
         let answered = self.answer_directed_pipe_open(
             opener,
             admission.answer,
-            crate::protocol::PlexiEvent::DirectedPipeOpened {
+            plexi_protocol::PlexiEvent::DirectedPipeOpened {
                 request_id,
                 pipe_id: pipe_id.clone(),
                 generation,
@@ -1853,7 +1853,7 @@ impl PlexiApp {
                     opener,
                     &plugin_id,
                     &tell,
-                    crate::protocol::PipeCloseReason::PeerClosed,
+                    plexi_protocol::PipeCloseReason::PeerClosed,
                 );
             }
         }
@@ -1879,7 +1879,7 @@ impl PlexiApp {
         &mut self,
         opener: crate::app::view_trait::ViewEmitter,
         answer: crate::host::pane::ControlSlot,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     ) -> Result<(), String> {
         self.view_instance_mut(opener)
             .ok_or_else(|| "the opener has ended".to_string())?
@@ -1891,7 +1891,7 @@ impl PlexiApp {
     fn refuse_directed_pipe_open(
         &mut self,
         request: crate::app::directed_pipes::OpenRequest,
-        reason: crate::protocol::PipeOpenRefusal,
+        reason: plexi_protocol::PipeOpenRefusal,
     ) {
         let crate::app::directed_pipes::OpenRequest {
             opener,
@@ -1905,7 +1905,7 @@ impl PlexiApp {
             request_id = crate::host::guest_text::shown(&request_id),
             pipe_id = crate::host::guest_text::shown(&pipe_id)
         );
-        let refused = crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+        let refused = plexi_protocol::PlexiEvent::DirectedPipeOpenRefused {
             request_id,
             pipe_id,
             reason,
@@ -1936,7 +1936,7 @@ impl PlexiApp {
             }
         }
         if !exited.is_empty() {
-            self.retire_directed_pipes_for(&exited, crate::protocol::PipeCloseReason::PeerClosed);
+            self.retire_directed_pipes_for(&exited, plexi_protocol::PipeCloseReason::PeerClosed);
         }
     }
 
@@ -1950,7 +1950,7 @@ impl PlexiApp {
     pub(crate) fn retire_directed_pipes_for(
         &mut self,
         ended: &[(crate::app::view_trait::ViewEmitter, String)],
-        reason: crate::protocol::PipeCloseReason,
+        reason: plexi_protocol::PipeCloseReason,
     ) {
         let retired = self
             .directed_pipes
@@ -1975,7 +1975,7 @@ impl PlexiApp {
     pub(crate) fn retire_directed_pipes_in_slots(
         &mut self,
         pane_ids: &[u64],
-        reason: crate::protocol::PipeCloseReason,
+        reason: plexi_protocol::PipeCloseReason,
     ) {
         let ended: Vec<_> = self
             .view_instances()
@@ -2021,7 +2021,7 @@ impl PlexiApp {
                 from,
                 &from_plugin,
                 &ends,
-                crate::protocol::PipeCloseReason::Moved,
+                plexi_protocol::PipeCloseReason::Moved,
             );
         }
     }
@@ -2066,7 +2066,7 @@ impl PlexiApp {
             closer,
             &plugin_id,
             &tell,
-            crate::protocol::PipeCloseReason::PeerClosed,
+            plexi_protocol::PipeCloseReason::PeerClosed,
         );
     }
 
@@ -2103,7 +2103,7 @@ impl PlexiApp {
         from: crate::app::view_trait::ViewEmitter,
         from_plugin: &str,
         tell: &[crate::app::view_trait::ViewEmitter],
-        reason: crate::protocol::PipeCloseReason,
+        reason: plexi_protocol::PipeCloseReason,
     ) {
         let mut pipe = pipe;
         for &end in tell {
@@ -2112,7 +2112,7 @@ impl PlexiApp {
                 // Told first, in the room this end holds for it: a WASM
                 // guest hears of it on the handle the registry is about to
                 // drop.
-                let closed = crate::protocol::PlexiEvent::PipeClosed {
+                let closed = plexi_protocol::PlexiEvent::PipeClosed {
                     pipe_id: pipe.pipe_id.clone(),
                     generation,
                     reason,
@@ -2155,7 +2155,7 @@ fn stamp_notification_origin(
     cmd: ViewCommand,
     sender_pane_id: u64,
     source_context_id: u64,
-    scope: crate::protocol::NotifyScope,
+    scope: plexi_protocol::NotifyScope,
 ) -> ViewCommand {
     match cmd {
         ViewCommand::ShowNotification {

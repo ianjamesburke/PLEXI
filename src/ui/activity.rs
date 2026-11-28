@@ -1,8 +1,8 @@
 //! Activity dot widget and semantic escalation colors for agent panes,
 //! `PortalPane` summary cards, and context sidebar indicators.
 
-use crate::protocol::ContextStatus;
-use crate::protocol::AgentState;
+use plexi_protocol::ContextStatus;
+use plexi_protocol::AgentState;
 use crate::ui::theme::Colors;
 
 pub fn blocked_color(colors: &Colors) -> egui::Color32 {

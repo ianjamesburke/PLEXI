@@ -33,7 +33,6 @@ mod pane_ops;
 mod platform;
 mod plexi_ai;
 mod program_status;
-mod protocol;
 mod release;
 mod render;
 mod rpc;

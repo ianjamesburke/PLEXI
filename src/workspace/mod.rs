@@ -147,9 +147,9 @@ pub struct SavedAgentSession {
     pub permission_posture: Option<crate::broker::PermissionPosture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    pub last_state: crate::protocol::AgentState,
+    pub last_state: plexi_protocol::AgentState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
+    pub last_blocked_reason: Option<plexi_protocol::AgentBlockedReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,9 +208,9 @@ pub struct AgentHistoryRecord {
     pub cwd: PathBuf,
     #[serde(default)]
     pub ephemeral: bool,
-    pub last_state: crate::protocol::AgentState,
+    pub last_state: plexi_protocol::AgentState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_blocked_reason: Option<crate::protocol::AgentBlockedReason>,
+    pub last_blocked_reason: Option<plexi_protocol::AgentBlockedReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1850,7 +1850,7 @@ mod tests {
 
     #[test]
     fn saved_pane_round_trips_slots_and_agent_session_and_append_load_agent_history() {
-        use crate::protocol::{AgentBlockedReason, AgentState};
+        use plexi_protocol::{AgentBlockedReason, AgentState};
         let mut slots = HashMap::new();
         slots.insert("summary".to_string(), PathBuf::from("/tmp/slot_summary"));
         let pane = SavedPane {
@@ -2017,7 +2017,7 @@ pub(crate) fn archive_saved_completion(
         session_id: session.session_id.clone(),
         cwd: pane.cwd.clone(),
         ephemeral: session.ephemeral,
-        last_state: crate::protocol::AgentState::Completed,
+        last_state: plexi_protocol::AgentState::Completed,
         last_blocked_reason: None,
         last_detail: session.last_detail.clone(),
         summary: session.last_detail.clone(),

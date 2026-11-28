@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::socket_policy_tests::{live_secret, read_client};
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
-use crate::protocol::HostRequest;
+use plexi_protocol::HostRequest;
 use crate::testing::HostHarness;
 use crate::workspace::secrets::NonDestructiveStore;
 
@@ -304,7 +304,7 @@ fn set_agent_state_from_one_pane_cannot_change_another_pane() {
     let attacker_pid = h.terminal_backend(attacker).child_pid();
     let report = |pane_id| HostRequest::SetAgentState {
         pane_id,
-        state: crate::protocol::AgentState::Failed,
+        state: plexi_protocol::AgentState::Failed,
         agent: "claude-code".into(),
         detail: None,
         session_id: None,

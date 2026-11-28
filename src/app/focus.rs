@@ -813,7 +813,7 @@ impl PlexiApp {
             if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                 if let Some(app) = pane.as_view_mut() {
                     app.runtime
-                        .queue_outbound_event(crate::protocol::PlexiEvent::NavBack { view_id });
+                        .queue_outbound_event(plexi_protocol::PlexiEvent::NavBack { view_id });
                 }
             }
             true
@@ -1041,7 +1041,7 @@ impl PlexiApp {
                         // A broken config is not a property of one context — it
                         // affects the whole workspace, so this stays the explicit
                         // global case rather than taking the shared default.
-                        scope: crate::protocol::NotifyScope::Global,
+                        scope: plexi_protocol::NotifyScope::Global,
                         ..Default::default()
                     },
                 );
@@ -1190,7 +1190,7 @@ impl PlexiApp {
     /// Push the current host `Colors` to every running plugin as a `Theme` event.
     /// Called after `self.colors` is updated on config hot-reload.
     pub(crate) fn broadcast_theme_event(&mut self) {
-        let event = crate::protocol::PlexiEvent::Theme {
+        let event = plexi_protocol::PlexiEvent::Theme {
             colors: self.colors.to_theme_map(),
         };
         let mut delivered = 0;

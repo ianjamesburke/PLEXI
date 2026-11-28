@@ -9,7 +9,7 @@ use crate::broker::principal::Principal;
 use crate::broker::PermissionPosture;
 use crate::host::context::PaneCwd;
 use crate::host::plugin_timeline::AdmittedScope;
-use crate::protocol::AgentState;
+use plexi_protocol::AgentState;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
@@ -792,7 +792,7 @@ mod tests {
                     process.try_wait().unwrap().is_none(),
                     "--wait returned before child outcome"
                 );
-                h.inject_ipc(crate::protocol::HostRequest::AgentAsk {
+                h.inject_ipc(plexi_protocol::HostRequest::AgentAsk {
                     pane_id: child,
                     question: "Need anything else?".into(),
                     response_file: root.join("ask.json").to_string_lossy().into_owned(),
@@ -1057,7 +1057,7 @@ mod tests {
         h.app
             .park_agent_tool_wait(child, call_reply.to_str().unwrap());
         let done_reply = root.join("done.json");
-        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
+        h.inject_ipc(plexi_protocol::HostRequest::AgentDone {
             pane_id: child,
             result: Some("{\"wrong\":1}".into()),
             summary: None,
@@ -1066,7 +1066,7 @@ mod tests {
         h.hidden_frame();
         assert_eq!(read(&done_reply)["error_code"], "invalid_result");
         assert!(!call_reply.exists());
-        h.inject_ipc(crate::protocol::HostRequest::AgentAsk {
+        h.inject_ipc(plexi_protocol::HostRequest::AgentAsk {
             pane_id: child,
             question: "Which branch?".into(),
             response_file: root.join("ask.json").to_string_lossy().into_owned(),
@@ -1077,7 +1077,7 @@ mod tests {
         let completion = root.join("completion.json");
         h.app
             .park_agent_tool_wait(child, completion.to_str().unwrap());
-        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
+        h.inject_ipc(plexi_protocol::HostRequest::AgentDone {
             pane_id: child,
             result: Some("{\"ok\":true}".into()),
             summary: Some("Verified".into()),

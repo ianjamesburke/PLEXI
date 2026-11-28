@@ -1,7 +1,7 @@
 //! Stint 1491: the "Close pane?" confirmation closes the pane that asked,
 //! never whatever is focused when the user confirms.
 
-use crate::protocol::HostRequest;
+use plexi_protocol::HostRequest;
 use crate::testing::HostHarness;
 
 /// A terminal shell that never writes a title escape, held for the life of

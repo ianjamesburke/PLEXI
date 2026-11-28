@@ -270,6 +270,18 @@ def cargo_base(root):
     return ["python3", str(Path(root) / "scripts/cargo-channel-inputs.py"), "test", "--bin", "plexi", "--"]
 
 
+PACKAGE_PREFIX = "package:"
+# Workspace member crates whose tests `cargo test --bin plexi` does not run.
+MEMBER_TEST_PACKAGES = ("plexi-protocol",)
+
+
+def run_package(root, package):
+    """Run one member crate's whole test suite, under the cargo lease."""
+    return exit_code(subprocess.call(["bash", str(Path(root) / "scripts/cargo-with-lease.sh"), "python3",
+                                      str(Path(root) / "scripts/cargo-channel-inputs.py"), "test", "-p", package],
+                                     cwd=root, stdin=subprocess.DEVNULL))
+
+
 def locked_run(root, args):
     """Runs under the cargo lease taken by `host`: list if needed, validate, run, guard."""
     parsed = parse_args(args)
@@ -343,6 +355,8 @@ def locked_suite(root, skips):
     say(summary)
     arguments = [part for skip in skips for part in ("--skip", skip)]
     code = exit_code(subprocess.call(base + arguments, cwd=root, stdin=subprocess.DEVNULL))
+    for package in MEMBER_TEST_PACKAGES:
+        code = code or exit_code(subprocess.call(base[:-1] + ["-p", package], cwd=root, stdin=subprocess.DEVNULL))
     say(summary)
     return code
 
@@ -406,7 +420,14 @@ def run_for(root, path):
         filters = [fallback]
     else:
         say(f"test-for: {relative} -> scripts/scoped-tests.table filters: {' '.join(filters)}")
-    return run_host(root, filters)
+    packages = [f[len(PACKAGE_PREFIX):] for f in filters if f.startswith(PACKAGE_PREFIX)]
+    filters = [f for f in filters if not f.startswith(PACKAGE_PREFIX)]
+    code = 0
+    for package in packages:
+        code = code or run_package(root, package)
+    if filters:
+        code = code or run_host(root, filters)
+    return code
 
 
 def main(argv):

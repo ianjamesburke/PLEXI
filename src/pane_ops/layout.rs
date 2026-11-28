@@ -74,7 +74,7 @@ impl PlexiApp {
                 },
                 plugin_id.clone(),
             )],
-            crate::protocol::PipeCloseReason::PeerClosed,
+            plexi_protocol::PipeCloseReason::PeerClosed,
         );
         // No router lookup here, so the event is global-only.
         crate::host::event_log::emit_scoped(
@@ -101,7 +101,7 @@ fn overlay_close_ids(manifest_id: &str, runtime_type_id: &str) -> (String, Strin
     (manifest_id.to_string(), runtime_type_id.to_string())
 }
 
-/// Pick the default [`crate::protocol::SubContextLayout`] from `pane_count`
+/// Pick the default [`plexi_protocol::SubContextLayout`] from `pane_count`
 /// when `--layout` is omitted in `plexi context sub`.
 ///
 /// `egui_tiles::Grid` (and the portal minimap's `collect_tile_rects`) arranges
@@ -109,20 +109,20 @@ fn overlay_close_ids(manifest_id: &str, runtime_type_id: &str) -> (String, Strin
 /// which only fills a multi-row rectangle without empty cells when `pane_count`
 /// is a perfect square (`4` → 2×2, `9` → 3×3, `16` → 4×4, …). Any non-square
 /// multi-pane count (`2`, `3`, `5`, `6`, `7`, `8`, …) would leave dead cells in
-/// a 2D grid, so it defaults to [`crate::protocol::SubContextLayout::Columns`]
+/// a 2D grid, so it defaults to [`plexi_protocol::SubContextLayout::Columns`]
 /// (N equal full-height columns, zero empty cells). A single pane has no
 /// container wrapper in [`build_squad_tree`] regardless of layout.
-pub(crate) fn default_squad_layout(pane_count: usize) -> crate::protocol::SubContextLayout {
+pub(crate) fn default_squad_layout(pane_count: usize) -> plexi_protocol::SubContextLayout {
     if pane_count >= 4 {
         let root = (pane_count as f64).sqrt() as usize;
         if root * root == pane_count {
-            return crate::protocol::SubContextLayout::Tiled;
+            return plexi_protocol::SubContextLayout::Tiled;
         }
     }
     if pane_count <= 1 {
-        crate::protocol::SubContextLayout::Tiled
+        plexi_protocol::SubContextLayout::Tiled
     } else {
-        crate::protocol::SubContextLayout::Columns
+        plexi_protocol::SubContextLayout::Columns
     }
 }
 
@@ -143,7 +143,7 @@ pub(crate) fn default_squad_pane_name(context_name: &str, idx: usize) -> String 
 /// rootless window is not a state the host can render.
 pub(crate) fn build_squad_tree(
     pane_ids: &[PaneId],
-    layout: crate::protocol::SubContextLayout,
+    layout: plexi_protocol::SubContextLayout,
 ) -> (egui_tiles::Tree<PaneId>, TileId) {
     assert!(
         !pane_ids.is_empty(),
@@ -156,8 +156,8 @@ pub(crate) fn build_squad_tree(
         first_tile
     } else {
         match layout {
-            crate::protocol::SubContextLayout::Tiled => tiles.insert_grid_tile(pane_tiles),
-            crate::protocol::SubContextLayout::Columns => tiles.insert_horizontal_tile(pane_tiles),
+            plexi_protocol::SubContextLayout::Tiled => tiles.insert_grid_tile(pane_tiles),
+            plexi_protocol::SubContextLayout::Columns => tiles.insert_horizontal_tile(pane_tiles),
         }
     };
     (egui_tiles::Tree::new("plexi", root, tiles), first_tile)
@@ -836,7 +836,7 @@ impl PlexiApp {
         // are reachable.
         self.retire_directed_pipes_in_slots(
             &[closing],
-            crate::protocol::PipeCloseReason::PeerClosed,
+            plexi_protocol::PipeCloseReason::PeerClosed,
         );
         // Resolved up front, before Phase 3 takes a mutable borrow of
         // `self.windows[ctx_idx]` that would otherwise conflict with a
@@ -2705,7 +2705,7 @@ mod insert_split_tile_tests {
 #[cfg(test)]
 mod squad_tree_tests {
     use super::build_squad_tree;
-    use crate::protocol::SubContextLayout;
+    use plexi_protocol::SubContextLayout;
 
     /// `--layout tiled` (the `context sub` default) builds a Grid container, so
     /// an agent squad renders as a near-square block rather than a strip.

@@ -523,7 +523,7 @@ fn launch_plan_tab_drag_and_back_invalidates_a_container_anchor() {
         h.run_steps(3);
     };
     let spec = crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(
-        &crate::protocol::HostRequest::SpawnPane {
+        &plexi_protocol::HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: Vec::new(),

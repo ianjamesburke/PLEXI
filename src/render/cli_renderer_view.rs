@@ -813,9 +813,9 @@ impl View for CliRendererView {
         std::mem::take(&mut self.pending_commands)
     }
 
-    fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+    fn queue_outbound_event(&mut self, event: plexi_protocol::PlexiEvent) {
         // Handle LinkedTerminalReady response
-        if let crate::protocol::PlexiEvent::LinkedTerminalReady {
+        if let plexi_protocol::PlexiEvent::LinkedTerminalReady {
             request_id,
             terminal_pane_id,
         } = &event
@@ -973,7 +973,7 @@ mod tests {
         );
 
         let request_id = app.terminal_request_id.clone();
-        app.queue_outbound_event(crate::protocol::PlexiEvent::LinkedTerminalReady {
+        app.queue_outbound_event(plexi_protocol::PlexiEvent::LinkedTerminalReady {
             request_id,
             terminal_pane_id: 5,
         });
@@ -1401,7 +1401,7 @@ mod tests {
         let (mut app, _dir) = plugin_from_fixture();
         assert!(!app.terminal_link_failed);
         let request_id = app.terminal_request_id.clone();
-        app.queue_outbound_event(crate::protocol::PlexiEvent::LinkedTerminalReady {
+        app.queue_outbound_event(plexi_protocol::PlexiEvent::LinkedTerminalReady {
             request_id,
             terminal_pane_id: 0,
         });

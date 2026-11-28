@@ -594,9 +594,9 @@ fn pane_info_and_list_include_agent_state() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+    h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
         pane_id,
-        state: crate::protocol::AgentState::Working,
+        state: plexi_protocol::AgentState::Working,
         agent: "claude-code".to_string(),
         detail: Some("Bash: cargo test".to_string()),
         session_id: Some("session-33".to_string()),
@@ -606,7 +606,7 @@ fn pane_info_and_list_include_agent_state() {
     h.app.drain_pane_cmd_channel();
 
     let info_file = std::env::temp_dir().join("plexi_test_pane_info_agent_2119.json");
-    h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
+    h.inject_ipc(plexi_protocol::HostRequest::GetPaneInfo {
         pane_id,
         response_file: info_file.to_string_lossy().to_string(),
     });
@@ -622,7 +622,7 @@ fn pane_info_and_list_include_agent_state() {
     assert_eq!(info["agent"]["session_id"], "session-33");
 
     let list_file = std::env::temp_dir().join("plexi_test_pane_list_agent_2119.json");
-    h.inject_ipc(crate::protocol::HostRequest::ListPanes {
+    h.inject_ipc(plexi_protocol::HostRequest::ListPanes {
         response_file: list_file.to_string_lossy().to_string(),
         context_id: None,
     });
@@ -651,18 +651,18 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     let terminal_pane = h.add_focused_terminal();
     let view_pane = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+    h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
         pane_id: view_pane,
-        state: crate::protocol::AgentState::Blocked,
+        state: plexi_protocol::AgentState::Blocked,
         agent: "claude-code".to_string(),
         detail: Some("waiting for review".to_string()),
         session_id: None,
         event: None,
         blocked_reason: None,
     });
-    h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+    h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
         pane_id: terminal_pane,
-        state: crate::protocol::AgentState::Working,
+        state: plexi_protocol::AgentState::Working,
         agent: "pi".to_string(),
         detail: Some("building2".to_string()),
         session_id: None,
@@ -683,7 +683,7 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     }
 
     let states_file = std::env::temp_dir().join("plexi_test_agent_states_2119.json");
-    h.inject_ipc(crate::protocol::HostRequest::GetAgentStates {
+    h.inject_ipc(plexi_protocol::HostRequest::GetAgentStates {
         response_file: states_file.to_string_lossy().to_string(),
     });
     h.app.drain_pane_cmd_channel();
@@ -714,16 +714,16 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     let info_file = responses.path().join("info.json");
     let list_file = responses.path().join("list.json");
     let fleet_file = responses.path().join("fleet.json");
-    h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
+    h.inject_ipc(plexi_protocol::HostRequest::GetPaneInfo {
         pane_id: terminal_pane,
         response_file: info_file.to_string_lossy().into_owned(),
     });
-    h.inject_ipc(crate::protocol::HostRequest::ListPanes {
+    h.inject_ipc(plexi_protocol::HostRequest::ListPanes {
         response_file: list_file.to_string_lossy().into_owned(),
         context_id: None,
     });
-    h.inject_ipc(crate::protocol::HostRequest::AgentFleet {
-        filter: crate::protocol::FleetFilter::All,
+    h.inject_ipc(plexi_protocol::HostRequest::AgentFleet {
+        filter: plexi_protocol::FleetFilter::All,
         response_file: fleet_file.to_string_lossy().into_owned(),
     });
     h.app.drain_pane_cmd_channel();
@@ -736,7 +736,7 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     let entry = list.iter().find(|p| p["id"] == terminal_pane).unwrap();
     assert_eq!(info["agent"]["state"], "failed");
     assert_eq!(entry["agent"]["state"], "failed");
-    let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+    let fleet = h.app.agents_view(plexi_protocol::FleetFilter::All);
     assert_eq!(
         fleet.tasks[0].rows[0].display_state,
         crate::agent::fleet::DisplayState::Failed
@@ -751,20 +751,20 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     let failed_session = terminal.build_saved_agent_session().unwrap();
     assert_eq!(
         failed_session.last_state,
-        crate::protocol::AgentState::Failed
+        plexi_protocol::AgentState::Failed
     );
     terminal.standby_session = Some(failed_session);
     terminal.agent_completed = true;
     assert_eq!(
         terminal.build_saved_agent_session().unwrap().last_state,
-        crate::protocol::AgentState::Completed
+        plexi_protocol::AgentState::Completed
     );
     assert_eq!(
         terminal
             .build_history_record(1, "test", std::path::PathBuf::new())
             .unwrap()
             .last_state,
-        crate::protocol::AgentState::Completed
+        plexi_protocol::AgentState::Completed
     );
 
     let _ = std::fs::remove_file(&states_file);
@@ -1016,7 +1016,7 @@ fn get_previous_pane_info_returns_previous_pane() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_info.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
+    h.inject_ipc(plexi_protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -1055,7 +1055,7 @@ fn get_previous_pane_info_skips_stale_tile() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_stale.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
+    h.inject_ipc(plexi_protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -1088,7 +1088,7 @@ fn get_previous_pane_info_empty_history_returns_error() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_empty.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
+    h.inject_ipc(plexi_protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -1132,7 +1132,7 @@ fn get_previous_pane_info_steps_two_returns_second_pane() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_steps2.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
+    h.inject_ipc(plexi_protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 2,
     });
@@ -1167,7 +1167,7 @@ fn get_previous_pane_info_steps_exceeds_history_returns_error() {
     let _ = std::fs::remove_file(&resp_file);
 
     // Only 1 valid entry in history; requesting step 5 should error.
-    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
+    h.inject_ipc(plexi_protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 5,
     });

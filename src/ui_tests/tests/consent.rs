@@ -9,7 +9,7 @@ fn screenshot_pane_event_consent_offers_pane_lifetime() {
         HostSubscribeRequest, HostSubscriptionService, SubscriberAuthority,
     };
     use crate::host::plugin_timeline::{AdmittedScope, PluginTimeline};
-    use crate::protocol::{EventStreamDecl, PayloadMode, TriggerMode};
+    use plexi_protocol::{EventStreamDecl, PayloadMode, TriggerMode};
     use std::sync::{Arc, Mutex};
 
     let mut h = PlexiUiHarness::new_sized(900.0, 620.0);

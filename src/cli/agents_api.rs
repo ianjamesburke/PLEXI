@@ -252,9 +252,9 @@ mod tests {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
-                let request: crate::protocol::HostRequest = serde_json::from_str(&line)
+                let request: plexi_protocol::HostRequest = serde_json::from_str(&line)
                     .unwrap_or_else(|error| panic!("the host cannot read {line}: {error}"));
-                let crate::protocol::HostRequest::AgentsDashboard {
+                let plexi_protocol::HostRequest::AgentsDashboard {
                     op,
                     payload,
                     response_file,

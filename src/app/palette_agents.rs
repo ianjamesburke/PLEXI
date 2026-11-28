@@ -13,7 +13,7 @@ use crate::broker::gate::{NeedsYouRecord, PermissionMonitor};
 use crate::host::picker::{
     AttentionRank, PickerRow, PreviewBody, RowAction, RowKey, AGENTS_SOURCE,
 };
-use crate::protocol::AgentState;
+use plexi_protocol::AgentState;
 use crate::spatial::tiling::PaneId;
 
 const FOCUS: RowAction = RowAction {
@@ -319,7 +319,7 @@ impl PlexiApp {
                 notify_id: new_notify_id("palette-agents-load"),
                 title: "Could not load agent definitions or requests".into(),
                 body: error.into(),
-                scope: crate::protocol::NotifyScope::Global,
+                scope: plexi_protocol::NotifyScope::Global,
                 ..Default::default()
             },
         );

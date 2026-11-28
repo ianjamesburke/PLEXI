@@ -5,7 +5,7 @@ use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest}
 use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
 use crate::host::plugin_timeline::{self, lifecycle_matches, PluginEventRecord};
 use crate::platform::ipc::IpcStream;
-use crate::protocol::{HostRequest, PayloadMode, TriggerMode};
+use plexi_protocol::{HostRequest, PayloadMode, TriggerMode};
 use serde_json::{json, Value};
 use std::io::{BufReader, Lines, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -482,7 +482,7 @@ mod tests {
                 .declare_streams(
                     CONTEXT,
                     "probe-1285",
-                    vec![crate::protocol::EventStreamDecl {
+                    vec![plexi_protocol::EventStreamDecl {
                         name: "tick".into(),
                         schema: json!({"type": "object"}),
                         description: None,
@@ -515,7 +515,7 @@ mod tests {
                     1,
                     plugin_timeline::EmittedEvent {
                         event: "tick".into(),
-                        actor: crate::protocol::PluginEventActor::System,
+                        actor: plexi_protocol::PluginEventActor::System,
                         actor_id: None,
                         caused_by: None,
                         summary: "tick".into(),

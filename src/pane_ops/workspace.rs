@@ -317,7 +317,7 @@ pub(crate) struct ChildContextSpec {
     /// a plain shell. Never empty.
     pub panes: Vec<Option<String>>,
     /// How the seeded panes are arranged inside the child's single window.
-    pub layout: crate::protocol::SubContextLayout,
+    pub layout: plexi_protocol::SubContextLayout,
     /// The verified source the seeded panes are admitted from (stint 1632).
     pub source: crate::broker::pane_authority::GrantSource,
 }
@@ -341,7 +341,7 @@ impl ChildContextSpec {
             portal_first,
             anchor_pane,
             panes: vec![None],
-            layout: crate::protocol::SubContextLayout::default(),
+            layout: plexi_protocol::SubContextLayout::default(),
             source: crate::broker::pane_authority::GrantSource::DesktopInput,
         }
     }
@@ -1235,7 +1235,7 @@ impl PlexiApp {
         }
         self.retire_directed_pipes_in_slots(
             &doomed_pane_ids,
-            crate::protocol::PipeCloseReason::PeerClosed,
+            plexi_protocol::PipeCloseReason::PeerClosed,
         );
         for pane_id in doomed_pane_ids {
             self.reclaim_pane_worktree(pane_id);
@@ -1357,7 +1357,7 @@ impl PlexiApp {
 
         // 8. Notifications scoped to any deleted context are dropped.
         self.pending_notifications.retain(|n| {
-            !(matches!(n.scope, crate::protocol::NotifyScope::Context)
+            !(matches!(n.scope, plexi_protocol::NotifyScope::Context)
                 && deleted.contains(&n.source_context_id))
         });
         self.save_notifications();
@@ -1620,7 +1620,7 @@ impl PlexiApp {
         }
         self.retire_directed_pipes_in_slots(
             &pane_ids,
-            crate::protocol::PipeCloseReason::PeerClosed,
+            plexi_protocol::PipeCloseReason::PeerClosed,
         );
         let removed_window = self.windows.remove(index);
         log::info!("delete_window: removed window_id={removed_win_id} ctx_id={removed_ws_id}");
@@ -2304,7 +2304,7 @@ impl PlexiApp {
         self.rescope_moved_panes();
         self.retire_directed_pipes_moved();
         self.pending_notifications.retain(|n| {
-            !(matches!(n.scope, crate::protocol::NotifyScope::Context)
+            !(matches!(n.scope, plexi_protocol::NotifyScope::Context)
                 && n.source_context_id == child_ctx_id)
         });
         self.save_notifications();

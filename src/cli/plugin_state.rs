@@ -552,7 +552,7 @@ mod tests {
         let current = tempdir().unwrap();
         h.app.set_context_root(current.path().to_path_buf(), None);
         let reply_path = h.profile_dir().join("pane-scope.json");
-        h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
+        h.inject_ipc(plexi_protocol::HostRequest::GetPaneInfo {
             pane_id: pane,
             response_file: reply_path.to_string_lossy().into_owned(),
         });

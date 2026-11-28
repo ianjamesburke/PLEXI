@@ -3502,7 +3502,7 @@ impl super::PlexiApp {
                     notify_id: crate::app::notifications::new_notify_id("editor-positions"),
                     title: notice.title.to_string(),
                     body: notice.body,
-                    scope: crate::protocol::NotifyScope::Global,
+                    scope: plexi_protocol::NotifyScope::Global,
                     ..Default::default()
                 },
             );

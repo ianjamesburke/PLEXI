@@ -1,7 +1,8 @@
 //! Host snapshot and actions for the shared Agents view.
 use super::PlexiApp;
-use crate::agent::fleet::{AgentInput, AgentsView, BlockedOn, FleetFilter};
-use crate::protocol::{AgentBlockedReason, AgentState};
+use crate::agent::fleet::{AgentInput, AgentsView, BlockedOn};
+use plexi_protocol::FleetFilter;
+use plexi_protocol::{AgentBlockedReason, AgentState};
 
 impl PlexiApp {
     pub(crate) fn fleet_focused_pane(&self) -> Option<u64> {
@@ -512,9 +513,9 @@ mod tests {
             .panes
             .get_mut(&live)
             .unwrap()
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 pane_id: live,
-                state: crate::protocol::AgentState::Working,
+                state: plexi_protocol::AgentState::Working,
                 agent: "pi".into(),
                 detail: None,
                 session_id: None,
@@ -532,7 +533,7 @@ mod tests {
             .unwrap();
             h.app.fleet_history.borrow_mut().push(record);
         }
-        let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view = h.app.agents_view(plexi_protocol::FleetFilter::All);
         let ids: Vec<_> = view
             .tasks
             .iter()
@@ -551,9 +552,9 @@ mod tests {
             .panes
             .get_mut(&failed_live)
             .unwrap()
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 pane_id: failed_live,
-                state: crate::protocol::AgentState::Failed,
+                state: plexi_protocol::AgentState::Failed,
                 agent: "claude-code".into(),
                 detail: Some("exit code 1".into()),
                 session_id: None,
@@ -574,7 +575,7 @@ mod tests {
         crate::workspace::append_agent_history(&record).unwrap();
         h.app.fleet_history.borrow_mut().push(record);
 
-        let before = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let before = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert_eq!(before.tasks.len(), 1);
         assert_eq!(before.tasks[0].rows[0].pane_id, failed_live);
         assert_eq!(before.tasks[0].rows[0].role, "claude-code");
@@ -589,7 +590,7 @@ mod tests {
         assert!(dismissed.contains(&failed_live));
         assert!(dismissed.contains(&215));
 
-        let after = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let after = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert!(after.tasks.is_empty());
         assert!(after.older.is_empty());
         let history = crate::workspace::load_agent_history();
@@ -610,9 +611,9 @@ mod tests {
             .expect("focused fixture is a terminal");
         terminal.agent_role = Some("build-runner".into());
         terminal.agent_harness = Some("pi".into());
-        terminal.agent = Some(crate::protocol::PaneAgentState {
+        terminal.agent = Some(plexi_protocol::PaneAgentState {
             pane_id,
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             agent: "pi".into(),
             detail: Some("building2".into()),
             session_id: Some("pi-live-exit-3".into()),
@@ -620,7 +621,7 @@ mod tests {
         terminal.exited = true;
         terminal.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
 
-        let before = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let before = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert_eq!(before.tasks.len(), 1);
         assert_eq!(
             before.tasks[0].rows[0].display_state,
@@ -643,7 +644,7 @@ mod tests {
         assert!(terminal.fleet_seen);
         assert!(h
             .app
-            .agents_view(crate::protocol::FleetFilter::All)
+            .agents_view(plexi_protocol::FleetFilter::All)
             .tasks
             .is_empty());
     }
@@ -673,9 +674,9 @@ mod tests {
         assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
 
         // 1. Working: Pi starts a turn
-        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
             pane_id: pi_pane,
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             agent: "pi".into(),
             detail: Some("analyzing diff".into()),
             session_id: Some("pi-sess-1".into()),
@@ -684,7 +685,7 @@ mod tests {
         });
         h.hidden_frame();
 
-        let view_working = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view_working = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert_eq!(view_working.tasks.len(), 1);
         let row_working = &view_working.tasks[0].rows[0];
         assert_eq!(row_working.role, "reviewer");
@@ -696,9 +697,9 @@ mod tests {
         assert_eq!(view_working.tasks[0].title, "reviewer · Test");
 
         // 2. Waiting (Blocked on question): Pi asks user for input
-        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
             pane_id: pi_pane,
-            state: crate::protocol::AgentState::Blocked,
+            state: plexi_protocol::AgentState::Blocked,
             agent: "pi".into(),
             detail: Some("Which branch to compare?".into()),
             session_id: Some("pi-sess-1".into()),
@@ -707,7 +708,7 @@ mod tests {
         });
         h.hidden_frame();
 
-        let view_waiting = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view_waiting = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert_eq!(view_waiting.tasks.len(), 1);
         let row_waiting = &view_waiting.tasks[0].rows[0];
         assert_eq!(
@@ -726,9 +727,9 @@ mod tests {
         assert_eq!(h.app.next_blocked_agent(), Some(pi_pane));
 
         // 3. Settling to Idle: Pi turn finishes
-        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
             pane_id: pi_pane,
-            state: crate::protocol::AgentState::Idle,
+            state: plexi_protocol::AgentState::Idle,
             agent: "pi".into(),
             detail: None,
             session_id: Some("pi-sess-1".into()),
@@ -737,7 +738,7 @@ mod tests {
         });
         h.hidden_frame();
 
-        let view_idle = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view_idle = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert_eq!(view_idle.tasks.len(), 1);
         let row_idle = &view_idle.tasks[0].rows[0];
         assert_eq!(
@@ -747,9 +748,9 @@ mod tests {
         assert_eq!(row_idle.blocked_on, None);
 
         // 4. Failed: Pi reports failure
-        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
             pane_id: pi_pane,
-            state: crate::protocol::AgentState::Failed,
+            state: plexi_protocol::AgentState::Failed,
             agent: "pi".into(),
             detail: Some("permission denied reading /private/key".into()),
             session_id: Some("pi-sess-1".into()),
@@ -758,7 +759,7 @@ mod tests {
         });
         h.hidden_frame();
 
-        let view_failed = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view_failed = h.app.agents_view(plexi_protocol::FleetFilter::All);
         let row_failed = &view_failed.tasks[0].rows[0];
         assert_eq!(
             row_failed.display_state,
@@ -777,9 +778,9 @@ mod tests {
         assert!(h.app.pane_navigate(other_pane));
         assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
         // 5. Done (Completed): Pi completes
-        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
+        h.inject_ipc(plexi_protocol::HostRequest::SetAgentState {
             pane_id: pi_pane,
-            state: crate::protocol::AgentState::Completed,
+            state: plexi_protocol::AgentState::Completed,
             agent: "pi".into(),
             detail: Some("Review finished".into()),
             session_id: Some("pi-sess-1".into()),
@@ -798,9 +799,9 @@ mod tests {
         assert!(!terminal.fleet_seen, "agent should remain unseen");
         assert_eq!(
             terminal.effective_agent_state().0,
-            crate::protocol::AgentState::Completed
+            plexi_protocol::AgentState::Completed
         );
-        let view_done = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view_done = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert_eq!(
             view_done.tasks[0].rows[0].display_state,
             crate::agent::fleet::DisplayState::DoneUnseen
@@ -808,7 +809,7 @@ mod tests {
 
         // Mark pane seen -> Idle
         h.app.mark_agent_seen(pi_pane);
-        let view_seen = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view_seen = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert_eq!(
             view_seen.tasks[0].rows[0].display_state,
             crate::agent::fleet::DisplayState::Idle
@@ -832,9 +833,9 @@ mod tests {
             t.agent_harness = Some("pi".into());
             t.exited = true;
             t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(3));
-            t.agent = Some(crate::protocol::PaneAgentState {
+            t.agent = Some(plexi_protocol::PaneAgentState {
                 pane_id: pi_pane,
-                state: crate::protocol::AgentState::Working,
+                state: plexi_protocol::AgentState::Working,
                 agent: "pi".into(),
                 detail: Some("building2".into()),
                 session_id: Some("pi-exit-3".into()),
@@ -843,7 +844,7 @@ mod tests {
         }
 
         // Live pane with failure exit status reflects Failed in fleet view
-        let view_live = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view_live = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert_eq!(view_live.tasks.len(), 1);
         let row = &view_live.tasks[0].rows[0];
         assert_eq!(row.role, "build-runner");
@@ -857,7 +858,7 @@ mod tests {
         h.app.record_closed_agent_pane(1, &win_path, &pane);
 
         // Once closed, failure moves into older view
-        let view_closed = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view_closed = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert!(view_closed.tasks.is_empty());
         assert_eq!(view_closed.older.len(), 1);
         assert_eq!(view_closed.older[0].pane_id, pi_pane);
@@ -868,14 +869,14 @@ mod tests {
         let dismissed = h.app.dismiss_fleet_agent(Some(pi_pane), false);
         assert_eq!(dismissed, vec![pi_pane]);
 
-        let view_dismissed = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view_dismissed = h.app.agents_view(plexi_protocol::FleetFilter::All);
         assert!(view_dismissed.older.is_empty());
         let hist = crate::workspace::load_agent_history();
         let rec = hist
             .iter()
             .find(|r| r.pane_id == pi_pane)
             .expect("archived record");
-        assert_eq!(rec.last_state, crate::protocol::AgentState::Failed);
+        assert_eq!(rec.last_state, plexi_protocol::AgentState::Failed);
         assert!(rec.fleet_dismissed);
     }
 
@@ -910,9 +911,9 @@ mod tests {
             .panes
             .get_mut(&agent)
             .unwrap()
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 pane_id: agent,
-                state: crate::protocol::AgentState::Blocked,
+                state: plexi_protocol::AgentState::Blocked,
                 agent: "pi".into(),
                 detail: Some("Need a branch".into()),
                 session_id: None,
@@ -939,7 +940,7 @@ mod tests {
             1,
             "agent event stays in the original notification panel"
         );
-        let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view = h.app.agents_view(plexi_protocol::FleetFilter::All);
         let row = view
             .tasks
             .iter()
@@ -952,10 +953,8 @@ mod tests {
 
 #[cfg(test)]
 mod attention_tests {
-    use crate::{
-        protocol::{AgentState, HostRequest},
-        testing::HostHarness,
-    };
+    use crate::testing::HostHarness;
+    use plexi_protocol::{AgentState, HostRequest};
 
     #[test]
     fn attention_cycles_needs_you_blocked_done_and_wraps() {
@@ -974,7 +973,7 @@ mod attention_tests {
                 h.app.fleet_focused_pane().unwrap()
             };
             h.app.windows[0].panes.get_mut(&id).unwrap().set_agent(Some(
-                crate::protocol::PaneAgentState {
+                plexi_protocol::PaneAgentState {
                     pane_id: id,
                     state,
                     agent: "pi".into(),
@@ -1006,7 +1005,7 @@ mod attention_tests {
         let mut h = HostHarness::new();
         let id = h.add_focused_terminal();
         h.app.windows[0].panes.get_mut(&id).unwrap().set_agent(Some(
-            crate::protocol::PaneAgentState {
+            plexi_protocol::PaneAgentState {
                 pane_id: id,
                 state: AgentState::NeedsYou,
                 agent: "pi".into(),
@@ -1058,7 +1057,7 @@ mod attention_tests {
             notifications[0].source_context_id,
             h.app.windows[0].context_id
         );
-        let view = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let view = h.app.agents_view(plexi_protocol::FleetFilter::All);
         let row = view
             .tasks
             .iter()

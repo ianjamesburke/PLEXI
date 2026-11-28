@@ -1,5 +1,6 @@
 //! Native master/detail fleet pane. State comes from the host's pure projection.
-use crate::agent::fleet::{AgentRow, AgentsView, DisplayState, FleetFilter};
+use crate::agent::fleet::{filter_matches, AgentRow, AgentsView, DisplayState};
+use plexi_protocol::FleetFilter;
 use crate::app::view_trait::{KeyDisposition, View, ViewCommand, ViewRenderContext};
 use crate::ui::button::{ButtonKind, KitButton};
 use crate::ui::list::ListRow;
@@ -34,7 +35,7 @@ impl AgentsPaneView {
             .iter()
             .flat_map(|t| &t.rows)
             .chain(self.view.older.iter())
-            .filter(|r| self.filter.matches(r))
+            .filter(|r| filter_matches(self.filter, r))
             .collect()
     }
     fn jump(&mut self) {
@@ -43,7 +44,7 @@ impl AgentsPaneView {
             .filter(|id| self.rows().iter().any(|r| r.pane_id == *id && r.live))
         {
             self.commands.push(ViewCommand::ForwardPaneRequest {
-                request: crate::protocol::HostRequest::FocusPane { pane_id },
+                request: plexi_protocol::HostRequest::FocusPane { pane_id },
                 origin: crate::broker::caller::RequestOrigin::HostUi,
             });
         }
@@ -216,7 +217,7 @@ impl View for AgentsPaneView {
                                         let rows: Vec<_> = task
                                             .rows
                                             .iter()
-                                            .filter(|r| self.filter.matches(r))
+                                            .filter(|r| filter_matches(self.filter, r))
                                             .collect();
                                         if rows.is_empty() {
                                             continue;
@@ -296,7 +297,7 @@ impl View for AgentsPaneView {
                                         .view
                                         .older
                                         .iter()
-                                        .filter(|r| self.filter.matches(r))
+                                        .filter(|r| filter_matches(self.filter, r))
                                         .collect();
                                     if !older_rows.is_empty() {
                                         ui.collapsing(

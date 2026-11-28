@@ -56,7 +56,7 @@ use crate::app::permissions::PluginPermissions;
 use crate::app::PlexiApp;
 use crate::config::set_test_profile_dir;
 use crate::host::pane::{Pane, ViewPane, ViewRuntime};
-use crate::protocol::HostRequest;
+use plexi_protocol::HostRequest;
 use crate::spatial::tiling::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
@@ -187,7 +187,7 @@ pub(crate) fn scratch_context_root(label: &str) -> std::path::PathBuf {
 /// let pane = h.add_test_pane();
 /// h.inject_ipc(HostRequest::SetPipStatus {
 ///     pane_id: pane,
-///     status: crate::protocol::PipStatus::Green,
+///     status: plexi_protocol::PipStatus::Green,
 /// });
 /// h.run_frames(1);
 /// ```

@@ -1,5 +1,6 @@
 //! Desktop attention delivery. Tests never call an operating-system backend.
-use crate::{agent::fleet::AgentEvent, protocol::AgentState};
+use crate::agent::fleet::AgentEvent;
+use plexi_protocol::AgentState;
 
 pub(crate) fn app_focused(ctx: &egui::Context) -> bool {
     #[cfg(target_os = "macos")]

@@ -3082,7 +3082,7 @@ impl PlexiApp {
                     pane_id,
                     shell_cmd.chars().count()
                 );
-                self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::SendToPane {
+                self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, plexi_protocol::HostRequest::SendToPane {
                     generated_operation_id: false,
                     pane_id,
                     text: shell_cmd.to_string(),
@@ -3348,7 +3348,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    let req = crate::protocol::HostRequest::SpawnPane {
+                    let req = plexi_protocol::HostRequest::SpawnPane {
                         type_id,
                         layout,
                         args,
@@ -3406,7 +3406,7 @@ impl PlexiApp {
                     if !exists {
                         return HostStepOutcome::Exited(1);
                     }
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::SetPaneTitle {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, plexi_protocol::HostRequest::SetPaneTitle {
                         pane_id: pid,
                         name,
                     });
@@ -3430,7 +3430,7 @@ impl PlexiApp {
                     if !exists {
                         return HostStepOutcome::Exited(1);
                     }
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::FocusPane {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, plexi_protocol::HostRequest::FocusPane {
                         pane_id,
                     });
                     HostStepOutcome::Exited(0)
@@ -3448,7 +3448,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::ClosePane {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, plexi_protocol::HostRequest::ClosePane {
                         pane_id: pid,
                         response_file: Some(resp_str),
                     });
@@ -3473,7 +3473,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::SendToPane {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, plexi_protocol::HostRequest::SendToPane {
                         generated_operation_id: false,
                         pane_id,
                         text,
@@ -3497,7 +3497,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, crate::protocol::HostRequest::KeyPane {
+                    self.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostUi, plexi_protocol::HostRequest::KeyPane {
                         pane_id,
                         key,
                         response_file: Some(resp_str),
@@ -3544,7 +3544,7 @@ impl PlexiApp {
                 ) else {
                     return HostStepOutcome::Exited(1);
                 };
-                let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload)
+                let Ok(req) = serde_json::from_value::<plexi_protocol::HostRequest>(payload)
                 else {
                     return HostStepOutcome::Exited(1);
                 };
@@ -3625,7 +3625,7 @@ impl PlexiApp {
                 ) else {
                     return HostStepOutcome::Exited(1);
                 };
-                let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload)
+                let Ok(req) = serde_json::from_value::<plexi_protocol::HostRequest>(payload)
                 else {
                     return HostStepOutcome::Exited(1);
                 };
@@ -3687,7 +3687,7 @@ impl PlexiApp {
                 };
                 let resp_path = next_resp_path();
                 let resp_str = resp_path.to_string_lossy().into_owned();
-                let req = crate::protocol::HostRequest::SpawnPane {
+                let req = plexi_protocol::HostRequest::SpawnPane {
                     type_id: target_type_id,
                     layout,
                     args: target_args,
@@ -5467,7 +5467,7 @@ mod tests {
         id: u64,
         pane_name: &str,
         agent: &str,
-        state: crate::protocol::AgentState,
+        state: plexi_protocol::AgentState,
         detail: Option<&str>,
     ) -> Pane {
         use crate::app::permissions::PluginPermissions;
@@ -5487,7 +5487,7 @@ mod tests {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
-            agent: Some(crate::protocol::PaneAgentState {
+            agent: Some(plexi_protocol::PaneAgentState {
                 pane_id: id,
                 state,
                 agent: agent.to_string(),
@@ -5536,7 +5536,7 @@ mod tests {
 
     #[test]
     fn agent_jump_switches_window_context_and_focused_pane_together() {
-        use crate::protocol::AgentState;
+        use plexi_protocol::AgentState;
         use crate::testing::HostHarness;
 
         let mut h = HostHarness::new();
@@ -6578,7 +6578,7 @@ steps = [
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
                     if let Ok(req) =
-                        serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
+                        serde_json::from_str::<plexi_protocol::HostRequest>(line.trim())
                     {
                         // Classify the peer the way the socket entry does: the
                         // CLI runs on a thread of this test process.
@@ -6601,7 +6601,7 @@ steps = [
         // Verify `plexi pane list --json` (`ListPanes`) shows both new panes.
         let list_file = sock_dir.path().join("pane-list.json");
         h.app
-            .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::ListPanes {
+            .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, plexi_protocol::HostRequest::ListPanes {
                 response_file: list_file.to_string_lossy().into_owned(),
                 context_id: None,
             });
@@ -6691,7 +6691,7 @@ steps = [
         let list_dir = tempfile::tempdir().unwrap();
         let list_file = list_dir.path().join("pane-list-onload.json");
         h.app
-            .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::ListPanes {
+            .handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, plexi_protocol::HostRequest::ListPanes {
                 response_file: list_file.to_string_lossy().into_owned(),
                 context_id: None,
             });
@@ -6871,7 +6871,7 @@ split = true
             .unwrap()
             .as_terminal_mut()
             .unwrap()
-            .activity = Some(crate::protocol::AgentState::Working);
+            .activity = Some(plexi_protocol::AgentState::Working);
         assert_eq!(
             h.app.idle_shell_pane_id(term),
             None,
@@ -7166,9 +7166,9 @@ steps = [
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
                     if let Ok(req) =
-                        serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
+                        serde_json::from_str::<plexi_protocol::HostRequest>(line.trim())
                     {
-                        if let crate::protocol::HostRequest::SpawnPane { from_pane_id, .. } = &req {
+                        if let plexi_protocol::HostRequest::SpawnPane { from_pane_id, .. } = &req {
                             seen_from_ids.push(*from_pane_id);
                         }
                         // Classify the peer the way the socket entry does: the

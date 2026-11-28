@@ -23,7 +23,7 @@ use crate::ui::text_field::TextArea;
 use crate::ui::theme::Colors;
 
 use crate::broker::Decision;
-use crate::protocol::ModelTier;
+use plexi_protocol::ModelTier;
 
 use super::commands;
 

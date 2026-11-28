@@ -46,7 +46,7 @@ use serde_json::Value;
 pub(crate) const MAX_WAIT_TIMEOUT_SECS: f64 = 86_400.0;
 
 use super::PlexiApp;
-use crate::protocol::AgentState;
+use plexi_protocol::AgentState;
 
 /// No PTY event for this long means the pane has finished redrawing and is
 /// ready to receive Enter. The window is also measured from the moment the
@@ -1836,7 +1836,7 @@ impl PlexiApp {
             }
             self.handle_pane_ipc_request(
                 item.origin,
-                crate::protocol::HostRequest::SendToPane {
+                plexi_protocol::HostRequest::SendToPane {
                     generated_operation_id: false,
                     pane_id: item.pane_id,
                     text: item.text,

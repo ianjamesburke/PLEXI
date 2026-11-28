@@ -185,7 +185,7 @@ fn screenshot_rows_hand_out_width_in_a_plugin_pane() {
 
 #[test]
 fn screenshot_agents_pane_states_and_keys() {
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
     let mut h = PlexiUiHarness::new_sized(1200.0, 850.0);
     let root = h.workspace_root().to_path_buf();
     let mut ids = Vec::new();
@@ -232,7 +232,7 @@ fn screenshot_agents_pane_states_and_keys() {
             term.tail_preview =
                 Some("Inspected the affected files. Ready for the next step.".into());
             term.parent_pane_id = (role == "Implementer").then_some(ids[0]);
-            term.agent = Some(crate::protocol::PaneAgentState {
+            term.agent = Some(plexi_protocol::PaneAgentState {
                 pane_id: id,
                 state,
                 agent: "pi".into(),
@@ -290,7 +290,7 @@ fn screenshot_agents_pane_states_and_keys() {
     h.harness().get_by_label("Send reply").click();
     h.run_steps(2);
     h.with_app(|app| {
-        let view = app.agents_view(crate::agent::fleet::FleetFilter::All);
+        let view = app.agents_view(plexi_protocol::FleetFilter::All);
         let row = view
             .tasks
             .iter()
@@ -334,7 +334,7 @@ fn screenshot_logs_info_chip_focused_and_unfocused() {
         .expect("open a second pane");
     // Select the INFO level tab: it becomes the accent (Primary) chip.
     h.with_app_mut(|app| {
-        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::SendPaneAction {
+        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, plexi_protocol::HostRequest::SendPaneAction {
             pane_id: logs,
             action: "logs-level:3".into(),
             args: Vec::new(),

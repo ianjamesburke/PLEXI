@@ -217,7 +217,7 @@ pub(crate) struct ListRowPips {
     pub count: usize,
     pub focused_idx: Option<usize>,
     /// Per-pip agent state (parallel to pip index). `None` = no agent.
-    pub activities: Vec<Option<crate::protocol::AgentState>>,
+    pub activities: Vec<Option<plexi_protocol::AgentState>>,
     pub static_health_pips: Vec<usize>,
 }
 

@@ -8,7 +8,7 @@
 
 use crate::app::view_trait::ViewRenderContext;
 use crate::host::pane::ViewPane;
-use crate::protocol::PlexiEvent;
+use plexi_protocol::PlexiEvent;
 use crate::ui::theme::Colors;
 use crate::ui::{button, style};
 use egui::RichText;

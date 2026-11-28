@@ -983,7 +983,7 @@ fn python_init_payload(
     );
     Ok(json!({
         "type": "init",
-        "protocol": crate::protocol::PROTOCOL_VERSION,
+        "protocol": plexi_protocol::PROTOCOL_VERSION,
         "plugin_id": config.plugin_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
@@ -998,9 +998,9 @@ fn python_init_payload(
 
 fn cache_python_theme_for_relaunch(
     config: &mut PythonLaunchConfig,
-    event: &crate::protocol::PlexiEvent,
+    event: &plexi_protocol::PlexiEvent,
 ) {
-    if let crate::protocol::PlexiEvent::Theme { colors } = event {
+    if let plexi_protocol::PlexiEvent::Theme { colors } = event {
         config.theme.clone_from(colors);
     }
 }
@@ -3527,7 +3527,7 @@ impl LivePythonPane {
     pub(crate) fn deliver_control(
         &self,
         slot: control_room::StdinSlot,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     ) -> Result<(), String> {
         let line = control_line(event)?;
         self.runtime
@@ -3539,7 +3539,7 @@ impl LivePythonPane {
     /// Enqueue a control event into free room, failing when there is none.
     pub(crate) fn deliver_unreserved_control(
         &self,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     ) -> Result<(), String> {
         let line = control_line(event)?;
         self.runtime
@@ -3966,7 +3966,7 @@ impl LivePythonPane {
                             "plugin::{}: file pick {request_id}: no picked path could be granted; cancelling",
                             self.plugin_id, request_id = guest_text::shown(&request_id)
                         );
-                        self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+                        self.queue_outbound_event(plexi_protocol::PlexiEvent::FilePickCancelled {
                             request_id,
                         });
                     } else {
@@ -3974,7 +3974,7 @@ impl LivePythonPane {
                             .iter()
                             .map(|path| path.display().to_string())
                             .collect();
-                        self.queue_outbound_event(crate::protocol::PlexiEvent::FilePicked {
+                        self.queue_outbound_event(plexi_protocol::PlexiEvent::FilePicked {
                             request_id,
                             paths,
                         });
@@ -3986,7 +3986,7 @@ impl LivePythonPane {
                         self.plugin_id,
                         request_id = guest_text::shown(&request_id)
                     );
-                    self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+                    self.queue_outbound_event(plexi_protocol::PlexiEvent::FilePickCancelled {
                         request_id,
                     });
                 }
@@ -4388,10 +4388,10 @@ impl LivePythonPane {
                                 {
                                     if let Err(error) = self.deliver_control(
                                         answer,
-                                        crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+                                        plexi_protocol::PlexiEvent::DirectedPipeOpenRefused {
                                             request_id,
                                             pipe_id,
-                                            reason: crate::protocol::PipeOpenRefusal::Denied,
+                                            reason: plexi_protocol::PipeOpenRefusal::Denied,
                                         },
                                     ) {
                                         log::warn!(
@@ -4788,7 +4788,7 @@ impl LivePythonPane {
                 "plugin::{}: open_file_picker missing request_id; cancelling",
                 self.plugin_id
             );
-            self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+            self.queue_outbound_event(plexi_protocol::PlexiEvent::FilePickCancelled {
                 request_id,
             });
             return;
@@ -4799,7 +4799,7 @@ impl LivePythonPane {
                 self.plugin_id,
                 request_id = guest_text::shown(&request_id)
             );
-            self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+            self.queue_outbound_event(plexi_protocol::PlexiEvent::FilePickCancelled {
                 request_id,
             });
             return;
@@ -4820,7 +4820,7 @@ impl LivePythonPane {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let mode = match message.get("mode") {
-            None | Some(Value::Null) => crate::protocol::FilePickerMode::default(),
+            None | Some(Value::Null) => plexi_protocol::FilePickerMode::default(),
             Some(value) => match serde_json::from_value(value.clone()) {
                 Ok(mode) => mode,
                 Err(error) => {
@@ -4828,7 +4828,7 @@ impl LivePythonPane {
                         "plugin::{}: open_file_picker {request_id}: invalid mode {value}: {error}; cancelling",
                         self.plugin_id, request_id = guest_text::shown(&request_id), value = guest_text::shown(&value.to_string())
                     );
-                    self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
+                    self.queue_outbound_event(plexi_protocol::PlexiEvent::FilePickCancelled {
                         request_id,
                     });
                     return;
@@ -5539,7 +5539,7 @@ impl LivePythonPane {
         );
         if let Err(error) = self.runtime.send(&json!({
             "type": "init",
-            "protocol": crate::protocol::PROTOCOL_VERSION,
+            "protocol": plexi_protocol::PROTOCOL_VERSION,
             "plugin_id": self.plugin_id,
             "workspace_root": self.config.workspace_root,
             "capabilities": self.config.capabilities,
@@ -5963,13 +5963,13 @@ impl LivePythonPane {
         self.wants_close
     }
 
-    pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+    pub fn queue_outbound_event(&mut self, event: plexi_protocol::PlexiEvent) {
         let _ = self.try_queue_outbound_event(event);
     }
 
     pub(crate) fn try_queue_outbound_event(
         &mut self,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     ) -> Result<(), OutboundEventError> {
         cache_python_theme_for_relaunch(&mut self.config, &event);
         match encode_python_host_event(event) {
@@ -6430,35 +6430,35 @@ impl LivePythonPane {
 }
 
 fn encode_python_host_event(
-    event: crate::protocol::PlexiEvent,
+    event: plexi_protocol::PlexiEvent,
 ) -> Result<Value, serde_json::Error> {
     serde_json::to_value(event)
 }
 
 /// One control event as the stdin line the guest reads.
-fn control_line(event: crate::protocol::PlexiEvent) -> Result<Vec<u8>, String> {
+fn control_line(event: plexi_protocol::PlexiEvent) -> Result<Vec<u8>, String> {
     let mut line = serde_json::to_vec(&encode_python_host_event(event).map_err(|e| e.to_string())?)
         .map_err(|error| error.to_string())?;
     line.push(b'\n');
     Ok(line)
 }
 
-fn control_line_len(event: crate::protocol::PlexiEvent) -> usize {
+fn control_line_len(event: plexi_protocol::PlexiEvent) -> usize {
     control_line(event).map_or(usize::MAX, |line| line.len())
 }
 
 /// Room for the answer to open request `request_id` for `pipe_id`: the
 /// longest `DirectedPipeOpened` or `DirectedPipeOpenRefused` it can get.
 fn answer_room(request_id: &str, pipe_id: &str) -> usize {
-    let opened = control_line_len(crate::protocol::PlexiEvent::DirectedPipeOpened {
+    let opened = control_line_len(plexi_protocol::PlexiEvent::DirectedPipeOpened {
         request_id: request_id.to_string(),
         pipe_id: pipe_id.to_string(),
         generation: u64::MAX,
     });
-    crate::protocol::PipeOpenRefusal::ALL
+    plexi_protocol::PipeOpenRefusal::ALL
         .into_iter()
         .map(|reason| {
-            control_line_len(crate::protocol::PlexiEvent::DirectedPipeOpenRefused {
+            control_line_len(plexi_protocol::PlexiEvent::DirectedPipeOpenRefused {
                 request_id: request_id.to_string(),
                 pipe_id: pipe_id.to_string(),
                 reason,
@@ -6475,10 +6475,10 @@ pub(crate) fn open_room_for_test(request_id: &str, pipe_id: &str) -> usize {
 
 /// Room for the longest `PipeClosed` of a connection named `pipe_id`.
 fn close_room(pipe_id: &str) -> usize {
-    crate::protocol::PipeCloseReason::ALL
+    plexi_protocol::PipeCloseReason::ALL
         .into_iter()
         .map(|reason| {
-            control_line_len(crate::protocol::PlexiEvent::PipeClosed {
+            control_line_len(plexi_protocol::PlexiEvent::PipeClosed {
                 pipe_id: pipe_id.to_string(),
                 generation: u64::MAX,
                 reason,
@@ -6985,7 +6985,7 @@ fn required_capability_for_python_plugin_command(
         ViewCommand::SpawnView { .. } => Some(Capability::SpawnView.as_str()),
         ViewCommand::SpawnPane { .. } => Some(Capability::PanesSpawn.as_str()),
         ViewCommand::ForwardPaneRequest {
-            request: crate::protocol::HostRequest::FocusPane { .. },
+            request: plexi_protocol::HostRequest::FocusPane { .. },
             ..
         } => Some(Capability::PanesControl.as_str()),
         // Raw WASM capability string, not a `Capability` variant (same literal as WIT).
@@ -7211,14 +7211,14 @@ fn plugin_command_from_python_message(
     // its request id; the older name-only shapes are rejected (stint 1681).
     match message_type {
         "pipe_send" | "pipe_open_directed" => {
-            let request = serde_json::from_value::<crate::protocol::HostRequest>(message.clone())
+            let request = serde_json::from_value::<plexi_protocol::HostRequest>(message.clone())
                 .map_err(|error| {
                     format!(
                         "{message_type} needs a connection generation (pipe_send) or a request id (pipe_open_directed): {error}"
                     )
                 })?;
             return match request {
-                crate::protocol::HostRequest::PipeSend {
+                plexi_protocol::HostRequest::PipeSend {
                     generation,
                     payload,
                 } => Ok(Some(ViewCommand::DeliverPipeMessage {
@@ -7227,7 +7227,7 @@ fn plugin_command_from_python_message(
                     payload,
                     emitter: None,
                 })),
-                crate::protocol::HostRequest::PipeOpenDirected {
+                plexi_protocol::HostRequest::PipeOpenDirected {
                     request_id,
                     pipe_id,
                     target_pane_id,
@@ -7273,7 +7273,7 @@ fn plugin_command_from_python_message(
                 .iter()
                 .map(|stream| {
                     let schema_json = stream.get("schema_json")?.as_str()?;
-                    Some(crate::protocol::EventStreamDecl {
+                    Some(plexi_protocol::EventStreamDecl {
                         name: stream.get("name")?.as_str()?.to_string(),
                         schema: serde_json::from_str(schema_json).ok()?,
                         description: stream
@@ -7284,7 +7284,7 @@ fn plugin_command_from_python_message(
                 })
                 .collect::<Option<Vec<_>>>()?;
             Some(ViewCommand::PluginEventRequest {
-                request: crate::protocol::HostRequest::DeclareEventStreams { streams },
+                request: plexi_protocol::HostRequest::DeclareEventStreams { streams },
                 pane_id: None,
             })
         }
@@ -7306,7 +7306,7 @@ fn plugin_command_from_python_message(
                 .transpose()
                 .ok()?;
             Some(ViewCommand::PluginEventRequest {
-                request: crate::protocol::HostRequest::EmitEvent {
+                request: plexi_protocol::HostRequest::EmitEvent {
                     event: text("event"),
                     actor,
                     actor_id: message
@@ -7354,7 +7354,7 @@ fn plugin_command_from_python_message(
             })
         }
         "subscribe_event_streams" => Some(ViewCommand::PluginEventRequest {
-            request: crate::protocol::HostRequest::SubscribePluginEvents {
+            request: plexi_protocol::HostRequest::SubscribePluginEvents {
                 request_id: text("request_id"),
                 plugin_id: text("plugin_id"),
                 event_names: message
@@ -7378,7 +7378,7 @@ fn plugin_command_from_python_message(
             pane_id: None,
         }),
         "unsubscribe_event_streams" => Some(ViewCommand::PluginEventRequest {
-            request: crate::protocol::HostRequest::UnsubscribePluginEvents {
+            request: plexi_protocol::HostRequest::UnsubscribePluginEvents {
                 request_id: text("request_id"),
                 subscription_id: text("subscription_id"),
             },
@@ -7403,7 +7403,7 @@ fn plugin_command_from_python_message(
             emitter: None,
         }),
         "focus_pane" => Some(ViewCommand::ForwardPaneRequest {
-            request: crate::protocol::HostRequest::FocusPane {
+            request: plexi_protocol::HostRequest::FocusPane {
                 pane_id: message
                     .get("pane_id")
                     .and_then(Value::as_u64)
@@ -7415,7 +7415,7 @@ fn plugin_command_from_python_message(
         }),
         "run_update" => Some(ViewCommand::DeliverRunUpdate {
             originator_type_id: text("originator_type_id"),
-            event: crate::protocol::PlexiEvent::Resume,
+            event: plexi_protocol::PlexiEvent::Resume,
         }),
         "show_notification" => Some(ViewCommand::ShowNotification {
             notify_id: text("notify_id"),
@@ -7423,13 +7423,13 @@ fn plugin_command_from_python_message(
             source_context_id: 0,
             title: text("title"),
             body: text("body"),
-            kind: crate::protocol::NotifyKind::Message,
+            kind: plexi_protocol::NotifyKind::Message,
             options: Vec::new(),
             input_prompt: None,
             required: false,
             // The bridge message carries no scope, so it takes the shared
             // default rather than an invented one.
-            scope: crate::protocol::NotifyScope::default(),
+            scope: plexi_protocol::NotifyScope::default(),
             image_inline: None,
             image_pipe_id: None,
             timeout_secs: None,
@@ -7442,7 +7442,7 @@ fn plugin_command_from_python_message(
                 .and_then(Value::as_u64)
                 .unwrap_or_default(),
             path: text("path"),
-            mode: crate::protocol::PathTokenMode::Append,
+            mode: plexi_protocol::PathTokenMode::Append,
         }),
         "command_preview" => Some(ViewCommand::RequestCommandPreview {
             sender_pane_id: 0,
@@ -9261,7 +9261,7 @@ mod tests {
         .expect("message decodes");
         assert!(
             matches!(supported, crate::app::view_trait::ViewCommand::ShowNotification {
-            kind: crate::protocol::NotifyKind::Message, options, image_inline: None, ..
+            kind: plexi_protocol::NotifyKind::Message, options, image_inline: None, ..
         } if options.is_empty())
         );
         let error = match plugin_command_from_python_message("test-plugin", &serde_json::json!({
@@ -9321,7 +9321,7 @@ mod tests {
         let payload = python_init_payload(&config, Some(json!({})), (480.0, 320.0))
             .expect("single-scope seed");
 
-        assert_eq!(payload["protocol"], crate::protocol::PROTOCOL_VERSION);
+        assert_eq!(payload["protocol"], plexi_protocol::PROTOCOL_VERSION);
     }
 
     #[test]
@@ -9332,7 +9332,7 @@ mod tests {
 
         cache_python_theme_for_relaunch(
             &mut config,
-            &crate::protocol::PlexiEvent::Theme {
+            &plexi_protocol::PlexiEvent::Theme {
                 colors: colors.clone(),
             },
         );
@@ -11323,13 +11323,13 @@ mod tests {
 
     #[test]
     fn python_host_event_wire_delivers_cross_runtime_plugin_events() {
-        let wire = encode_python_host_event(crate::protocol::PlexiEvent::PluginEvent {
+        let wire = encode_python_host_event(plexi_protocol::PlexiEvent::PluginEvent {
             subscription_id: "sub-1".to_string(),
             plugin_id: "wasm-counter".to_string(),
             event: "count.changed".to_string(),
             event_id: 7,
             resource_id: "counter-1".to_string(),
-            trigger_mode: crate::protocol::TriggerMode::Conversation,
+            trigger_mode: plexi_protocol::TriggerMode::Conversation,
             summary: Some("Count changed".to_string()),
             payload: Some(json!({"count": 2})),
             state_ref: None,
@@ -11359,7 +11359,7 @@ mod tests {
         assert!(matches!(
             subscribe,
             crate::app::view_trait::ViewCommand::PluginEventRequest {
-                request: crate::protocol::HostRequest::SubscribePluginEvents {
+                request: plexi_protocol::HostRequest::SubscribePluginEvents {
                     request_id,
                     plugin_id,
                     event_names,
@@ -11386,7 +11386,7 @@ mod tests {
         assert!(matches!(
             emit,
             crate::app::view_trait::ViewCommand::PluginEventRequest {
-                request: crate::protocol::HostRequest::EmitEvent {
+                request: plexi_protocol::HostRequest::EmitEvent {
                     event,
                     payload: Some(payload),
                     ..

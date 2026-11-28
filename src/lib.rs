@@ -12,4 +12,3 @@ pub mod release_catalog;
 /// binary target (`mod editor` in main.rs), where the Notes pane consumes it
 /// (stint 0474).
 pub mod editor;
-pub mod protocol;

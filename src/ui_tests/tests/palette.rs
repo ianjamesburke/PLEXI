@@ -259,9 +259,9 @@ fn seed_palette_agent_panes(h: &mut PlexiUiHarness) -> (u64, u64, u64) {
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                agent: Some(crate::protocol::PaneAgentState {
+                agent: Some(plexi_protocol::PaneAgentState {
                     pane_id,
-                    state: crate::protocol::AgentState::Working,
+                    state: plexi_protocol::AgentState::Working,
                     agent: "claude-code".to_string(),
                     detail: None,
                     session_id: None,
@@ -439,7 +439,7 @@ fn screenshot_command_palette_agent_fleet() {
         let agent_pane = |app: &mut crate::app::PlexiApp,
                           pane_name: &str,
                           agent: &str,
-                          state: crate::protocol::AgentState,
+                          state: plexi_protocol::AgentState,
                           detail: Option<&str>| {
             let pane_id = app.host.alloc_pane_id();
             let pane = Pane::View(Box::new(ViewPane {
@@ -456,7 +456,7 @@ fn screenshot_command_palette_agent_fleet() {
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
-                agent: Some(crate::protocol::PaneAgentState {
+                agent: Some(plexi_protocol::PaneAgentState {
                     pane_id,
                     state,
                     agent: agent.to_string(),
@@ -474,7 +474,7 @@ fn screenshot_command_palette_agent_fleet() {
             app,
             "codex",
             "reviewer",
-            crate::protocol::AgentState::Working,
+            plexi_protocol::AgentState::Working,
             Some("Read"),
         );
         let win = &mut app.windows[app.active_window];
@@ -506,13 +506,13 @@ fn screenshot_command_palette_agent_fleet() {
         let mut squad: Vec<(u64, Pane)> = [
             (
                 "claude-code",
-                crate::protocol::AgentState::Working,
+                plexi_protocol::AgentState::Working,
                 Some("Edit"),
             ),
-            ("claude-code", crate::protocol::AgentState::Idle, None),
+            ("claude-code", plexi_protocol::AgentState::Idle, None),
             (
                 "claude-code",
-                crate::protocol::AgentState::Blocked,
+                plexi_protocol::AgentState::Blocked,
                 Some("Bash(just pr-install)"),
             ),
         ]

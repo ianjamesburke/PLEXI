@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::broker::caller::RequestOrigin;
-use crate::protocol::HostRequest;
+use plexi_protocol::HostRequest;
 
 /// How long a `pane new --agent` spawn waits for the agent's first idle
 /// self-report when the caller does not say. Generous on purpose: a cold agent
@@ -266,7 +266,7 @@ impl PaneLaunchSpec {
 mod tests {
     use super::{PaneLaunchSpec, PaneLaunchTarget, DEFAULT_AGENT_BOOT_TIMEOUT};
     use crate::broker::caller::RequestOrigin;
-    use crate::protocol::HostRequest;
+    use plexi_protocol::HostRequest;
 
     fn spawn_pane(type_id: &str, path: Option<&str>, args: &[&str]) -> HostRequest {
         HostRequest::SpawnPane {

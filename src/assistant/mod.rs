@@ -37,7 +37,7 @@ use crate::platform::text;
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ReasoningEffort};
 use crate::plexi_ai::turn_loop::TurnDelta;
 use crate::plexi_ai::CancelToken;
-use crate::protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
+use plexi_protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
 
 /// Owned streaming delta forwarded from the broker worker thread to the UI
 /// thread (`TurnDelta` borrows from the stream buffer and cannot cross the
@@ -5813,7 +5813,7 @@ enabled = ["allowed.tool"]
         let ws = tempfile::tempdir().unwrap();
         let app = test_plugin_with_context(ws.path(), 9200);
         let (tx, _rx) = std::sync::mpsc::channel();
-        let ro_tool = crate::protocol::AiTool {
+        let ro_tool = plexi_protocol::AiTool {
             name: "csv.read_range".to_string(),
             description: "read cells".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
@@ -5821,7 +5821,7 @@ enabled = ["allowed.tool"]
             timeout_ms: Some(2_000),
             read_only: true,
         };
-        let rw_tool = crate::protocol::AiTool {
+        let rw_tool = plexi_protocol::AiTool {
             name: "csv.write_cell".to_string(),
             description: "write a cell".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
@@ -5862,7 +5862,7 @@ enabled = ["allowed.tool"]
             9205,
             tool_dispatch::ViewInstanceKey::detached(),
             "csv".to_string(),
-            vec![crate::protocol::AiTool {
+            vec![plexi_protocol::AiTool {
                 name: "csv.read_range".to_string(),
                 description: "read cells".to_string(),
                 input_schema: serde_json::json!({"type": "object"}),
@@ -5901,7 +5901,7 @@ enabled = ["allowed.tool"]
             9206,
             tool_dispatch::ViewInstanceKey::detached(),
             "csv".to_string(),
-            vec![crate::protocol::AiTool {
+            vec![plexi_protocol::AiTool {
                 name: "csv.read_range".to_string(),
                 description: "read cells".to_string(),
                 input_schema: serde_json::json!({"type": "object"}),
@@ -5937,7 +5937,7 @@ enabled = ["allowed.tool"]
             tool_dispatch::ViewInstanceKey::detached(),
             "csv".to_string(),
             vec![
-                crate::protocol::AiTool {
+                plexi_protocol::AiTool {
                     name: "csv.read_range".to_string(),
                     description: "read cells".to_string(),
                     input_schema: serde_json::json!({"type": "object"}),
@@ -5945,7 +5945,7 @@ enabled = ["allowed.tool"]
                     timeout_ms: None,
                     read_only: true,
                 },
-                crate::protocol::AiTool {
+                plexi_protocol::AiTool {
                     name: "csv.write_cell".to_string(),
                     description: "write a cell".to_string(),
                     input_schema: serde_json::json!({"type": "object"}),
@@ -6007,7 +6007,7 @@ enabled = ["allowed.tool"]
             tool_dispatch::ViewInstanceKey::detached(),
             "csv".to_string(),
             vec![
-                crate::protocol::AiTool {
+                plexi_protocol::AiTool {
                     name: "csv.read_range".to_string(),
                     description: "read cells".to_string(),
                     input_schema: serde_json::json!({"type": "object"}),
@@ -6015,7 +6015,7 @@ enabled = ["allowed.tool"]
                     timeout_ms: None,
                     read_only: true,
                 },
-                crate::protocol::AiTool {
+                plexi_protocol::AiTool {
                     name: "csv.write_cell".to_string(),
                     description: "write a cell".to_string(),
                     input_schema: serde_json::json!({"type": "object"}),
@@ -6220,7 +6220,7 @@ enabled = ["allowed.tool"]
         let (tx, rx) = std::sync::mpsc::channel();
         let tools = tool_names
             .iter()
-            .map(|n| crate::protocol::AiTool {
+            .map(|n| plexi_protocol::AiTool {
                 name: n.to_string(),
                 description: format!("test tool {n}"),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
@@ -6357,7 +6357,7 @@ enabled = ["allowed.tool"]
             pane_id,
             tool_dispatch::ViewInstanceKey::detached(),
             "test-app".to_string(),
-            vec![crate::protocol::AiTool {
+            vec![plexi_protocol::AiTool {
                 name: name.to_string(),
                 description: "probe".to_string(),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
@@ -6858,7 +6858,7 @@ enabled = ["allowed.tool"]
     // ── Phase D3: event subscriptions + delivery bridge ───────────────────────
 
     use crate::host::plugin_timeline::EmittedEvent;
-    use crate::protocol::{EventStreamDecl, PluginEventActor};
+    use plexi_protocol::{EventStreamDecl, PluginEventActor};
 
     /// Matches the `context_id` `test_plugin_with_timeline` constructs its
     /// `AssistantView` with, so the assistant's subscriptions (viewer

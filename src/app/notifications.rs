@@ -42,14 +42,14 @@ pub(crate) struct PendingNotification {
     pub source_window_id: u64,
     pub title: String,
     pub body: String,
-    pub kind: crate::protocol::NotifyKind,
-    pub options: Vec<crate::protocol::NotifyOption>,
+    pub kind: plexi_protocol::NotifyKind,
+    pub options: Vec<plexi_protocol::NotifyOption>,
     pub input_prompt: Option<String>,
     pub required: bool,
     /// Visibility scope. Affects which contexts the notification appears in.
-    pub scope: crate::protocol::NotifyScope,
+    pub scope: plexi_protocol::NotifyScope,
     /// Optional inline image attachment (#74). Accepted and persisted; no surface draws it.
-    pub image_inline: Option<crate::protocol::NotificationImage>,
+    pub image_inline: Option<plexi_protocol::NotificationImage>,
     /// Optional pipe-referenced image attachment (#74). Accepted; no surface draws it.
     #[allow(dead_code)]
     pub image_pipe_id: Option<String>,
@@ -130,11 +130,11 @@ impl Default for PendingNotification {
             source_window_id: 0,
             title: String::new(),
             body: String::new(),
-            kind: crate::protocol::NotifyKind::default(),
+            kind: plexi_protocol::NotifyKind::default(),
             options: vec![],
             input_prompt: None,
             required: false,
-            scope: crate::protocol::NotifyScope::default(),
+            scope: plexi_protocol::NotifyScope::default(),
             image_inline: None,
             image_pipe_id: None,
             response_file: None,
@@ -181,14 +181,14 @@ struct PersistedNotification {
     source_window_id: u64,
     title: String,
     body: String,
-    kind: crate::protocol::NotifyKind,
-    options: Vec<crate::protocol::NotifyOption>,
+    kind: plexi_protocol::NotifyKind,
+    options: Vec<plexi_protocol::NotifyOption>,
     #[serde(default)]
     input_prompt: Option<String>,
     required: bool,
-    scope: crate::protocol::NotifyScope,
+    scope: plexi_protocol::NotifyScope,
     #[serde(default)]
-    image_inline: Option<crate::protocol::NotificationImage>,
+    image_inline: Option<plexi_protocol::NotificationImage>,
     #[serde(default)]
     timeout_secs: Option<u64>,
     #[serde(default)]
@@ -365,16 +365,16 @@ impl NotifySource {
 /// tombstone, or queue state. Callers that need the full visibility answer
 /// combine this with their own checks (see `PlexiApp::notification_is_visible`).
 pub(crate) fn notification_visible(
-    scope: crate::protocol::NotifyScope,
+    scope: plexi_protocol::NotifyScope,
     source_window_id: u64,
     source_context_id: u64,
     active_window_id: u64,
     active_context_id: u64,
 ) -> bool {
     match scope {
-        crate::protocol::NotifyScope::Global => true,
-        crate::protocol::NotifyScope::Window => source_window_id == active_window_id,
-        crate::protocol::NotifyScope::Context => source_context_id == active_context_id,
+        plexi_protocol::NotifyScope::Global => true,
+        plexi_protocol::NotifyScope::Window => source_window_id == active_window_id,
+        plexi_protocol::NotifyScope::Context => source_context_id == active_context_id,
     }
 }
 
@@ -386,13 +386,13 @@ pub(crate) fn notification_visible(
 /// state (badge counts have never consulted `deliver_after` — preserved as
 /// existing behavior, not introduced here).
 pub(crate) fn notification_counts_toward_context(
-    scope: crate::protocol::NotifyScope,
+    scope: plexi_protocol::NotifyScope,
     source_context_id: u64,
     ctx_id: u64,
 ) -> bool {
     matches!(
         scope,
-        crate::protocol::NotifyScope::Window | crate::protocol::NotifyScope::Context
+        plexi_protocol::NotifyScope::Window | plexi_protocol::NotifyScope::Context
     ) && source_context_id == ctx_id
 }
 
@@ -407,7 +407,7 @@ impl PlexiApp {
                 notify_id: new_notify_id("command-refused"),
                 title: format!("Command '{name}' not run"),
                 body: reason.to_string(),
-                scope: crate::protocol::NotifyScope::Global,
+                scope: plexi_protocol::NotifyScope::Global,
                 ..Default::default()
             },
         );
@@ -426,7 +426,7 @@ impl PlexiApp {
                 body: "It was closed another way while the dialog was open. Nothing else \
                        was closed."
                     .to_string(),
-                scope: crate::protocol::NotifyScope::Global,
+                scope: plexi_protocol::NotifyScope::Global,
                 ..Default::default()
             },
         );
@@ -441,7 +441,7 @@ impl PlexiApp {
                 body: "Focus moved to another pane before you confirmed, so nothing was \
                        closed. Close it again from that pane."
                     .to_string(),
-                scope: crate::protocol::NotifyScope::Global,
+                scope: plexi_protocol::NotifyScope::Global,
                 ..Default::default()
             },
         );
@@ -517,7 +517,7 @@ impl PlexiApp {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                 if let Some(app) = pane.as_view_mut() {
                     match app.runtime.try_queue_notify_action(
-                        crate::protocol::PlexiEvent::NotifyAction {
+                        plexi_protocol::PlexiEvent::NotifyAction {
                             notify_id,
                             action_label,
                             value,
@@ -558,20 +558,20 @@ impl PlexiApp {
     pub(crate) fn resolve_plugin_notification_provenance(
         &self,
         sender_pane_id: u64,
-        scope: crate::protocol::NotifyScope,
-    ) -> (crate::protocol::NotifyScope, u64) {
+        scope: plexi_protocol::NotifyScope,
+    ) -> (plexi_protocol::NotifyScope, u64) {
         if let Some((window_index, _)) = (sender_pane_id != 0)
             .then(|| self.find_pane_in_any_window(sender_pane_id))
             .flatten()
         {
             return (scope, self.windows[window_index].window_id);
         }
-        if scope == crate::protocol::NotifyScope::Window {
+        if scope == plexi_protocol::NotifyScope::Window {
             log::info!(
                 "notify: plugin sender pane_id={} has no live window — narrowing window scope to context",
                 sender_pane_id
             );
-            return (crate::protocol::NotifyScope::Context, 0);
+            return (plexi_protocol::NotifyScope::Context, 0);
         }
         (scope, 0)
     }
@@ -747,7 +747,7 @@ impl PlexiApp {
     /// than ordinary review. Choice and input notifications always need a path
     /// back to their producer; a required message is an explicit prompt too.
     pub(crate) fn notification_requires_response(n: &PendingNotification) -> bool {
-        n.required || !matches!(n.kind, crate::protocol::NotifyKind::Message)
+        n.required || !matches!(n.kind, plexi_protocol::NotifyKind::Message)
     }
 
     /// The one decision-interruption policy for a notification. Informational
@@ -864,12 +864,12 @@ impl PlexiApp {
         // the user can no longer navigate to. They remain tombstoned and have
         // no sender/action route (restoration clears sender_pane_id).
         let origin_exists = match n.scope {
-            crate::protocol::NotifyScope::Global => true,
-            crate::protocol::NotifyScope::Window => self
+            plexi_protocol::NotifyScope::Global => true,
+            plexi_protocol::NotifyScope::Window => self
                 .windows
                 .iter()
                 .any(|window| window.window_id == n.source_window_id),
-            crate::protocol::NotifyScope::Context => self
+            plexi_protocol::NotifyScope::Context => self
                 .router
                 .iter()
                 .any(|context| context.context_id == n.source_context_id),
@@ -1027,7 +1027,7 @@ impl PlexiApp {
         for n in &mut self.pending_notifications {
             if n.sender_pane_id == pane_id {
                 n.tombstoned = true;
-                if !matches!(n.kind, crate::protocol::NotifyKind::Message) {
+                if !matches!(n.kind, plexi_protocol::NotifyKind::Message) {
                     ended.push(n.clone());
                 }
                 log::info!(
@@ -1037,7 +1037,7 @@ impl PlexiApp {
             }
         }
         self.pending_notifications.retain(|n| {
-            n.sender_pane_id != pane_id || matches!(n.kind, crate::protocol::NotifyKind::Message)
+            n.sender_pane_id != pane_id || matches!(n.kind, plexi_protocol::NotifyKind::Message)
         });
         for n in ended {
             self.deliver_notify_action(
@@ -1130,7 +1130,7 @@ impl PlexiApp {
             .iter()
             .filter(|n| {
                 !n.required
-                    && matches!(n.kind, crate::protocol::NotifyKind::Message)
+                    && matches!(n.kind, plexi_protocol::NotifyKind::Message)
                     && n.sender_pane_id == focused_id
             })
             .map(|n| n.notify_id.clone())
