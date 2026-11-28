@@ -5,8 +5,7 @@
 //! dispatch time; plugins never see the key.
 //!
 //! The SSE streaming worker (`stream_openai_compatible`) speaks the plain
-//! OpenAI chat-completions protocol against any endpoint URL — the `local`
-//! backend (`super::local`) reuses it against a configurable base URL.
+//! OpenAI chat-completions protocol against the endpoint URL it is given.
 //!
 //! **System prompt format:** OpenRouter uses the OpenAI message format.
 //! The system prompt is injected as a leading `{"role":"system","content":"…"}`
@@ -119,14 +118,10 @@ fn observe_chunk_usage(
 }
 
 /// Ask the provider to attach usage. `stream_options.include_usage` is the
-/// OpenAI form (safe for strict local servers). `usage.include` is the
-/// OpenRouter form; local servers reject unknown properties, so it is sent
-/// only on the OpenRouter path.
-fn apply_usage_request(body: &mut serde_json::Value, openrouter: bool) {
+/// OpenAI form. `usage.include` is the OpenRouter form.
+fn apply_usage_request(body: &mut serde_json::Value) {
     body["stream_options"] = serde_json::json!({ "include_usage": true });
-    if openrouter {
-        body["usage"] = serde_json::json!({ "include": true });
-    }
+    body["usage"] = serde_json::json!({ "include": true });
 }
 
 /// OpenRouter streaming backend.
@@ -162,7 +157,7 @@ impl AiBackend for OpenRouterBackend {
         thread::Builder::new()
             .name("plexi-ai-openrouter".to_string())
             .spawn(move || {
-                stream_openai_compatible(&endpoint, Some(api_key), model, true, request, tx);
+                stream_openai_compatible(&endpoint, api_key, model, request, tx);
             })
             .map_err(|e| {
                 AiBackendError::Io(format!("failed to spawn OpenRouter stream thread: {e}"))
@@ -268,28 +263,19 @@ fn is_json_completion(content_type: &str) -> bool {
     content_type.contains("application/json") && !content_type.contains("event-stream")
 }
 
-/// `Authorization` header value for an OpenAI-compatible request — present
-/// only when an API key is configured (local proxies may accept
-/// unauthenticated requests).
-fn authorization_header(api_key: Option<&str>) -> Option<String> {
-    api_key.map(|key| format!("Bearer {key}"))
+/// `Authorization` header value for an OpenAI-compatible request.
+fn authorization_header(api_key: &str) -> String {
+    format!("Bearer {api_key}")
 }
 
 /// Worker: streams a turn from any OpenAI-compatible chat-completions SSE
 /// endpoint and delivers events to `tx`. OpenRouter passes its canonical
-/// endpoint and required key; the `local` backend passes `{base_url}/v1/…`
-/// and an optional key. The `X-Generation-Id` capture is OpenRouter-specific
+/// endpoint and required key. The `X-Generation-Id` capture is OpenRouter-specific
 /// — other endpoints simply omit the header and `Done.generation_id` is None.
-///
-/// `openrouter_reasoning` gates the nonstandard `reasoning` body field
-/// (OpenRouter's extension for reasoning-effort control): strict
-/// OpenAI-compatible servers reject unknown request properties, so the
-/// `local` backend passes `false`.
-pub(super) fn stream_openai_compatible(
+fn stream_openai_compatible(
     endpoint: &str,
-    api_key: Option<String>,
+    api_key: String,
     model: String,
-    openrouter_reasoning: bool,
     request: AiBackendRequest,
     tx: mpsc::Sender<StreamEvent>,
 ) {
@@ -315,9 +301,8 @@ pub(super) fn stream_openai_compatible(
         "stream": true,
     });
     // Usage is omitted from a stream unless reporting is requested, and then
-    // only on the final chunk. Both flag shapes are sent on OpenRouter;
-    // `usage.include` stays off the local path (unknown properties are rejected).
-    apply_usage_request(&mut body, openrouter_reasoning);
+    // only on the final chunk. Both flag shapes are sent on OpenRouter.
+    apply_usage_request(&mut body);
 
     // Inject tools when present.
     if !request.tools.is_empty() {
@@ -338,9 +323,7 @@ pub(super) fn stream_openai_compatible(
         body["tools"] = serde_json::Value::Array(tools_json);
     }
 
-    if openrouter_reasoning {
-        apply_reasoning_config(&mut body, request.model_tier, request.reasoning_effort);
-    }
+    apply_reasoning_config(&mut body, request.model_tier, request.reasoning_effort);
 
     let body_str = match serde_json::to_string(&body) {
         Ok(s) => s,
@@ -358,15 +341,13 @@ pub(super) fn stream_openai_compatible(
         .timeout(std::time::Duration::from_secs(90))
         .build();
 
-    let mut req = agent
+    let resp = agent
         .post(endpoint)
         .set("Content-Type", "application/json")
         .set("HTTP-Referer", "https://plexiapp.com")
-        .set("X-Title", "Plexi");
-    if let Some(auth) = authorization_header(api_key.as_deref()) {
-        req = req.set("Authorization", &auth);
-    }
-    let resp = req.send_string(&body_str);
+        .set("X-Title", "Plexi")
+        .set("Authorization", &authorization_header(&api_key))
+        .send_string(&body_str);
 
     let resp = match resp {
         Ok(r) => r,
@@ -739,15 +720,9 @@ mod tests {
         assert_eq!(tool_msg["name"], serde_json::json!("host_build_run"));
     }
 
-    /// Auth header is present only when an API key is configured — the local
-    /// backend passes `None` for unauthenticated proxies (e.g. Meridian).
     #[test]
     fn authorization_header_present_only_with_key() {
-        assert_eq!(
-            authorization_header(Some("sk-test")).as_deref(),
-            Some("Bearer sk-test")
-        );
-        assert_eq!(authorization_header(None), None);
+        assert_eq!(authorization_header("sk-test"), "Bearer sk-test");
     }
 
     #[test]
@@ -1107,27 +1082,16 @@ mod tests {
     }
 
     /// OpenRouter needs `usage.include` (and still accepts the OpenAI
-    /// `stream_options` flag). Local servers only get the OpenAI flag.
+    /// `stream_options` flag).
     #[test]
     fn usage_request_flags_match_the_endpoint() {
         let mut openrouter = serde_json::json!({"model": "xiaomi/mimo-v2.5", "stream": true});
-        apply_usage_request(&mut openrouter, true);
+        apply_usage_request(&mut openrouter);
         assert_eq!(
             openrouter["stream_options"]["include_usage"],
             serde_json::json!(true)
         );
         assert_eq!(openrouter["usage"]["include"], serde_json::json!(true));
-
-        let mut local = serde_json::json!({"model": "local", "stream": true});
-        apply_usage_request(&mut local, false);
-        assert_eq!(
-            local["stream_options"]["include_usage"],
-            serde_json::json!(true)
-        );
-        assert!(
-            local.get("usage").is_none(),
-            "local servers must not see the OpenRouter usage flag"
-        );
     }
 
     #[test]

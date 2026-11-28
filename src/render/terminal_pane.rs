@@ -355,8 +355,8 @@ pub fn render(
 /// Recorded geometry from the most recent `render_name_bar_and_tabs` pass for a
 /// terminal pane, used by UI tests to assert that the elided tab/name label and
 /// the outside-workspace badge never intersect.
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct TerminalTabBarLayout {
     pub label_rect: Option<egui::Rect>,
     pub elided_label: Option<String>,
@@ -477,7 +477,6 @@ pub(crate) fn render_name_bar_and_tabs(
             .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
         layout.record_slots(&mut capture);
-        let outside_badge_rect = layout.outside;
         let tabs_right = layout.text.right().max(bar_rect.left());
         let tabs_bar_rect = egui::Rect::from_min_max(
             bar_rect.min,
@@ -488,8 +487,11 @@ pub(crate) fn render_name_bar_and_tabs(
         let tab_width = tabs_bar_rect.width() / tab_count as f32;
         let font = egui::FontId::proportional(name_font_size);
         let mut elided_tab_labels = HashMap::with_capacity(group.members.len());
-        let mut active_label_rect = None;
-        let mut active_elided_label = None;
+        #[cfg(test)]
+        let mut recorded = TerminalTabBarLayout {
+            outside_workspace_badge_rect: layout.outside(),
+            ..Default::default()
+        };
 
         for (idx, &member_id) in group.members.iter().enumerate() {
             let tab_rect = egui::Rect::from_min_size(
@@ -517,13 +519,16 @@ pub(crate) fn render_name_bar_and_tabs(
             );
             capture.text_slot(format!("tab-{member_id}"), &galley, egui::Rect::from_min_max(egui::pos2(content_left, tab_rect.top()), tab_rect.max));
             let elided_str = galley.job.text.clone();
-            if idx == group.active_idx {
-                let text_pos = egui::pos2(
-                    content_left + (tab_rect.right() - content_left) / 2.0 - galley.size().x / 2.0,
-                    tab_rect.center().y - galley.size().y / 2.0,
-                );
-                active_label_rect = Some(egui::Rect::from_min_size(text_pos, galley.size()));
-                active_elided_label = Some(elided_str.clone());
+            #[cfg(test)]
+            {
+                if idx == group.active_idx {
+                    let text_pos = egui::pos2(
+                        content_left + (tab_rect.right() - content_left) / 2.0 - galley.size().x / 2.0,
+                        tab_rect.center().y - galley.size().y / 2.0,
+                    );
+                    recorded.label_rect = Some(egui::Rect::from_min_size(text_pos, galley.size()));
+                    recorded.elided_label = Some(elided_str.clone());
+                }
             }
             elided_tab_labels.insert(member_id, elided_str);
         }
@@ -547,15 +552,9 @@ pub(crate) fn render_name_bar_and_tabs(
         layout.paint(ui, &labels, *pane_id, colors.pane_header_bg());
 
         capture.finish(ui.painter(), bar_rect, colors.pane_header_bg(), vec![], vec![]);
+        #[cfg(test)]
         ui.ctx().data_mut(|d| {
-            d.insert_temp(
-                egui::Id::new(("terminal_tab_bar_layout", *pane_id)),
-                TerminalTabBarLayout {
-                    label_rect: active_label_rect,
-                    elided_label: active_elided_label,
-                    outside_workspace_badge_rect: outside_badge_rect,
-                },
-            );
+            d.insert_temp(egui::Id::new(("terminal_tab_bar_layout", *pane_id)), recorded);
         });
     } else if has_name
         || outside_workspace
@@ -599,7 +598,6 @@ pub(crate) fn render_name_bar_and_tabs(
         }
 
         layout.record_slots(&mut capture);
-        let outside_badge_rect = layout.outside;
         layout.paint(ui, &labels, *pane_id, colors.pane_header_bg().blend(escalation_col.map(|c| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 28)).unwrap_or(egui::Color32::TRANSPARENT)));
 
         let title_text = if has_name {
@@ -618,8 +616,11 @@ pub(crate) fn render_name_bar_and_tabs(
         } else {
             None
         };
-        let mut active_label_rect = None;
-        let mut active_elided_label = None;
+        #[cfg(test)]
+        let mut recorded = TerminalTabBarLayout {
+            outside_workspace_badge_rect: layout.outside(),
+            ..Default::default()
+        };
         if let Some(name) = title_text {
             let left_edge = layout.text.left();
             let avail_width = layout.text.width();
@@ -645,24 +646,22 @@ pub(crate) fn render_name_bar_and_tabs(
                     left_edge + (avail_width - galley.size().x).max(0.0) / 2.0,
                     bar_rect.center().y - galley.size().y / 2.0,
                 );
-                active_label_rect = Some(egui::Rect::from_min_size(text_pos, galley.size()));
-                active_elided_label = Some(galley.job.text.clone());
+                #[cfg(test)]
+                {
+                    recorded.label_rect = Some(egui::Rect::from_min_size(text_pos, galley.size()));
+                    recorded.elided_label = Some(galley.job.text.clone());
+                }
                 crate::ui::snap::galley_snapped(ui.painter(), text_pos, galley, title_col);
             }
         }
 
         capture.finish(ui.painter(), bar_rect, colors.pane_header_bg(), vec![], vec![]);
+        #[cfg(test)]
         ui.ctx().data_mut(|d| {
-            d.insert_temp(
-                egui::Id::new(("terminal_tab_bar_layout", *pane_id)),
-                TerminalTabBarLayout {
-                    label_rect: active_label_rect,
-                    elided_label: active_elided_label,
-                    outside_workspace_badge_rect: outside_badge_rect,
-                },
-            );
+            d.insert_temp(egui::Id::new(("terminal_tab_bar_layout", *pane_id)), recorded);
         });
     } else {
+        #[cfg(test)]
         ui.ctx().data_mut(|d| {
             d.remove_temp::<TerminalTabBarLayout>(egui::Id::new((
                 "terminal_tab_bar_layout",

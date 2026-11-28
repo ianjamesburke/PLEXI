@@ -38,7 +38,6 @@ pub(crate) mod launch_plan;
 pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;
-pub(crate) mod notification_image;
 mod notifications;
 pub mod package;
 pub mod packs;
@@ -80,7 +79,6 @@ pub(crate) use focus::{
 };
 #[cfg(test)]
 pub(crate) use focus::{ContextCloseItem, FocusLogOutcome};
-pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
 pub(crate) use notifications::save_pending_notifications_to;
 pub(crate) use notifications::{load_pending_notifications_from, PendingNotification};
@@ -400,19 +398,7 @@ pub struct PlexiApp {
     /// The invariant: **the currently-displayed notification is pinned by
     /// id**. New notifications arriving never change this, so the user can
     /// never be yanked to a different notification without their input.
-    /// Cmd+] / Cmd+[ move this id across the ordered queue.
     pub(crate) current_notify_id: Option<String>,
-    /// Focused option index for `kind = "choice"` notifications (0-based).
-    /// Reset to 0 whenever the front of the queue changes.
-    #[allow(dead_code)]
-    pub(crate) modal_focused_option: usize,
-    /// Buffer for `kind = "input"` notifications.
-    #[allow(dead_code)]
-    pub(crate) modal_input_buffer: String,
-    /// Input drafts keyed by notification id. Later and queue cycling are
-    /// non-terminal, so they must not discard text the user already entered.
-    #[allow(dead_code)]
-    pub(crate) notification_input_drafts: HashMap<String, String>,
     /// Text being composed in the quick note modal.
     pub(crate) quick_note_text: String,
     /// Local images staged by the QuickNote modal. They are copied into the
@@ -467,18 +453,6 @@ pub struct PlexiApp {
     pub(crate) notes_picker_shown_paths: Vec<std::path::PathBuf>,
     /// Persisted index loaded at most once per process.
     pub(crate) notes_index_loaded: bool,
-    /// notify_id of the notification the modal currently has state for. Used to
-    /// detect a front-of-queue change and reset focus/input buffer.
-    #[allow(dead_code)]
-    pub(crate) modal_state_notify_id: String,
-    /// Lazily-decoded image-render state for notifications that carry an
-    /// `image_inline` or `image_pipe_id` attachment (#74). Keyed by
-    /// `notify_id`. Populated on first render of the notification; entries
-    /// are NOT explicitly evicted on dismiss — egui's TextureHandle drop
-    /// cleanup, plus the small upper bound on concurrent visible
-    /// notifications, makes this acceptable. A future PR can add eviction
-    /// if memory becomes a concern.
-    pub(crate) notification_images: HashMap<String, NotificationImageState>,
     /// Cached from `[notifications]` config. See NotificationsConfig for semantics.
     pub(crate) notifications_enabled: bool,
     pub(crate) notifications_focus_mode: bool,
@@ -511,11 +485,6 @@ pub struct PlexiApp {
     /// the history-driven focus change as a new history entry.
     pub(crate) navigating_history: bool,
     pub(crate) host: crate::host::model::HostModel,
-    /// Parked background WASM plugin runtimes — kept alive when their pane is closed.
-    /// Keyed by plugin type_id. Value is `(park_context_id, plugin)` where
-    /// `park_context_id` is the context_id the plugin was running in when its
-    /// pane was closed. Used to route notifications to the correct context.
-    pub(crate) background_apps: HashMap<String, (u64, Box<dyn crate::app::view_trait::View>)>,
     /// Directed inter-plugin pipes (#286): the sole JSON-pipe delivery path,
     /// an exclusive duplex channel between two view instances; resource-scoped
     /// fan-out belongs on the event bus. Each accepted open is a connection
@@ -2003,9 +1972,6 @@ impl PlexiApp {
                         &profile_dir.join("notifications.json"),
                     ),
                     current_notify_id: None,
-                    modal_focused_option: 0,
-                    modal_input_buffer: String::new(),
-                    notification_input_drafts: HashMap::new(),
                     quick_note_text: String::new(),
                     quick_note_attachments: Vec::new(),
                     quick_note_image_cache: crate::editor::widget::ImageCache::default(),
@@ -2031,8 +1997,6 @@ impl PlexiApp {
                     notes_index_rerun: false,
                     notes_picker_shown_paths: Vec::new(),
                     notes_index_loaded: false,
-                    modal_state_notify_id: String::new(),
-                    notification_images: HashMap::new(),
                     notifications_enabled,
                     notifications_focus_mode,
                     notifications_sound,
@@ -2048,7 +2012,6 @@ impl PlexiApp {
                     last_notify_poll: std::time::Instant::now(),
                     scheduler: crate::host::scheduler::Scheduler::new(),
                     host,
-                    background_apps: HashMap::new(),
                     directed_pipes: Default::default(),
                     hot_reload: hr_watcher,
                     hot_reload_rx: hr_rx,
@@ -2306,9 +2269,6 @@ impl PlexiApp {
                 &crate::config::config_dir().join("notifications.json"),
             ),
             current_notify_id: None,
-            modal_focused_option: 0,
-            modal_input_buffer: String::new(),
-            notification_input_drafts: HashMap::new(),
             quick_note_text: String::new(),
             quick_note_attachments: Vec::new(),
             quick_note_image_cache: crate::editor::widget::ImageCache::default(),
@@ -2334,8 +2294,6 @@ impl PlexiApp {
             notes_index_rerun: false,
             notes_picker_shown_paths: Vec::new(),
             notes_index_loaded: false,
-            modal_state_notify_id: String::new(),
-            notification_images: HashMap::new(),
             notifications_enabled,
             notifications_focus_mode,
             notifications_sound,
@@ -2351,7 +2309,6 @@ impl PlexiApp {
             last_notify_poll: std::time::Instant::now(),
             scheduler: crate::host::scheduler::Scheduler::new(),
             host: crate::host::model::HostModel::new(),
-            background_apps: HashMap::new(),
             directed_pipes: Default::default(),
             hot_reload: hr_watcher,
             hot_reload_rx: hr_rx,
@@ -3282,9 +3239,6 @@ impl PlexiApp {
             },
             pending_notifications: Vec::new(),
             current_notify_id: None,
-            modal_focused_option: 0,
-            modal_input_buffer: String::new(),
-            notification_input_drafts: HashMap::new(),
             quick_note_text: String::new(),
             quick_note_attachments: Vec::new(),
             quick_note_image_cache: crate::editor::widget::ImageCache::default(),
@@ -3310,8 +3264,6 @@ impl PlexiApp {
             notes_index_rerun: false,
             notes_picker_shown_paths: Vec::new(),
             notes_index_loaded: false,
-            modal_state_notify_id: String::new(),
-            notification_images: HashMap::new(),
             notifications_enabled: false,
             notifications_focus_mode: false,
             notifications_sound: None,
@@ -3325,7 +3277,6 @@ impl PlexiApp {
             pane_focus_future: Vec::new(),
             navigating_history: false,
             host: crate::host::model::HostModel::new(),
-            background_apps: HashMap::new(),
             directed_pipes: Default::default(),
             hot_reload: hr_watcher,
             hot_reload_rx: hr_rx,
@@ -5745,49 +5696,6 @@ fn key_str_to_pty_bytes(key: &str) -> Result<Vec<u8>, String> {
     prefixed.push(0x1b);
     prefixed.extend_from_slice(&bytes);
     Ok(prefixed)
-}
-
-/// Parse a key string into a (key_name, Modifiers) pair for PGAP view panes.
-#[cfg(test)]
-fn parse_key_str_to_event(key: &str) -> (String, crate::protocol::Modifiers) {
-    let mut parts: Vec<&str> = key.split('+').collect();
-    let key_part = parts.pop().unwrap_or(key);
-    let mut modifiers = crate::protocol::Modifiers::default();
-    for m in &parts {
-        match m.to_lowercase().as_str() {
-            "ctrl" | "control" => modifiers.ctrl = true,
-            "shift" => modifiers.shift = true,
-            "alt" => modifiers.alt = true,
-            "cmd" | "command" | "meta" => modifiers.cmd = true,
-            _ => {}
-        }
-    }
-    let key_str = match key_part.to_lowercase().as_str() {
-        "enter" | "return" => "return".to_string(),
-        "escape" | "esc" => "escape".to_string(),
-        "space" => "space".to_string(),
-        "backspace" => "backspace".to_string(),
-        "tab" => "tab".to_string(),
-        "up" | "arrowup" => "up".to_string(),
-        "down" | "arrowdown" => "down".to_string(),
-        "right" | "arrowright" => "right".to_string(),
-        "left" | "arrowleft" => "left".to_string(),
-        "plus" => "plus".to_string(),
-        "equals" => "equals".to_string(),
-        "minus" => "minus".to_string(),
-        "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" | "f12" => {
-            key_part.to_lowercase()
-        }
-        _ => {
-            // SDK KeyEvent.key is lowercase for view panes.
-            if key_part.chars().count() == 1 {
-                key_part.to_lowercase()
-            } else {
-                key_part.to_lowercase()
-            }
-        }
-    };
-    (key_str, modifiers)
 }
 
 /// Translate a key string (same vocabulary as `key_str_to_pty_bytes`) into a

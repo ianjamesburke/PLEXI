@@ -944,29 +944,6 @@ fn set_aside_notice_is_delivered_when_the_live_queue_is_full() {
     );
 }
 
-#[test]
-fn notification_removal_prunes_image_cache() {
-    let mut h = HostHarness::new();
-    for index in 0..8 {
-        let notify_id = format!("attachment-{index}");
-        h.app.pending_notifications.push(PendingNotification {
-            notify_id: notify_id.clone(),
-            dismiss_owner_pane_id: 41,
-            ..Default::default()
-        });
-        h.app.notification_images.insert(
-            notify_id.clone(),
-            crate::app::NotificationImageState::Placeholder {
-                reason: "test attachment".into(),
-            },
-        );
-        h.app
-            .dismiss_notification_from_sender(&notify_id, 41)
-            .expect("owner may dismiss its own notification");
-        assert!(h.app.notification_images.is_empty());
-    }
-}
-
 /// Informational arrivals never take keyboard focus; decisions queue into the Attention Queue.
 #[test]
 fn enqueue_notification_only_interrupts_for_decisions() {

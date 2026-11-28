@@ -42,7 +42,6 @@ enum PaletteEntry {
         id: String,
         name: String,
         description: String,
-        running_in_background: bool,
         is_workspace_local: bool,
         search_text: String,
     },
@@ -402,13 +401,12 @@ impl PaletteEntry {
             PaletteEntry::View {
                 name,
                 description,
-                running_in_background,
                 is_workspace_local,
                 ..
             } => (
                 name,
                 description,
-                plugin_metadata_chips(running_in_background, is_workspace_local).to_vec(),
+                plugin_metadata_chips(is_workspace_local).to_vec(),
             ),
             PaletteEntry::Note { title, preview, .. } => (title, preview, vec!["text"]),
             PaletteEntry::UpdateReady { version, .. } => (
@@ -529,15 +527,10 @@ fn palette_command_matches(query: &str) -> Vec<PaletteCommand> {
 }
 
 
-pub(crate) fn plugin_metadata_chips(
-    running_in_background: bool,
-    is_workspace_local: bool,
-) -> &'static [&'static str] {
-    match (running_in_background, is_workspace_local) {
-        (false, false) => &["view"],
-        (true, false) => &["view", "bg"],
-        (false, true) => &["view", "ws"],
-        (true, true) => &["view", "bg", "ws"],
+pub(crate) fn plugin_metadata_chips(is_workspace_local: bool) -> &'static [&'static str] {
+    match is_workspace_local {
+        false => &["view"],
+        true => &["view", "ws"],
     }
 }
 
@@ -1225,12 +1218,10 @@ impl PlexiApp {
             .collect();
 
         for (id, name, description, is_workspace_local, search_text) in plugin_entries {
-            let running_in_background = self.background_apps.contains_key(&id);
             entries.push(PaletteEntry::View {
                 id,
                 name,
                 description,
-                running_in_background,
                 is_workspace_local,
                 search_text,
             });
@@ -2728,7 +2719,7 @@ impl PlexiApp {
             return;
         }
         match command {
-            PaletteCommand::UiUpcycle(binary) => match crate::cli::registry::lookup(binary, None) {
+            PaletteCommand::UiUpcycle(binary) => match crate::cli::registry::lookup(binary) {
                 Ok(descriptor) => {
                     let root = invocation
                         .commands_workspace
@@ -4205,9 +4196,8 @@ mod tests {
 
     #[test]
     fn plugin_metadata_chips_add_workspace_scope_without_secondary_text() {
-        assert_eq!(plugin_metadata_chips(false, false), &["view"]);
-        assert_eq!(plugin_metadata_chips(false, true), &["view", "ws"]);
-        assert_eq!(plugin_metadata_chips(true, true), &["view", "bg", "ws"]);
+        assert_eq!(plugin_metadata_chips(false), &["view"]);
+        assert_eq!(plugin_metadata_chips(true), &["view", "ws"]);
     }
 
     #[test]
@@ -4602,7 +4592,6 @@ mod tests {
                 id: "balls".to_string(),
                 name: "Balls".to_string(),
                 description: "Demo".to_string(),
-                running_in_background: false,
                 is_workspace_local: false,
                 search_text: "balls demo".to_string(),
             },
@@ -4662,7 +4651,6 @@ mod tests {
                 id: "balls".to_string(),
                 name: "Balls".to_string(),
                 description: "Demo".to_string(),
-                running_in_background: false,
                 is_workspace_local: false,
                 search_text: "balls demo".to_string(),
             },
@@ -4702,7 +4690,6 @@ mod tests {
             id: "balls".to_string(),
             name: "Balls".to_string(),
             description: "Demo".to_string(),
-            running_in_background: false,
             is_workspace_local: false,
             search_text: "balls demo".to_string(),
         }];
@@ -4807,7 +4794,6 @@ mod tests {
             id: "todo".to_string(),
             name: "Todo".to_string(),
             description: description.to_string(),
-            running_in_background: false,
             is_workspace_local: false,
             search_text: searchable_text(&["Todo", "todo", description]),
         }
@@ -4867,7 +4853,6 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             description: "Demo".to_string(),
-            running_in_background: false,
             is_workspace_local: false,
             search_text: search_text.to_string(),
         };
@@ -4916,7 +4901,6 @@ mod tests {
                 id: "changelog".to_string(),
                 name: "Changelog".to_string(),
                 description: "Demo".to_string(),
-                running_in_background: false,
                 is_workspace_local: false,
                 search_text: "changelog".to_string(),
             },
@@ -4971,7 +4955,6 @@ mod tests {
                 id: "balls".to_string(),
                 name: "Balls".to_string(),
                 description: "Demo".to_string(),
-                running_in_background: false,
                 is_workspace_local: false,
                 search_text: "balls demo".to_string(),
             },
@@ -4992,7 +4975,6 @@ mod tests {
                 id: "fastest".to_string(),
                 name: "Fastest".to_string(),
                 description: "Demo".to_string(),
-                running_in_background: false,
                 is_workspace_local: false,
                 search_text: "fastest demo loader".to_string(),
             },

@@ -1202,10 +1202,6 @@ impl PlexiApp {
                 }
             }
         }
-        for (_, app) in self.background_apps.values_mut() {
-            app.queue_outbound_event(event.clone());
-            delivered += 1;
-        }
         log::info!("theme: broadcast Theme event to {delivered} running plugins");
     }
 

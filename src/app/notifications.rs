@@ -48,15 +48,9 @@ pub(crate) struct PendingNotification {
     pub required: bool,
     /// Visibility scope. Affects which contexts the notification appears in.
     pub scope: crate::protocol::NotifyScope,
-    /// Optional inline image attachment (#74). Decoded lazily on first
-    /// render; oversized payloads (> 50 KB decoded) surface a placeholder
-    /// instead of decoding. The decoded texture is cached separately on
-    /// `PlexiApp::notification_images` keyed by `notify_id` — this struct
-    /// stays Clone-cheap (no GPU handles inside it).
+    /// Optional inline image attachment (#74). Accepted and persisted; no surface draws it.
     pub image_inline: Option<crate::protocol::NotificationImage>,
-    /// Optional pipe-referenced image attachment (#74). The host drains the
-    /// matching binary ring on first render and caches the texture under
-    /// `PlexiApp::notification_images`.
+    /// Optional pipe-referenced image attachment (#74). Accepted; no surface draws it.
     #[allow(dead_code)]
     pub image_pipe_id: Option<String>,
     /// Path to a file the CLI polls for the chosen key. Set when the
@@ -826,7 +820,6 @@ impl PlexiApp {
 
     /// Persist current pending notifications to `config_dir()/notifications.json`.
     pub(crate) fn save_notifications(&mut self) {
-        self.prune_notification_images();
         save_pending_notifications_to(
             &self.pending_notifications,
             &crate::config::config_dir().join("notifications.json"),
@@ -834,30 +827,10 @@ impl PlexiApp {
     }
 
     pub(crate) fn try_save_notifications(&mut self) -> Result<(), String> {
-        self.prune_notification_images();
         try_save_pending_notifications_to(
             &self.pending_notifications,
             &crate::config::config_dir().join("notifications.json"),
         )
-    }
-
-    /// Drop decoded image state as soon as its notification leaves the live
-    /// queue. `TextureHandle` release is not enough on its own: the cache map
-    /// owned the handle, so a removal path that forgot this cleanup retained
-    /// every attachment for the rest of the host session.
-    fn prune_notification_images(&mut self) {
-        let queued_ids: std::collections::HashSet<&str> = self
-            .pending_notifications
-            .iter()
-            .map(|notification| notification.notify_id.as_str())
-            .collect();
-        let before = self.notification_images.len();
-        self.notification_images
-            .retain(|notify_id, _| queued_ids.contains(notify_id.as_str()));
-        let removed = before - self.notification_images.len();
-        if removed > 0 {
-            log::info!("notify:image-cache: pruned {removed} detached image(s)");
-        }
     }
 
     // ── Notification-queue helpers ──────────────────────────────────────────
@@ -948,7 +921,7 @@ impl PlexiApp {
     /// Revalidate the pinned queue id whenever the modal is about to render.
     /// A context/window switch can leave a still-existing id outside the
     /// current visibility scope; existence alone is not a valid selection.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn revalidate_notification_selection(&mut self) {
         let current_is_visible = self.current_notify_id.as_ref().is_some_and(|id| {
             self.pending_notifications
@@ -959,45 +932,6 @@ impl PlexiApp {
         if !current_is_visible {
             self.current_notify_id = self.select_next_notification();
         }
-    }
-
-    /// (1-based position-in-sort-order, total visible len) for the current
-    /// notify id, or `None` when modal is empty / current id is missing from
-    /// visible queue. Renderer uses this for the "X of N" indicator.
-    #[allow(dead_code)]
-    pub(crate) fn position_of_current(&self) -> Option<(usize, usize)> {
-        let current = self.current_notify_id.as_ref()?;
-        let sorted = self.sorted_notification_ids();
-        let pos = sorted.iter().position(|id| id == current)?;
-        Some((pos + 1, sorted.len()))
-    }
-
-    /// Move `current_notify_id` forward (`direction = 1`) or backward
-    /// (`direction = -1`) through the visible queue. No wrap
-    /// at the ends. Called by Cmd+] / Cmd+[.
-    #[allow(dead_code)]
-    pub(crate) fn cycle_notification(&mut self, direction: i32) {
-        let sorted = self.sorted_notification_ids();
-        if sorted.is_empty() {
-            return;
-        }
-        let Some(current) = self.current_notify_id.as_ref() else {
-            // Queue has entries but nothing is current — pick the next entry.
-            self.current_notify_id = sorted.into_iter().next();
-            return;
-        };
-        let Some(pos) = sorted.iter().position(|id| id == current) else {
-            // Current id not in visible queue any more (context switch or dismiss).
-            // Fall back to the next visible entry.
-            self.current_notify_id = sorted.into_iter().next();
-            return;
-        };
-        let next_pos = match direction {
-            d if d > 0 && pos + 1 < sorted.len() => pos + 1,
-            d if d < 0 && pos > 0 => pos - 1,
-            _ => return, // clamp at both ends
-        };
-        self.current_notify_id = Some(sorted[next_pos].clone());
     }
 
     /// Check every pending notification for expiry. For each that has exceeded
@@ -1123,7 +1057,7 @@ impl PlexiApp {
     /// Used for per-context sidebar badges on inactive contexts. Global notifications
     /// are excluded — they already appear everywhere via notification_is_visible.
     /// Returns 0 for parked contexts — they produce no visual noise.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn context_notification_count(&self, ctx_idx: usize) -> usize {
         let ctx = self.router.get(ctx_idx);
         if ctx.parked {

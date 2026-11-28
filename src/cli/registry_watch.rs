@@ -86,7 +86,7 @@ pub fn watch_one<I: CliInspector>(inspector: &I, cli: &str) -> WatchReport {
             status: WatchStatus::NotInstalled,
         };
     }
-    let descriptor = match cli_registry::lookup(cli, None) {
+    let descriptor = match cli_registry::lookup(cli) {
         Ok(d) => d,
         Err(e) => {
             return WatchReport {

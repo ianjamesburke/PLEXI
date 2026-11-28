@@ -162,7 +162,7 @@ pub fn resolve_cli_with<R: DescriptorRunner>(
 
     // Tier 2 — hand-authored registry descriptor.
     if use_registry {
-        match crate::cli::registry::lookup(cli_name, None) {
+        match crate::cli::registry::lookup(cli_name) {
             Ok(descriptor) => {
                 log::info!("cli_resolve: `{cli_name}` resolved via registry");
                 return Ok(Resolved {

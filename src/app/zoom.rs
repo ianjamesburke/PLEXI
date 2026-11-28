@@ -125,7 +125,6 @@ pub enum AtlasEdgeKind {
     TreeRoad,
     NeedsRollup,
     Failed,
-    PipeLink,
     /// An agent pane in the target context was spawned by a pane in the source context.
     Spawn,
 }
@@ -153,8 +152,6 @@ pub struct ZoomState {
     pub atlas_last_child: HashMap<u64, u64>,
     /// True when the read-only Peek card (`p`) is open in the Tree Atlas.
     pub atlas_peek_open: bool,
-    /// Directed context-to-context links (`(from_ctx, to_ctx)`) for `f`/`F` traversal in atlas.
-    pub context_links: Vec<(u64, u64)>,
     /// Monotonic counter of edge attempts (observable by tests for R31/R32 only).
     pub edge_bump_count: u64,
     /// Retargetable zoom transition state (`(from_progress, target_progress, started_at)`).
@@ -1215,27 +1212,6 @@ impl PlexiApp {
             }
         }
 
-        // Add typed pipe / spawn links for the focused node only (`SPEC.md` Q4).
-        let focused_ctx = self
-            .zoom
-            .atlas_focused_context
-            .unwrap_or_else(|| self.router.active().context_id);
-        for &(from_ctx, to_ctx) in &self.zoom.context_links {
-            if from_ctx == focused_ctx || to_ctx == focused_ctx {
-                if let (Some(a), Some(b)) = (
-                    nodes_out.iter().find(|n| n.context_id == from_ctx),
-                    nodes_out.iter().find(|n| n.context_id == to_ctx),
-                ) {
-                    edges_out.push(AtlasEdge {
-                        from_context_id: from_ctx,
-                        from_pos: a.rect.center(),
-                        to_pos: b.rect.center(),
-                        kind: AtlasEdgeKind::PipeLink,
-                    });
-                }
-            }
-        }
-
         (nodes_out, edges_out)
     }
 
@@ -1496,38 +1472,6 @@ impl PlexiApp {
         true
     }
 
-    /// `f` / `F` in the Tree Atlas: follow outgoing (`f`) or incoming (`F`) pipe/spawn link.
-    pub fn navigate_tree_atlas_link(&mut self, forward: bool) -> bool {
-        let cur_ctx = self
-            .zoom
-            .atlas_focused_context
-            .unwrap_or_else(|| self.router.active().context_id);
-        let target = if forward {
-            self.zoom
-                .context_links
-                .iter()
-                .find(|(from, _)| *from == cur_ctx)
-                .map(|(_, to)| *to)
-        } else {
-            self.zoom
-                .context_links
-                .iter()
-                .find(|(_, to)| *to == cur_ctx)
-                .map(|(from, _)| *from)
-        };
-        if let Some(next_ctx) = target {
-            self.zoom.atlas_focused_context = Some(next_ctx);
-            true
-        } else {
-            self.record_edge_bump(if forward {
-                Direction::Right
-            } else {
-                Direction::Left
-            });
-            false
-        }
-    }
-
     /// `Enter` in the Tree Atlas (`SPEC.md` R35):
     /// - If the focused atlas node has an open ask: dive to `ZoomLevel::Columns`, focus the asking
     ///   pane, and open the `DecisionOverlay` on that ask ID!
@@ -1576,7 +1520,6 @@ impl PlexiApp {
                 let mut move_dir: Option<Direction> = None;
                 let mut sib_forward: Option<bool> = None;
                 let mut needs_forward: Option<bool> = None;
-                let mut link_forward: Option<bool> = None;
                 let mut toggle_peek = false;
                 let mut dive = false;
                 let mut back_to_ghost = false;
@@ -1614,7 +1557,6 @@ impl PlexiApp {
                             Key::OpenBracket => sib_forward = Some(false),
                             Key::CloseBracket => sib_forward = Some(true),
                             Key::N if !*repeat => needs_forward = Some(!modifiers.shift),
-                            Key::F if !*repeat => link_forward = Some(!modifiers.shift),
                             Key::P if !*repeat => toggle_peek = true,
                             Key::Enter if !*repeat => dive = true,
                             Key::Q if !*repeat => back_to_ghost = true,
@@ -1634,8 +1576,6 @@ impl PlexiApp {
                     self.navigate_tree_atlas_sibling(fwd);
                 } else if let Some(fwd) = needs_forward {
                     self.navigate_tree_atlas_needs_you(fwd);
-                } else if let Some(fwd) = link_forward {
-                    self.navigate_tree_atlas_link(fwd);
                 } else if let Some(d) = move_dir {
                     self.navigate_tree_atlas_dir(d);
                 }
@@ -1944,7 +1884,6 @@ impl PlexiApp {
             let stroke = match edge.kind {
                 AtlasEdgeKind::NeedsRollup => Stroke::new(style::EDGE_NEEDS_W, colors.zoom_needs),
                 AtlasEdgeKind::Failed => Stroke::new(style::EDGE_ROAD_W, colors.zoom_failed),
-                AtlasEdgeKind::PipeLink => Stroke::new(1.5_f32, colors.accent),
                 AtlasEdgeKind::Spawn => Stroke::new(1.5_f32, colors.text_dim),
                 AtlasEdgeKind::TreeRoad => Stroke::new(style::EDGE_ROAD_W, colors.border),
             };

@@ -40,14 +40,6 @@ impl<'a> ModalShell<'a> {
         self
     }
 
-    /// Render the modal above other Foreground overlays (e.g. notifications
-    /// that must outrank any open modal). The scrim rises with it.
-    #[allow(dead_code)]
-    pub(crate) fn order(mut self, order: egui::Order) -> Self {
-        self.order = order;
-        self
-    }
-
     /// Re-anchor the modal (e.g. `Align2::CENTER_TOP` + y-offset for input
     /// popovers that shouldn't cover the workspace center).
     pub(crate) fn anchor(mut self, anchor: Align2, offset: Vec2) -> Self {

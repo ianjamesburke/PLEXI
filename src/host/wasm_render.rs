@@ -19,7 +19,7 @@ use super::wasm_view::{
     Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, Justify, UiNodeData, UiTree,
 };
 
-use crate::render::view_chrome::{self, ViewChrome};
+use crate::ui::view_chrome::{self, ViewChrome};
 
 mod text_role;
 pub(crate) use text_role::TextRole;

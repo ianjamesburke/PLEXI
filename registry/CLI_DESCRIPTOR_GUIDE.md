@@ -222,7 +222,7 @@ Where `<channel>` matches the running binary (`alpha`, `beta`, or omitted for st
 ~/.plexi/registry/mytool/latest.json
 ```
 
-Plexi checks the user registry before the embedded one, so this always wins. To pin a specific CLI version, name the file `<version>.json` (e.g. `2.40.0.json`) alongside `latest.json`.
+Plexi checks the user registry before the embedded one, so this always wins.
 
 Several CLIs ship descriptors in the embedded registry (gh, cargo, npm, git, docker, kubectl, uv, parallax). These live in `registry/` at the PLEXI repo root and are baked in at build time.
 

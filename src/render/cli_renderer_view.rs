@@ -1037,7 +1037,6 @@ mod tests {
             let descriptor = crate::cli::registry::lookup_with_backends(
                 &[&crate::cli::registry::EmbeddedBackend],
                 binary,
-                None,
             )
             .expect("shipped descriptor");
             let mut app = CliRendererView::from_descriptor(descriptor);

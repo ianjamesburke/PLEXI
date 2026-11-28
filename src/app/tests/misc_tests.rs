@@ -1,33 +1,6 @@
 use super::super::*;
 
 #[test]
-fn parse_key_str_to_event_uses_sdk_key_names_for_view_panes() {
-    let (key, modifiers) = parse_key_str_to_event("plus");
-    assert_eq!(key, "plus");
-    assert!(!modifiers.ctrl);
-
-    let (key, _) = parse_key_str_to_event("equals");
-    assert_eq!(key, "equals");
-
-    let (key, _) = parse_key_str_to_event("ArrowDown");
-    assert_eq!(key, "down");
-
-    let (key, _) = parse_key_str_to_event("A");
-    assert_eq!(key, "a");
-}
-
-#[test]
-fn parse_key_str_to_event_preserves_modifiers() {
-    let (key, modifiers) = parse_key_str_to_event("ctrl+shift+plus");
-
-    assert_eq!(key, "plus");
-    assert!(modifiers.ctrl);
-    assert!(modifiers.shift);
-    assert!(!modifiers.alt);
-    assert!(!modifiers.cmd);
-}
-
-#[test]
 fn key_str_to_egui_raw_input_maps_named_keys_without_text() {
     let raw = key_str_to_egui_raw_input("enter").expect("enter must map");
     assert_eq!(raw.events.len(), 2, "named keys emit press and release");

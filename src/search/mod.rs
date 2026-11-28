@@ -747,10 +747,6 @@ fn score_text_target(pattern: &str, text: &str) -> Option<(i64, Vec<Range<usize>
                 matches_here = false;
                 break;
             }
-            if has_upper && pat_orig.is_uppercase() && tc.ch != pat_orig {
-                // Smart-case: uppercase query characters prefer exact case,
-                // though we still allow case-insensitive match with lower score.
-            }
             if tc.ch == pat_orig {
                 exact_case_count += 1;
             }
