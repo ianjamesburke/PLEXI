@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use super::file_handlers::FileHandler;
 use super::PlexiApp;
 use plexi_protocol::OpenPlacement;
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 
 /// The operation id both CLI spellings and every in-host entry point share.
 pub(crate) const OPERATION_ID: &str = "file.open";

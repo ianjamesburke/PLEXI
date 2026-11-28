@@ -38,7 +38,7 @@ use std::time::Instant;
 
 use crate::app::ui_mailbox::{MailboxReceiver, UiMailbox, UiWake};
 use crate::host::state_scope::StateScope;
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 
 /// Debounce window — bursts of writes to the same state file within this much
 /// of each other coalesce into a single notice.

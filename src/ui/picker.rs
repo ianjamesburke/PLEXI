@@ -91,7 +91,7 @@ impl PickerInput {
 
 /// The picker command a key press means, or `None` for a key the field
 /// edits with (or nobody wants). Host chords are resolved before this.
-pub(crate) fn picker_key(event: &egui::Event, composing: bool) -> Option<PickerCommand> {
+pub(crate) fn picker_key<C>(event: &egui::Event, composing: bool) -> Option<PickerCommand<C>> {
     use egui::{Event, Key, Modifiers};
     let Event::Key {
         key,
@@ -144,9 +144,9 @@ pub(crate) fn is_field_input(event: &egui::Event) -> bool {
 
 /// The query field, the owner's default text surface: egui's own single-line
 /// text edit over `draft` in either picker step.
-pub(crate) fn field(
+pub(crate) fn field<C: Clone + Eq + std::fmt::Debug>(
     ui: &mut egui::Ui,
-    state: &PickerState,
+    state: &PickerState<C>,
     draft: &mut String,
     id: egui::Id,
     surface: crate::ui::focus::SurfaceKey,
@@ -199,9 +199,9 @@ pub(crate) struct RowsResponse {
 /// press or accessibility target from an earlier answer can never click the
 /// row that now holds its place. `pips` decorates a row by key with the
 /// shared pane-state lane.
-pub(crate) fn results(
+pub(crate) fn results<C: Clone + Eq + std::fmt::Debug>(
     ui: &mut egui::Ui,
-    state: &PickerState,
+    state: &PickerState<C>,
     max_height: f32,
     pips: &dyn Fn(&RowKey) -> Option<ListRowPips>,
     colors: &Colors,
@@ -311,9 +311,9 @@ pub(crate) fn results(
 
 /// The selected row's preview, filling the half it is given. `image` is the
 /// uploaded texture of the selected row, when it has one.
-pub(crate) fn preview(
+pub(crate) fn preview<C: Clone + Eq + std::fmt::Debug>(
     ui: &mut egui::Ui,
-    state: &PickerState,
+    state: &PickerState<C>,
     image: Option<&egui::TextureHandle>,
     height: f32,
     colors: &Colors,
@@ -381,9 +381,9 @@ pub(crate) fn preview(
         });
 }
 
-pub(crate) fn stops(
+pub(crate) fn stops<C: Clone + Eq + std::fmt::Debug>(
     ui: &mut egui::Ui,
-    state: &PickerState,
+    state: &PickerState<C>,
     colors: &Colors,
 ) -> Option<&'static str> {
     use crate::ui::bounded::{self, Slot};
@@ -443,9 +443,9 @@ pub(crate) fn stops(
     clicked
 }
 
-fn actions(
+fn actions<C: Clone + Eq + std::fmt::Debug>(
     ui: &mut egui::Ui,
-    state: &PickerState,
+    state: &PickerState<C>,
     max_height: f32,
     colors: &Colors,
 ) -> RowsResponse {

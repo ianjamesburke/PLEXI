@@ -8,7 +8,7 @@ use egui_tiles::{Container, LinearDir, Tile};
 use crate::host::pane::ViewRuntime;
 use crate::broker::caller::{AncestryEnd, PeerHop, PeerWitness};
 use plexi_protocol::{HostRequest, OpenPlacement};
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use crate::testing::HostHarness;
 
 /// A harness with one terminal (the caller) and its pid.

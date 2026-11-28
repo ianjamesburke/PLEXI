@@ -3,6 +3,7 @@
 //! the UI thread, debounced, by atomic replace (`docs/palette-picker.md`,
 //! Files).
 
+use crate::host::picker::UsageEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,12 +21,6 @@ const USAGE_VERSION: u64 = 1;
 
 pub(crate) fn usage_path() -> PathBuf {
     crate::config::shared_dir().join(USAGE_FILE)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct UsageEntry {
-    pub count: u32,
-    pub last_pick: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

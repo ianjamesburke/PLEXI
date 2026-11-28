@@ -15,7 +15,7 @@ use crate::broker::gate::{
     ApprovalChoice, NeedsYouResolution, PermissionCaller, PermissionMonitor, PermissionMutation,
 };
 use crate::host::pane::{Pane, ViewRuntime};
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use crate::testing::HostHarness;
 
 const PLUGIN: &str = "consent-probe";

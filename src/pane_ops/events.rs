@@ -1,6 +1,7 @@
 //! Publish pane facts through the same timeline used by plugin event streams.
 use crate::app::PlexiApp;
-use crate::host::pane_lifecycle::{PaneLifecycleEvent, PaneLifecycleState, Provenance};
+use crate::host::model::PaneLifecycleState;
+use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance};
 
 impl PlexiApp {
     /// Register panes from all creation/restoration paths before servicing events.
@@ -8,13 +9,13 @@ impl PlexiApp {
     pub(crate) fn observe_pane_spawns(&mut self) {
         match crate::host::plugin_timeline::global().lock() {
             Ok(mut timeline) => {
-                for pane_id in self.host.pane_lifecycle.keys() {
+                for pane_id in self.host.lifecycle_pane_ids() {
                     if !self
                         .windows
                         .iter()
-                        .any(|win| win.panes.contains_key(pane_id))
+                        .any(|win| win.panes.contains_key(&pane_id))
                     {
-                        timeline.close_lifecycle_pane(*pane_id);
+                        timeline.close_lifecycle_pane(pane_id);
                     }
                 }
                 for win in &self.windows {
@@ -29,7 +30,7 @@ impl PlexiApp {
             .windows
             .iter()
             .flat_map(|win| win.panes.keys())
-            .filter(|id| !self.host.pane_lifecycle.contains_key(id))
+            .filter(|id| self.host.pane_lifecycle(**id).is_none())
             .copied()
             .collect();
         for pane_id in fresh {
@@ -44,13 +45,13 @@ impl PlexiApp {
                 (win.context_id, parent_id)
             })
         })?;
-        if let Some(state) = self.host.pane_lifecycle.get_mut(&pane_id) {
+        if let Some(state) = self.host.pane_lifecycle_mut(pane_id) {
             state.context_id = context_id;
             if parent_pane_id.is_some() {
                 state.parent_pane_id = parent_pane_id;
             }
         } else if self.publish_pane_lifecycle(context_id, pane_id, PaneLifecycleEvent::Spawned) {
-            self.host.pane_lifecycle.insert(
+            self.host.track_pane_lifecycle(
                 pane_id,
                 PaneLifecycleState {
                     context_id,
@@ -68,8 +69,7 @@ impl PlexiApp {
         // The saved context is needed for a boot failure after its pane closed.
         let context_id = self.ensure_pane_lifecycle(pane_id).or_else(|| {
             self.host
-                .pane_lifecycle
-                .get(&pane_id)
+                .pane_lifecycle(pane_id)
                 .map(|state| state.context_id)
         });
         if let Some(context_id) = context_id {
@@ -106,7 +106,7 @@ impl PlexiApp {
         if self.ensure_pane_lifecycle(pane_id).is_none() {
             return;
         }
-        if let Some(state) = self.host.pane_lifecycle.get_mut(&pane_id) {
+        if let Some(state) = self.host.pane_lifecycle_mut(pane_id) {
             if state.booted {
                 return;
             }

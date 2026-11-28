@@ -1072,7 +1072,7 @@ impl TextDialog {
     }
 
     /// The value the dialog writes on commit.
-    fn committed(self, h: &mut PlexiUiHarness, pane: crate::spatial::tiling::PaneId) -> String {
+    fn committed(self, h: &mut PlexiUiHarness, pane: crate::host::model::PaneId) -> String {
         h.with_app(|app| match self {
             Self::RenamePane => app.windows[app.active_window]
                 .panes

@@ -1,6 +1,5 @@
 //! Compatibility checks for persisted strip-era workspace metadata.
-use super::model::{Column, ColumnId, ColumnWidth, Strip};
-use crate::app::zoom::ColumnWidthPreset;
+use super::model::{Column, ColumnId, ColumnWidth, ColumnWidthPreset, Strip};
 
 #[test]
 fn pure_invariant_stable_column_order() {

@@ -10,9 +10,8 @@
 use plexi_protocol::ContextStatus;
 use plexi_protocol::AgentState;
 use crate::render::terminal_pane::{render_name_bar_and_tabs, NameBarParams};
-use crate::spatial::tiling::{
-    paint_portal_minimap, PaneId, PortalPreview, TabBarAction, TabGroupInfo,
-};
+use crate::host::model::PaneId;
+use crate::spatial::tiling::{paint_portal_minimap, PortalPreview, TabBarAction, TabGroupInfo};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui_tiles::TileId;

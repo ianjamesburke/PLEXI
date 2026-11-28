@@ -3,10 +3,10 @@
 //! (`docs/palette-picker.md`, Preview). No egui types: an image arrives as
 //! pixels and the host uploads its texture in `App::logic`.
 
-use super::{PreviewBody, PreviewRef, RowKey};
 use crate::file_browser::helpers::{
     decode_image_preview, is_image_extension, read_text_preview, TextPreviewError,
 };
+use crate::host::picker::{PreviewBody, PreviewRef, RowKey};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;

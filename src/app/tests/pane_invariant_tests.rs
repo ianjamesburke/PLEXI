@@ -18,14 +18,14 @@ fn alloc_pane_id_is_monotone_across_view() {
         a < b && b < c,
         "alloc_pane_id must return strictly increasing IDs"
     );
-    assert_eq!(app.host.test_next_pane_id(), c + 1);
+    assert_eq!(app.host.next_pane_id(), c + 1);
 }
 
 #[test]
 fn all_allocated_ids_strictly_below_next_pane_id() {
     let mut app = make_app();
     let ids: Vec<_> = (0..8).map(|_| app.host.alloc_pane_id()).collect();
-    let next = app.host.test_next_pane_id();
+    let next = app.host.next_pane_id();
     for id in &ids {
         assert!(
             *id < next,
@@ -46,11 +46,11 @@ fn seeded_next_pane_id_starts_allocations_above_restored_ids() {
     let mut app = make_app();
     // new_for_test already reserved a private block. A restored workspace sits
     // above that floor; seeding below it is rejected.
-    let floor = app.host.test_next_pane_id();
+    let floor = app.host.next_pane_id();
     let max_restored = floor + 39;
     app.host.seed_next_pane_id(max_restored + 1);
 
-    assert_eq!(app.host.test_next_pane_id(), max_restored + 1);
+    assert_eq!(app.host.next_pane_id(), max_restored + 1);
 
     for _ in 0..5 {
         let id = app.host.alloc_pane_id();
@@ -66,13 +66,13 @@ fn seed_below_high_water_mark_is_ignored() {
     let mut app = make_app();
     // Advance the counter to 10.
     let before = (0..9).map(|_| app.host.alloc_pane_id()).last().unwrap();
-    let high = app.host.test_next_pane_id();
+    let high = app.host.next_pane_id();
     assert!(high > before);
 
     // Attempting to seed below the current high-water mark must be rejected.
     app.host.seed_next_pane_id(1);
     assert_eq!(
-        app.host.test_next_pane_id(),
+        app.host.next_pane_id(),
         high,
         "seed below high-water mark must not lower the counter"
     );

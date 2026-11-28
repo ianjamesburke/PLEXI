@@ -1,4 +1,4 @@
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::{Align, Layout, RichText, Stroke};

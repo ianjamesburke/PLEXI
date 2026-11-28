@@ -1,10 +1,11 @@
 //! Pane geometry snapshot types retained for host and CLI compatibility.
 //! The renderer fills these from the active window's tile tree.
 
-use crate::spatial::tiling::PaneId;
-use crate::strip::model::ColumnId;
+use crate::host::model::PaneId;
+use crate::strip::model::{ColumnId, Strip};
 use crate::ui::style;
 use egui::{Pos2, Rect, Vec2};
+use std::collections::HashMap;
 
 /// Viewport bounds and parameters for strip layout.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -89,5 +90,58 @@ impl StripLayout {
     /// Look up the resolved presentation layout for `pane_id`.
     pub fn pane(&self, pane_id: PaneId) -> Option<&PaneLayout> {
         self.panes.iter().find(|p| p.pane_id == pane_id)
+    }
+}
+
+/// The renderer's latest presentation snapshot of one context's strip, with the
+/// authoritative strip it was resolved against.
+#[derive(Debug)]
+pub(crate) struct PublishedStripSnapshot {
+    pub generation: u64,
+    pub strip: Strip,
+    pub layout: StripLayout,
+}
+
+/// Latest [`PublishedStripSnapshot`] per context (`context_id -> snapshot`).
+/// Owned by the renderer side: the model never sees egui geometry.
+#[derive(Debug, Default)]
+pub(crate) struct PublishedStrips {
+    snapshots: HashMap<u64, PublishedStripSnapshot>,
+}
+
+impl PublishedStrips {
+    /// The latest presentation layout for `context_id`.
+    pub(crate) fn layout(&self, context_id: u64) -> Option<&StripLayout> {
+        self.snapshots
+            .get(&context_id)
+            .map(|snapshot| &snapshot.layout)
+    }
+
+    pub(crate) fn snapshot(&self, context_id: u64) -> Option<&PublishedStripSnapshot> {
+        self.snapshots.get(&context_id)
+    }
+
+    /// Store `layout` as the latest snapshot of `strip`'s context. The
+    /// generation advances only when the layout or the strip changed.
+    pub(crate) fn publish(&mut self, context_id: u64, strip: &Strip, layout: StripLayout) {
+        let generation = self.snapshots.get(&context_id).map_or(1, |previous| {
+            if previous.layout == layout && previous.strip == *strip {
+                previous.generation
+            } else {
+                previous.generation.saturating_add(1)
+            }
+        });
+        self.snapshots.insert(
+            context_id,
+            PublishedStripSnapshot {
+                generation,
+                strip: strip.clone(),
+                layout,
+            },
+        );
+    }
+
+    pub(crate) fn remove(&mut self, context_id: u64) {
+        self.snapshots.remove(&context_id);
     }
 }

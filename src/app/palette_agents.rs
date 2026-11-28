@@ -14,7 +14,7 @@ use crate::host::picker::{
     AttentionRank, PickerRow, PreviewBody, RowAction, RowKey, AGENTS_SOURCE,
 };
 use plexi_protocol::AgentState;
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 
 const FOCUS: RowAction = RowAction {
     id: "focus",

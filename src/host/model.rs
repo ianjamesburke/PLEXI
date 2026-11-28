@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::spatial::tiling::PaneId;
+/// A pane's handle: unique within one running host, allocated only by
+/// [`HostModel::alloc_pane_id`].
+pub type PaneId = u64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneSelection {
@@ -81,46 +83,45 @@ impl PaneCloseBatch {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct HostModel {
+#[derive(Debug)]
+pub struct HostModel<C> {
     pane_selections: HashMap<u64, PaneSelection>,
     pane_close_batch: Option<PaneCloseBatch>,
     next_pane_id: PaneId,
-    pub(crate) pane_lifecycle: HashMap<PaneId, crate::host::pane_lifecycle::PaneLifecycleState>,
+    pane_lifecycle: HashMap<PaneId, PaneLifecycleState>,
     /// Authoritative continuous-strip state per context (`context_id -> Strip`).
-    pub(crate) strips: HashMap<u64, crate::strip::Strip>,
-    /// Latest resolved strip presentation snapshot per context (`context_id -> StripLayout`).
-    pub(crate) strip_layouts: HashMap<u64, PublishedStripSnapshot>,
-    pickers: crate::host::picker::Pickers,
+    strips: HashMap<u64, crate::strip::Strip>,
+    pickers: crate::host::picker::Pickers<C>,
 }
 
 /// A command into the model's reducers.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum HostAction {
+pub(crate) enum HostAction<C> {
     Picker(
         crate::host::picker::PickerId,
-        crate::host::picker::PickerCommand,
+        crate::host::picker::PickerCommand<C>,
     ),
 }
 
 /// What the model asks the host to do after an action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum HostEffect {
+pub(crate) enum HostEffect<C> {
     Picker(
         crate::host::picker::PickerId,
-        crate::host::picker::PickerEffect,
+        crate::host::picker::PickerEffect<C>,
     ),
 }
 
-#[derive(Debug)]
-pub(crate) struct PublishedStripSnapshot {
-    pub generation: u64,
-    pub strip: crate::strip::Strip,
-    pub layout: crate::strip::StripLayout,
+/// What the host remembers about a pane it announced on the lifecycle stream.
+#[derive(Debug, Default)]
+pub(crate) struct PaneLifecycleState {
+    pub context_id: u64,
+    pub parent_pane_id: Option<u64>,
+    pub booted: bool,
 }
 
-impl HostModel {
-    pub(crate) fn apply(&mut self, action: HostAction) -> Vec<HostEffect> {
+impl<C: Clone + Eq + std::fmt::Debug> HostModel<C> {
+    pub(crate) fn apply(&mut self, action: HostAction<C>) -> Vec<HostEffect<C>> {
         match action {
             HostAction::Picker(id, command) => self
                 .pickers
@@ -134,7 +135,7 @@ impl HostModel {
     pub(crate) fn picker(
         &self,
         id: crate::host::picker::PickerId,
-    ) -> Option<&crate::host::picker::PickerState> {
+    ) -> Option<&crate::host::picker::PickerState<C>> {
         self.pickers.get(id)
     }
 
@@ -312,7 +313,6 @@ impl HostModel {
             next_pane_id: 1,
             pane_lifecycle: HashMap::new(),
             strips: HashMap::new(),
-            strip_layouts: HashMap::new(),
             pickers: Default::default(),
         }
     }
@@ -347,10 +347,22 @@ impl HostModel {
         self.next_pane_id = id;
     }
 
-    /// Next ID that `alloc_pane_id()` will return (peek, does not advance counter).
-    #[cfg(test)]
-    pub fn test_next_pane_id(&self) -> PaneId {
-        self.next_pane_id
+    /// Every pane the lifecycle stream has announced.
+    pub(crate) fn lifecycle_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
+        self.pane_lifecycle.keys().copied()
+    }
+
+    pub(crate) fn pane_lifecycle(&self, pane: PaneId) -> Option<&PaneLifecycleState> {
+        self.pane_lifecycle.get(&pane)
+    }
+
+    pub(crate) fn pane_lifecycle_mut(&mut self, pane: PaneId) -> Option<&mut PaneLifecycleState> {
+        self.pane_lifecycle.get_mut(&pane)
+    }
+
+    /// Start tracking `pane` after its `Spawned` fact was published.
+    pub(crate) fn track_pane_lifecycle(&mut self, pane: PaneId, state: PaneLifecycleState) {
+        self.pane_lifecycle.insert(pane, state);
     }
 
     /// Return the authoritative strip for `context_id` if present.
@@ -368,48 +380,16 @@ impl HostModel {
         self.strips.insert(context_id, strip);
     }
 
-    /// Forget the authoritative strip and published layout of a context that no
-    /// longer exists, so nothing still lists its panes as members of it.
+    /// Replace every context's strip, e.g. from a restored workspace.
+    pub fn replace_strips(&mut self, strips: HashMap<u64, crate::strip::Strip>) {
+        self.strips = strips;
+    }
+
+    /// Forget the authoritative strip of a context that no longer exists, so
+    /// nothing still lists its panes as members of it.
     pub fn remove_strip(&mut self, context_id: u64) {
         self.strips.remove(&context_id);
-        self.strip_layouts.remove(&context_id);
-        log::info!("strip: removed strip and layout for context={context_id}");
-    }
-
-    /// Return the latest presentation snapshot for `context_id`.
-    pub fn strip_layout(&self, context_id: u64) -> Option<&crate::strip::StripLayout> {
-        self.strip_layouts
-            .get(&context_id)
-            .map(|snapshot| &snapshot.layout)
-    }
-
-    pub(crate) fn published_strip_snapshot(
-        &self,
-        context_id: u64,
-    ) -> Option<&PublishedStripSnapshot> {
-        self.strip_layouts.get(&context_id)
-    }
-
-    /// Store the latest presentation snapshot for `context_id`.
-    pub fn set_strip_layout(&mut self, context_id: u64, layout: crate::strip::StripLayout) {
-        let Some(strip) = self.strips.get(&context_id) else {
-            return;
-        };
-        let generation = self.strip_layouts.get(&context_id).map_or(1, |previous| {
-            if previous.layout == layout && previous.strip == *strip {
-                previous.generation
-            } else {
-                previous.generation.saturating_add(1)
-            }
-        });
-        self.strip_layouts.insert(
-            context_id,
-            PublishedStripSnapshot {
-                generation,
-                strip: strip.clone(),
-                layout,
-            },
-        );
+        log::info!("strip: removed strip for context={context_id}");
     }
 }
 
@@ -421,7 +401,7 @@ mod tests {
     /// its anchor, and drops ids the caller says are no longer live.
     #[test]
     fn pane_targets_prefer_selection_and_drop_stale_ids() {
-        let mut model = HostModel::new();
+        let mut model = HostModel::<()>::new();
         model.extend_pane_selection(7, 1, 2);
         model.extend_pane_selection(7, 2, 3);
         let live = |id: PaneId| id != 2;
@@ -447,7 +427,7 @@ mod tests {
 
     #[test]
     fn pane_targets_fall_back_to_the_focused_pane() {
-        let mut model = HostModel::new();
+        let mut model = HostModel::<()>::new();
         let focused = model
             .resolve_pane_targets("test", 7, Some(4), |_| true)
             .unwrap();
@@ -473,7 +453,7 @@ mod tests {
     /// needs two).
     #[test]
     fn pane_targets_return_a_selection_of_one_unchanged() {
-        let mut model = HostModel::new();
+        let mut model = HostModel::<()>::new();
         model.extend_pane_selection(7, 5, 5);
         let one = model
             .resolve_pane_targets("test", 7, Some(5), |_| true)
@@ -503,17 +483,17 @@ mod tests {
 
     #[test]
     fn new_model_reserves_bootstrap_pane_id() {
-        let model = HostModel::new();
+        let model = HostModel::<()>::new();
         assert_eq!(
-            model.test_next_pane_id(),
+            model.next_pane_id(),
             1,
-            "HostModel::new() reserves pane id 0 for the bootstrap pane"
+            "HostModel::<()>::new() reserves pane id 0 for the bootstrap pane"
         );
     }
 
     #[test]
     fn alloc_pane_id_is_monotone_and_advances_counter() {
-        let mut model = HostModel::new();
+        let mut model = HostModel::<()>::new();
         let a = model.alloc_pane_id();
         let b = model.alloc_pane_id();
         let c = model.alloc_pane_id();
@@ -521,15 +501,15 @@ mod tests {
             a < b && b < c,
             "alloc_pane_id must return strictly increasing IDs"
         );
-        assert_eq!(model.test_next_pane_id(), c + 1);
+        assert_eq!(model.next_pane_id(), c + 1);
     }
 
     #[test]
     fn seed_next_pane_id_positions_allocations_above_restored_ids() {
-        let mut model = HostModel::new();
+        let mut model = HostModel::<()>::new();
         let max_restored = 99u64;
         model.seed_next_pane_id(max_restored + 1);
-        assert_eq!(model.test_next_pane_id(), max_restored + 1);
+        assert_eq!(model.next_pane_id(), max_restored + 1);
         for _ in 0..5 {
             let id = model.alloc_pane_id();
             assert!(

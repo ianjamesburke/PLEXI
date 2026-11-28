@@ -55,12 +55,12 @@ pub(crate) enum RankingPreset {
 }
 
 /// The order `RankingPreset::Usage` sorts by, as a key: lower sorts first.
-/// A source that must cut its answer to `MAX_SEARCH_HITS` cuts by this same
+/// A source that must cut its answer to `MAX_SOURCE_ROWS` cuts by this same
 /// key, so the reducer and the source never disagree on the top rows.
 pub(crate) fn usage_rank_key(
-    file_match: Option<files::FileMatchRank>,
+    file_match: Option<FileMatchRank>,
     score: Option<i64>,
-    usage: Option<usage::UsageEntry>,
+    usage: Option<UsageEntry>,
     modified: Option<u64>,
 ) -> impl Ord {
     use std::cmp::Reverse;
@@ -70,6 +70,38 @@ pub(crate) fn usage_rank_key(
         Reverse(usage.map(|u| (u.count, u.last_pick))),
         Reverse(modified),
     )
+}
+
+/// How a query matches the filename, before recency and usage are compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FileMatchRank {
+    exact_name_or_stem: bool,
+    basename_tier: u8,
+    depth: std::cmp::Reverse<usize>,
+    unmatched_prefix_tail: std::cmp::Reverse<usize>,
+}
+
+impl FileMatchRank {
+    pub(crate) fn new(
+        exact_name_or_stem: bool,
+        basename_tier: u8,
+        depth: usize,
+        unmatched_prefix_tail: usize,
+    ) -> Self {
+        Self {
+            exact_name_or_stem,
+            basename_tier,
+            depth: std::cmp::Reverse(depth),
+            unmatched_prefix_tail: std::cmp::Reverse(unmatched_prefix_tail),
+        }
+    }
+}
+
+/// How often and how lately the person picked a row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UsageEntry {
+    pub count: u32,
+    pub last_pick: u64,
 }
 
 /// One stop of a picker: data defined in code.
@@ -130,7 +162,7 @@ pub(crate) const PALETTE_STOPS: &[Stop] = &[
 ];
 
 /// The most rows one answer shows; ranking decides which.
-pub(crate) const MAX_SOURCE_ROWS: usize = crate::search::MAX_SEARCH_HITS;
+pub(crate) const MAX_SOURCE_ROWS: usize = 250;
 
 /// A row's identity: `<source id>:<stable id>`, split on the first `:`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -185,7 +217,7 @@ pub(crate) struct PickerRow {
     /// for an empty query or a row that matched without a score.
     pub score: Option<i64>,
     /// Filename and depth preferences used by the Files stop.
-    pub file_match: Option<files::FileMatchRank>,
+    pub file_match: Option<FileMatchRank>,
     /// Pinned rows lead the list whatever the query.
     pub pinned: bool,
     /// When set the row stays listed, shows the reason and refuses Enter.
@@ -193,7 +225,7 @@ pub(crate) struct PickerRow {
     pub actions: Vec<RowAction>,
     pub attention: Option<AttentionRank>,
     /// How often and how lately this row was picked (`RankingPreset::Usage`).
-    pub usage: Option<usage::UsageEntry>,
+    pub usage: Option<UsageEntry>,
     /// Last modification, unix seconds (`RankingPreset::Usage`).
     pub modified: Option<u64>,
     /// What the preview half shows for this row, on a stop with a preview.
@@ -272,13 +304,24 @@ pub(crate) enum InputOrigin {
 
 /// Input and owned arguments captured before a picker activation can wait
 /// for a source answer.
-#[derive(Default, Clone, PartialEq, Eq)]
-pub(crate) struct ActivationInput {
+///
+/// `C` is the host's capture of the focused pane's root, carried untouched.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ActivationInput<C> {
     pub(crate) origin: InputOrigin,
-    pub(crate) pane_root: Option<crate::host::context::PaneCwd>,
+    pub(crate) pane_root: Option<C>,
 }
 
-impl std::fmt::Debug for ActivationInput {
+impl<C> Default for ActivationInput<C> {
+    fn default() -> Self {
+        Self {
+            origin: InputOrigin::default(),
+            pane_root: None,
+        }
+    }
+}
+
+impl<C> std::fmt::Debug for ActivationInput<C> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ActivationInput")
@@ -291,7 +334,7 @@ impl std::fmt::Debug for ActivationInput {
 /// Commands are applied one at a time, in input order; each binds to the
 /// state the commands before it left.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum PickerCommand {
+pub(crate) enum PickerCommand<C> {
     /// Open on `stop` with an initial query.
     Open {
         stop: &'static str,
@@ -307,12 +350,12 @@ pub(crate) enum PickerCommand {
     Hover(Hit),
     /// Enter: the selected row's first action, now or once the current
     /// query is answered.
-    Accept(Option<&'static str>, ActivationInput),
+    Accept(Option<&'static str>, ActivationInput<C>),
     ShowActions,
     Back,
-    ClickAction(Hit, u64, &'static str, ActivationInput),
+    ClickAction(Hit, u64, &'static str, ActivationInput<C>),
     /// Pointer click on a presented row: select it and accept it.
-    Click(Hit, ActivationInput),
+    Click(Hit, ActivationInput<C>),
     /// Another surface took input above the open picker: an Enter it froze
     /// was meant for the rows the person saw, never for later ones.
     Yield,
@@ -330,7 +373,7 @@ pub(crate) enum PickerCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PickerEffect {
+pub(crate) enum PickerEffect<C> {
     /// Ask the stop's source for rows.
     Query {
         source: &'static str,
@@ -344,7 +387,7 @@ pub(crate) enum PickerEffect {
         stamp: Stamp,
         row: RowKey,
         action: &'static str,
-        input: ActivationInput,
+        input: ActivationInput<C>,
     },
     /// Load the preview of `row`, selected on a stop with a preview.
     LoadPreview {
@@ -383,7 +426,7 @@ struct ActionsStep {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PickerState {
+pub(crate) struct PickerState<C> {
     stops: &'static [Stop],
     active: usize,
     open: bool,
@@ -401,7 +444,7 @@ pub(crate) struct PickerState {
     /// The current generation has an answer (`rows` belong to it).
     answered: bool,
     loading: bool,
-    pending: Option<(PendingEnter, ActivationInput)>,
+    pending: Option<(PendingEnter, ActivationInput<C>)>,
     /// Bumped when the keyboard moves the selection, so the results painter
     /// scrolls the selected row into view exactly once.
     reveal: u64,
@@ -410,7 +453,7 @@ pub(crate) struct PickerState {
     preview: Option<(RowKey, PreviewStatus)>,
 }
 
-impl PickerState {
+impl<C: Clone + Eq + std::fmt::Debug> PickerState<C> {
     pub(crate) fn new(stops: &'static [Stop]) -> Self {
         assert!(!stops.is_empty(), "a picker needs at least one stop");
         Self {
@@ -534,7 +577,7 @@ impl PickerState {
         }
     }
 
-    pub(crate) fn apply(&mut self, command: PickerCommand) -> Vec<PickerEffect> {
+    pub(crate) fn apply(&mut self, command: PickerCommand<C>) -> Vec<PickerEffect<C>> {
         let mut effects = self.apply_command(command);
         // Before `Activate` and `Closed` would be wrong: a closing picker
         // loads nothing, and `sync_preview` sees it closed.
@@ -546,7 +589,7 @@ impl PickerState {
 
     /// Follow the selection with the preview: a newly selected row on a
     /// preview stop asks its source for its preview, once.
-    fn sync_preview(&mut self) -> Option<PickerEffect> {
+    fn sync_preview(&mut self) -> Option<PickerEffect<C>> {
         if !self.open || !self.active_stop().preview {
             self.preview = None;
             return None;
@@ -590,7 +633,7 @@ impl PickerState {
         load
     }
 
-    fn apply_command(&mut self, command: PickerCommand) -> Vec<PickerEffect> {
+    fn apply_command(&mut self, command: PickerCommand<C>) -> Vec<PickerEffect<C>> {
         match command {
             PickerCommand::Open { stop, query } => {
                 let Some(index) = self.stops.iter().position(|s| s.id == stop) else {
@@ -718,7 +761,7 @@ impl PickerState {
         }
     }
 
-    fn close(&mut self) -> Vec<PickerEffect> {
+    fn close(&mut self) -> Vec<PickerEffect<C>> {
         if !self.open {
             return Vec::new();
         }
@@ -738,7 +781,7 @@ impl PickerState {
         vec![PickerEffect::Closed]
     }
 
-    fn switch_stop(&mut self, index: usize) -> Vec<PickerEffect> {
+    fn switch_stop(&mut self, index: usize) -> Vec<PickerEffect<C>> {
         if !self.open
             || self.showing_actions()
             || self.pending_actions.is_some()
@@ -756,7 +799,7 @@ impl PickerState {
     /// Start a new generation for the active stop and the current query. The
     /// previous rows stay presented with their own stamp but stop being
     /// actionable; a pending Enter is cancelled.
-    fn requery(&mut self) -> PickerEffect {
+    fn requery(&mut self) -> PickerEffect<C> {
         self.generation += 1;
         self.loading = true;
         self.answered = false;
@@ -796,7 +839,12 @@ impl PickerState {
             .then_some(hit.key)
     }
 
-    fn answer(&mut self, generation: u64, rows: Vec<PickerRow>, done: bool) -> Vec<PickerEffect> {
+    fn answer(
+        &mut self,
+        generation: u64,
+        rows: Vec<PickerRow>,
+        done: bool,
+    ) -> Vec<PickerEffect<C>> {
         if !self.open || generation != self.generation {
             log::debug!(
                 "picker: dropped rows of generation {generation} (current {})",
@@ -850,8 +898,8 @@ impl PickerState {
     fn resolve_pending(
         &mut self,
         pending: PendingEnter,
-        input: ActivationInput,
-    ) -> Vec<PickerEffect> {
+        input: ActivationInput<C>,
+    ) -> Vec<PickerEffect<C>> {
         let target = match pending {
             PendingEnter::Key { key, action } => Some((key, Some(action))),
             PendingEnter::Initial(moves) => {
@@ -973,7 +1021,7 @@ impl PickerState {
         }
     }
 
-    fn accept_enter(&mut self, input: ActivationInput) -> Vec<PickerEffect> {
+    fn accept_enter(&mut self, input: ActivationInput<C>) -> Vec<PickerEffect<C>> {
         if !self.open || self.pending_actions.is_some() {
             return Vec::new();
         }
@@ -1010,7 +1058,11 @@ impl PickerState {
         Vec::new()
     }
 
-    fn accept_action(&mut self, id: &'static str, input: ActivationInput) -> Vec<PickerEffect> {
+    fn accept_action(
+        &mut self,
+        id: &'static str,
+        input: ActivationInput<C>,
+    ) -> Vec<PickerEffect<C>> {
         if self.visible_actions().iter().any(|action| action.id == id) {
             if let Some(key) = self.selected().cloned() {
                 return self.activate(&key, Some(id), input);
@@ -1024,8 +1076,8 @@ impl PickerState {
         &mut self,
         key: &RowKey,
         action: Option<&'static str>,
-        input: ActivationInput,
-    ) -> Vec<PickerEffect> {
+        input: ActivationInput<C>,
+    ) -> Vec<PickerEffect<C>> {
         let Some(row) = self.rows.iter().find(|row| row.key == *key) else {
             log::info!("picker: activation found no row for its key");
             return Vec::new();
@@ -1135,27 +1187,35 @@ fn rank(preset: RankingPreset, query: &str, mut rows: Vec<PickerRow>) -> Vec<Pic
 }
 
 /// The per-picker store `HostModel` keeps.
-#[derive(Debug, Default)]
-pub(crate) struct Pickers {
-    states: std::collections::HashMap<PickerId, PickerState>,
+#[derive(Debug)]
+pub(crate) struct Pickers<C> {
+    states: std::collections::HashMap<PickerId, PickerState<C>>,
 }
 
-impl Pickers {
-    pub(crate) fn get(&self, id: PickerId) -> Option<&PickerState> {
+impl<C> Default for Pickers<C> {
+    fn default() -> Self {
+        Self {
+            states: Default::default(),
+        }
+    }
+}
+
+impl<C: Clone + Eq + std::fmt::Debug> Pickers<C> {
+    pub(crate) fn get(&self, id: PickerId) -> Option<&PickerState<C>> {
         self.states.get(&id)
     }
 
-    pub(crate) fn apply(&mut self, id: PickerId, command: PickerCommand) -> Vec<PickerEffect> {
+    pub(crate) fn apply(
+        &mut self,
+        id: PickerId,
+        command: PickerCommand<C>,
+    ) -> Vec<PickerEffect<C>> {
         self.states
             .entry(id)
             .or_insert_with(|| PickerState::new(id.stops()))
             .apply(command)
     }
 }
-
-pub(crate) mod files;
-pub(crate) mod preview;
-pub(crate) mod usage;
 
 #[cfg(test)]
 mod tests;

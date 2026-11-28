@@ -5,11 +5,13 @@ use crate::host::keys::{
 };
 use crate::host::model::{HostAction, HostEffect};
 use crate::host::picker::{
+    ActivationInput, InputOrigin, PickerCommand, PickerEffect, PickerId, PickerRow, PreviewStatus,
+    RowAction, RowKey, AGENTS_SOURCE, COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
+};
+use crate::host::picker_sources::{
     files::{FileHit, FileIndex},
     preview::PreviewLoader,
     usage::PaletteUsage,
-    ActivationInput, InputOrigin, PickerCommand, PickerEffect, PickerId, PickerRow, PreviewStatus,
-    RowAction, RowKey, AGENTS_SOURCE, COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
 };
 use crate::ui::{
     hints::{HintBar, HintGroup},
@@ -904,7 +906,7 @@ impl PlexiApp {
         &self,
         origin: InputOrigin,
         capture_root: bool,
-    ) -> ActivationInput {
+    ) -> ActivationInput<crate::host::context::PaneCwd> {
         let window = &self.windows[self.active_window];
         ActivationInput {
             origin,
@@ -916,7 +918,7 @@ impl PlexiApp {
         }
     }
 
-    fn capture_palette_activation(&self, origin: InputOrigin) -> ActivationInput {
+    fn capture_palette_activation(&self, origin: InputOrigin) -> ActivationInput<crate::host::context::PaneCwd> {
         self.capture_command_activation(
             origin,
             self.host
@@ -1336,7 +1338,7 @@ impl PlexiApp {
         // Usage history loads in the background on the first open.
         self.palette_sources
             .usage
-            .start(crate::host::picker::usage::usage_path());
+            .start(crate::host::picker_sources::usage::usage_path());
         self.palette_input.reset(query);
         self.begin_palette_agents_session();
         self.apply_palette_command(PickerCommand::Open {
@@ -1357,7 +1359,7 @@ impl PlexiApp {
     /// order. `Query` is answered from `App::logic` (`refresh_command_palette`),
     /// so no source I/O runs on the draw path. `Activate` comes before
     /// `Closed`; the row runs after the close, with focus synchronized once.
-    pub(crate) fn apply_palette_command(&mut self, command: PickerCommand) {
+    pub(crate) fn apply_palette_command(&mut self, command: PickerCommand<crate::host::context::PaneCwd>) {
         let was_showing_actions = self
             .host
             .picker(PickerId::Palette)
@@ -1517,7 +1519,7 @@ impl PlexiApp {
         }
         // Nothing else wakes the host when a read never answers.
         self.ctx
-            .request_repaint_after(crate::host::picker::preview::PREVIEW_TIMEOUT);
+            .request_repaint_after(crate::host::picker_sources::preview::PREVIEW_TIMEOUT);
     }
 
     /// Install finished previews, uploading an image's texture here, in
@@ -1558,7 +1560,7 @@ impl PlexiApp {
         let sources = &mut self.palette_sources;
         if sources.files.is_none() {
             match FileIndex::spawn(
-                std::sync::Arc::new(crate::host::picker::files::walk_root),
+                std::sync::Arc::new(crate::host::picker_sources::files::walk_root),
                 std::sync::Arc::clone(&self.ui_wake),
             ) {
                 Ok(index) => sources.files = Some(index),
@@ -2027,7 +2029,7 @@ impl PlexiApp {
         {
             return true;
         }
-        if picker_key(event, self.palette_input.composing).is_some() {
+        if picker_key::<crate::host::context::PaneCwd>(event, self.palette_input.composing).is_some() {
             return true;
         }
         let mut single =
@@ -2197,7 +2199,7 @@ impl PlexiApp {
         }
         enum Step {
             Input(egui::Event, InputOrigin),
-            Picker(PickerCommand),
+            Picker(PickerCommand<crate::host::context::PaneCwd>),
         }
         let mut steps: Vec<(usize, Step)> = after
             .into_iter()
@@ -2540,7 +2542,7 @@ impl PlexiApp {
         &mut self,
         target: PaletteTarget,
         invocation: Option<&PaletteInvocation>,
-        input: ActivationInput,
+        input: ActivationInput<crate::host::context::PaneCwd>,
     ) {
         match target {
             PaletteTarget::Command(id) => {
@@ -2568,7 +2570,7 @@ impl PlexiApp {
             }
             PaletteTarget::File(path) => {
                 #[cfg(test)]
-                if let Some(key) = crate::host::picker::files::file_key(&path) {
+                if let Some(key) = crate::host::picker_sources::files::file_key(&path) {
                     palette_test_log::activated(key);
                 }
                 // Validated here, on the activating pass, then only queued:
@@ -2642,7 +2644,7 @@ impl PlexiApp {
         &mut self,
         id: CommandRowId,
         invocation: Option<&PaletteInvocation>,
-        input: ActivationInput,
+        input: ActivationInput<crate::host::context::PaneCwd>,
     ) {
         #[cfg(test)]
         palette_test_log::activated(id.key());
@@ -2693,7 +2695,7 @@ impl PlexiApp {
         &mut self,
         command: PaletteCommand,
         invocation: Option<&PaletteInvocation>,
-        input: ActivationInput,
+        input: ActivationInput<crate::host::context::PaneCwd>,
     ) {
         let ctx = self.ctx.clone();
         if let Some(invocation) = invocation {
@@ -4707,7 +4709,7 @@ mod tests {
         ranked_state(entries, query).rows().to_vec()
     }
 
-    fn ranked_state(entries: Vec<PaletteEntry>, query: &str) -> PickerState {
+    fn ranked_state(entries: Vec<PaletteEntry>, query: &str) -> PickerState<crate::host::context::PaneCwd> {
         let mut state = PickerState::new(PALETTE_STOPS);
         state.apply(PickerCommand::Open {
             stop: PALETTE_STOPS[0].id,
@@ -4717,7 +4719,7 @@ mod tests {
         state
     }
 
-    fn answer(state: &mut PickerState, entries: Vec<PaletteEntry>, query: &str) {
+    fn answer(state: &mut PickerState<crate::host::context::PaneCwd>, entries: Vec<PaletteEntry>, query: &str) {
         let normalized = normalized_palette_query(query);
         let rows = entries
             .into_iter()
@@ -5082,7 +5084,7 @@ mod tests {
 
     #[test]
     fn reset_ranking_forgets_the_row() {
-        use crate::host::picker::{
+        use crate::host::picker_sources::{
             files::file_key,
             usage::{load_usage, usage_path, UsageBook, UsageWriter},
         };

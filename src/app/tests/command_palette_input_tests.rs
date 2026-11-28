@@ -4,7 +4,7 @@
 use crate::host::pane::{Pane, ViewRuntime};
 use crate::host::picker::PickerId;
 use crate::overlays::command_palette::palette_test_log;
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use crate::testing::HostHarness;
 use egui::{Event, Key, Modifiers, RawInput};
 
