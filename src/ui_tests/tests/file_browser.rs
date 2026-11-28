@@ -1227,6 +1227,30 @@ fn screenshot_file_browser_action_palette_and_intent_preview_chip() {
 }
 
 #[test]
+fn screenshot_file_browser_open_with_default_app_hint() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("project-notes");
+    std::fs::create_dir(&root).expect("create project folder");
+    std::fs::write(root.join("meeting-notes.txt"), b"Project meeting notes\n")
+        .expect("write selected file");
+
+    let mut h = PlexiUiHarness::new_sized(880.0, 560.0);
+    h.open_file_browser(root);
+    h.run_steps(3);
+    h.harness().key_press(egui::Key::Slash);
+    h.run_steps(2);
+    h.harness()
+        .input_mut()
+        .events
+        .push(egui::Event::Text("open-default".to_string()));
+    h.run_steps(2);
+
+    assert!(h.host_has_label("Open with default app: meeting-notes.txt [Enter]"));
+    h.save_screenshot(&evidence_png!())
+        .expect("render the default app intent hint");
+}
+
+#[test]
 fn screenshot_file_browser_new_file_prompt() {
     let mut h = PlexiUiHarness::new_sized(880.0, 560.0);
     let root = h.workspace_root().to_path_buf();
