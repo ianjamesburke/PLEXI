@@ -1758,7 +1758,9 @@ impl PlexiApp {
                         .find(|ctx| ctx.context_id == win.context_id)
                         .map(|ctx| ctx.name.to_string())
                         .unwrap_or_default();
-                    for (pane_id, pane) in win.panes.iter() {
+                    let mut ordered: Vec<_> = win.panes.iter().collect();
+                    ordered.sort_by_key(|(pane_id, _)| **pane_id);
+                    for (pane_id, pane) in ordered {
                         // Only emit panes that have a corresponding tile in the tree.
                         // win.panes and the tile tree can desync (e.g. from corrupted
                         // restore state); omitting orphaned entries ensures every id

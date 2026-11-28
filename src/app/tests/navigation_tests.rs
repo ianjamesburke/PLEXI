@@ -646,6 +646,31 @@ fn pane_info_and_list_include_agent_state() {
 }
 
 #[test]
+fn list_panes_returns_ids_ascending() {
+    let mut h = HostHarness::new();
+    for _ in 0..6 {
+        h.add_focused_terminal();
+    }
+
+    let list_file = std::env::temp_dir().join("plexi_test_pane_list_order_1828.json");
+    h.inject_ipc(plexi_protocol::HostRequest::ListPanes {
+        response_file: list_file.to_string_lossy().to_string(),
+        context_id: None,
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let list_json =
+        std::fs::read_to_string(&list_file).expect("ListPanes must write response file");
+    let _ = std::fs::remove_file(&list_file);
+    let panes: Vec<serde_json::Value> = serde_json::from_str(&list_json).expect("valid JSON");
+    let ids: Vec<u64> = panes.iter().filter_map(|p| p["id"].as_u64()).collect();
+    assert!(ids.len() >= 6, "expected at least six panes, got {ids:?}");
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted, "pane list must be in ascending id order");
+}
+
+#[test]
 fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_failure() {
     let mut h = HostHarness::new();
     let terminal_pane = h.add_focused_terminal();
