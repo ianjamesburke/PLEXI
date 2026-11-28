@@ -28,6 +28,14 @@ def profile_home_for(channel, temp_home, account_home):
     return account_home
 
 
+def person_terminal(panes):
+    humans = [p['id'] for p in panes if p.get('type') == 'terminal' and p.get('spawned_by') == 'human']
+    if len(humans) != 1:
+        listing = ', '.join(f"{p.get('id')}:{p.get('type')}:{p.get('spawned_by')}" for p in panes)
+        raise AssertionError(f'expected exactly one human terminal in pane list, got [{listing}]')
+    return humans[0]
+
+
 def verify_macos_minimum(binary, target):
     output = subprocess.check_output(['vtool', '-show-build', str(binary)], text=True)
     versions = re.findall(r'^\s*minos\s+(\d+(?:\.\d+)+)\s*$', output, re.M)
@@ -170,7 +178,7 @@ def main(args):
                 env['PLEXI_SOCKET'] = status['socket']
                 if manifest['channel'] != 'stable': env['PLEXI_CHANNEL'] = manifest['channel']
                 panes = json.loads(run([executable, 'pane', 'list']))
-                terminal = panes[0]['id']
+                terminal = person_terminal(panes)
                 run([executable, 'pane', 'name', str(terminal), 'Distribution terminal'])
                 run([executable, 'pane', 'send', str(terminal), 'echo PLEXI_DISTRIBUTION_OK', '--submit'])
                 deadline = time.monotonic() + 15

@@ -96,5 +96,22 @@ class PackageProfileTests(unittest.TestCase):
                 package.check_disposable(self.account, env)
 
 
+class PersonTerminalTests(unittest.TestCase):
+    queued = {'id': 2, 'type': 'terminal', 'spawned_by': 'queue'}
+    human = {'id': 1, 'type': 'terminal', 'spawned_by': 'human'}
+
+    def test_picks_human_terminal_in_either_order(self):
+        for panes in ([self.queued, self.human], [self.human, self.queued]):
+            with self.subTest(order=[p['id'] for p in panes]):
+                self.assertEqual(package.person_terminal(panes), 1)
+
+    def test_single_pane_bootstrap(self):
+        self.assertEqual(package.person_terminal([self.human]), 1)
+
+    def test_no_human_terminal_names_every_pane(self):
+        with self.assertRaisesRegex(AssertionError, r"2.*terminal.*queue"):
+            package.person_terminal([self.queued])
+
+
 if __name__ == '__main__':
     unittest.main()
