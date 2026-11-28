@@ -90,7 +90,8 @@ def main(args):
                 raise SystemExit(f'{binary} must be built for {channel} to honor the temporary HOME')
         installer = package / ('plexi-installer.exe' if os.name == 'nt' else 'plexi-installer')
         auto_started = False
-        accepted = channel == 'alpha' or (channel == 'beta' and '-alpha.' not in tag) or (channel == 'stable' and '-' not in tag)
+        # Mirrors release::accepts: one channel, one lane.
+        accepted = (channel == 'alpha' and '-alpha.' in tag) or (channel == 'beta' and '-beta.' in tag) or (channel == 'stable' and '-' not in tag)
         if accepted:
             # Serve the actual release archive, then execute the public bootstrap.
             # Close the server before GUI launch to prove resources are local.
