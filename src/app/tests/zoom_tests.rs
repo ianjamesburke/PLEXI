@@ -4,7 +4,8 @@
 
 use crate::app::attention_queue::{QueueCategory, QueueOption, OVERLAY_QUESTION};
 use crate::app::input_router::PlexiInput;
-use crate::app::zoom::{ColumnWidthPreset, ZoomLevel};
+use crate::app::zoom::ZoomLevel;
+use crate::strip::model::ColumnWidthPreset;
 use crate::testing::HostHarness;
 use crate::ui::style;
 use egui::{Color32, Event, Key, Modifiers, Pos2, Rect, Vec2};

@@ -5,11 +5,13 @@ use crate::host::keys::{
 };
 use crate::host::model::{HostAction, HostEffect};
 use crate::host::picker::{
+    ActivationInput, InputOrigin, PickerCommand, PickerEffect, PickerId, PickerRow, PreviewStatus,
+    RowAction, RowKey, AGENTS_SOURCE, COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
+};
+use crate::host::picker_sources::{
     files::{FileHit, FileIndex},
     preview::PreviewLoader,
     usage::PaletteUsage,
-    ActivationInput, InputOrigin, PickerCommand, PickerEffect, PickerId, PickerRow, PreviewStatus,
-    RowAction, RowKey, AGENTS_SOURCE, COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
 };
 use crate::ui::{
     hints::{HintBar, HintGroup},
@@ -909,7 +911,9 @@ impl PlexiApp {
         ActivationInput {
             origin,
             pane_root: if capture_root {
-                window.focused_root_source(window.context_id)
+                window
+                    .focused_root_source(window.context_id)
+                    .map(crate::host::picker::ActivationCapture::new)
             } else {
                 None
             },
@@ -1336,7 +1340,7 @@ impl PlexiApp {
         // Usage history loads in the background on the first open.
         self.palette_sources
             .usage
-            .start(crate::host::picker::usage::usage_path());
+            .start(crate::host::picker_sources::usage::usage_path());
         self.palette_input.reset(query);
         self.begin_palette_agents_session();
         self.apply_palette_command(PickerCommand::Open {
@@ -1517,7 +1521,7 @@ impl PlexiApp {
         }
         // Nothing else wakes the host when a read never answers.
         self.ctx
-            .request_repaint_after(crate::host::picker::preview::PREVIEW_TIMEOUT);
+            .request_repaint_after(crate::host::picker_sources::preview::PREVIEW_TIMEOUT);
     }
 
     /// Install finished previews, uploading an image's texture here, in
@@ -1558,7 +1562,7 @@ impl PlexiApp {
         let sources = &mut self.palette_sources;
         if sources.files.is_none() {
             match FileIndex::spawn(
-                std::sync::Arc::new(crate::host::picker::files::walk_root),
+                std::sync::Arc::new(crate::host::picker_sources::files::walk_root),
                 std::sync::Arc::clone(&self.ui_wake),
             ) {
                 Ok(index) => sources.files = Some(index),
@@ -2568,7 +2572,7 @@ impl PlexiApp {
             }
             PaletteTarget::File(path) => {
                 #[cfg(test)]
-                if let Some(key) = crate::host::picker::files::file_key(&path) {
+                if let Some(key) = crate::host::picker_sources::files::file_key(&path) {
                     palette_test_log::activated(key);
                 }
                 // Validated here, on the activating pass, then only queued:
@@ -5082,7 +5086,7 @@ mod tests {
 
     #[test]
     fn reset_ranking_forgets_the_row() {
-        use crate::host::picker::{
+        use crate::host::picker_sources::{
             files::file_key,
             usage::{load_usage, usage_path, UsageBook, UsageWriter},
         };

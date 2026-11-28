@@ -4,7 +4,7 @@
 //! (stint 1564). The fixture requests kitty release events (`CSI > 3 u`).
 
 use super::terminal_page_scroll_tests::{release_key, terminal_with_fixture};
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use crate::testing::HostHarness;
 
 const PRESS: &str = "\x1b[5;1:1~";

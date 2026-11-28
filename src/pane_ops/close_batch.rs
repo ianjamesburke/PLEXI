@@ -19,7 +19,7 @@ use crate::app::PlexiApp;
 use crate::host::model::{
     CloseBatchWait, PaneCloseBatch, PaneSelection, PaneTargetSource, PaneTargets,
 };
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 
 /// What a paused batch learned from its pane's dialog this pass.
 enum WaitOutcome {

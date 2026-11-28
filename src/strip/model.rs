@@ -1,9 +1,32 @@
 //! Compatibility model for persisted strip-era workspace data and context summaries.
 //! Pane geometry and split shares are owned by each window's tile tree.
 
-use crate::app::zoom::ColumnWidthPreset;
-use crate::spatial::tiling::PaneId;
-use crate::ui::style;
+use crate::host::model::PaneId;
+
+/// Canvas width assumed for strip shares when the real width is not known yet.
+pub const STRIP_FALLBACK_CANVAS_W: f32 = 1200.0;
+
+/// Share of the pair width a [`ColumnWidthPreset::Parent35`] column takes.
+pub const COLUMN_WIDTH_PARENT: f32 = 0.35;
+/// Share of the pair width a [`ColumnWidthPreset::Child65`] column takes.
+pub const COLUMN_WIDTH_CHILD: f32 = 0.65;
+
+/// Fixed column width presets (`35%` parent/list, `65%` child/main).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ColumnWidthPreset {
+    Parent35,
+    #[default]
+    Child65,
+}
+
+impl ColumnWidthPreset {
+    pub fn ratio(self) -> f32 {
+        match self {
+            Self::Parent35 => COLUMN_WIDTH_PARENT,
+            Self::Child65 => COLUMN_WIDTH_CHILD,
+        }
+    }
+}
 
 fn default_strip_gap() -> f32 {
     4.0
@@ -199,7 +222,7 @@ impl Strip {
             .or(self
                 .reference_width_px
                 .filter(|w| w.is_finite() && *w > 0.0))
-            .unwrap_or(style::STRIP_FALLBACK_CANVAS_W)
+            .unwrap_or(STRIP_FALLBACK_CANVAS_W)
     }
 
     /// Reference width used to resolve preset/ratio column widths.
@@ -209,7 +232,7 @@ impl Strip {
         } else {
             self.reference_width_px
                 .filter(|w| w.is_finite() && *w > 0.0)
-                .unwrap_or(style::STRIP_FALLBACK_CANVAS_W)
+                .unwrap_or(STRIP_FALLBACK_CANVAS_W)
         }
     }
 

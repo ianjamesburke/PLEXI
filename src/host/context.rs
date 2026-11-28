@@ -1,7 +1,8 @@
 use crate::host::keys::Direction;
+use crate::host::model::PaneId;
 use crate::host::pane::Pane;
 use crate::host::shell;
-use crate::spatial::tiling::{PaneId, TabGroupInfo};
+use crate::spatial::tiling::TabGroupInfo;
 use egui_tiles::{Container, Tile, TileId, Tree};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -118,6 +119,19 @@ impl PartialEq for PaneCwd {
 }
 
 impl Eq for PaneCwd {}
+
+impl crate::host::picker::Capture for PaneCwd {
+    fn same(&self, other: &dyn crate::host::picker::Capture) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| self == other)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 pub(crate) enum WindowMenuAction {
     Rename,

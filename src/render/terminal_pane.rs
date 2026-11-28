@@ -11,8 +11,9 @@
 
 use plexi_protocol::AgentState;
 use crate::host::pane::TerminalPane;
+use crate::host::model::PaneId;
 use crate::spatial::tiling::{
-    paint_tab_bar, PaneId, TabBarAction, TabBarPaintParams, TabGroupInfo, TAB_BAR_HEIGHT,
+    paint_tab_bar, TabBarAction, TabBarPaintParams, TabGroupInfo, TAB_BAR_HEIGHT,
 };
 use crate::ui::theme::{self, Colors};
 use egui::Vec2;

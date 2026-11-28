@@ -637,7 +637,7 @@ const FILES_STOP: &[Stop] = &[Stop {
 
 fn file(id: &str, score: Option<i64>, picks: Option<(u32, u64)>, modified: u64) -> PickerRow {
     PickerRow {
-        usage: picks.map(|(count, last_pick)| usage::UsageEntry { count, last_pick }),
+        usage: picks.map(|(count, last_pick)| UsageEntry { count, last_pick }),
         modified: Some(modified),
         preview: Some(PreviewRef::Text),
         ..row("files", id, 0, score)

@@ -10,7 +10,7 @@ use crate::app::PlexiApp;
 use crate::broker::pane_authority::{
     AdmittedRole, CredentialScope, GrantRequest, GrantSource, LivePaneAuthority, PaneAuthority,
 };
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 
 use super::construct::{LaunchCommand, McpBearer, TerminalLaunch};
 use super::create::PaneContextEnv;

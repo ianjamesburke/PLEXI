@@ -11,7 +11,7 @@ use crate::app::view_trait::View;
 use crate::app::PlexiApp;
 use crate::host::command::ShareRatio;
 use crate::host::pane::{Pane, TerminalPane};
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use egui_tiles::{Tile, TileId, Tree};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -2533,7 +2533,7 @@ impl PlexiApp {
         run_token: Option<&str>,
         conjoined: bool,
         origin_context_id: Option<u64>,
-    ) -> Result<(crate::spatial::tiling::PaneId, u64), String> {
+    ) -> Result<(crate::host::model::PaneId, u64), String> {
         self.spawn_agent_worker_attributed(
             WorkerAttribution {
                 spawned_by: None,

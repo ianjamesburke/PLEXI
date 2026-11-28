@@ -2,7 +2,7 @@ pub mod router;
 pub mod secrets;
 
 use crate::host::context::Context;
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 use egui_tiles::{TileId, Tree};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1279,7 +1279,7 @@ impl WorkspaceFile {
     /// context whose columns follow the saved window trees exactly as
     /// `validate` expects. Focus follows the context's active window.
     pub(crate) fn with_strips_from_windows(mut self) -> Self {
-        use crate::app::zoom::ColumnWidthPreset;
+        use crate::strip::model::ColumnWidthPreset;
         use crate::strip::{Column, ColumnWidth, Strip};
         self.version = CURRENT_VERSION;
         self.strips.clear();

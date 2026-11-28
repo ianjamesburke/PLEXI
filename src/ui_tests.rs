@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use crate::app::PlexiApp;
 use crate::host::pane::{Pane, ViewRuntime};
 use crate::host::wasm_python::PythonFramePhase;
-use crate::spatial::tiling::PaneId;
+use crate::host::model::PaneId;
 
 struct FirstFrameWait {
     phase: PythonFramePhase,
@@ -976,7 +976,7 @@ mod tests {
         });
     }
 
-    fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
+    fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::host::model::PaneId {
         let active_window = h.with_app(|app| app.active_window);
         add_focused_pane_to_window(h, active_window)
     }
@@ -984,7 +984,7 @@ mod tests {
     fn add_focused_pane_to_window(
         h: &mut PlexiUiHarness,
         window_index: usize,
-    ) -> crate::spatial::tiling::PaneId {
+    ) -> crate::host::model::PaneId {
         // Root the file browser in the harness's empty workspace — never the
         // real temp_dir(), whose ~50k dev-machine entries balloon rendering.
         let browser_root = h.workspace.path().to_path_buf();

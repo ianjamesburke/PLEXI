@@ -1434,7 +1434,7 @@ impl PlexiApp {
     pub(crate) fn find_open_note_pane(
         &self,
         path: &std::path::Path,
-    ) -> Option<crate::spatial::tiling::PaneId> {
+    ) -> Option<crate::host::model::PaneId> {
         let identity = crate::app::text_editor_view::note_path_identity(path);
         self.windows.iter().find_map(|win| {
             let mut panes: Vec<_> = win.panes.iter().collect();
@@ -1605,9 +1605,9 @@ impl PlexiApp {
     /// Handles the case where `tile_id` is a Container wrapping the actual pane
     /// (egui_tiles normalises bare-pane roots into containers on first render).
     pub(crate) fn find_pane_in_tile(
-        tree: &egui_tiles::Tree<crate::spatial::tiling::PaneId>,
+        tree: &egui_tiles::Tree<crate::host::model::PaneId>,
         tile_id: egui_tiles::TileId,
-    ) -> Option<crate::spatial::tiling::PaneId> {
+    ) -> Option<crate::host::model::PaneId> {
         match tree.tiles.get(tile_id)? {
             egui_tiles::Tile::Pane(id) => Some(*id),
             egui_tiles::Tile::Container(c) => c

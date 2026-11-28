@@ -55,12 +55,12 @@ pub(crate) enum RankingPreset {
 }
 
 /// The order `RankingPreset::Usage` sorts by, as a key: lower sorts first.
-/// A source that must cut its answer to `MAX_SEARCH_HITS` cuts by this same
+/// A source that must cut its answer to `MAX_SOURCE_ROWS` cuts by this same
 /// key, so the reducer and the source never disagree on the top rows.
 pub(crate) fn usage_rank_key(
-    file_match: Option<files::FileMatchRank>,
+    file_match: Option<FileMatchRank>,
     score: Option<i64>,
-    usage: Option<usage::UsageEntry>,
+    usage: Option<UsageEntry>,
     modified: Option<u64>,
 ) -> impl Ord {
     use std::cmp::Reverse;
@@ -70,6 +70,38 @@ pub(crate) fn usage_rank_key(
         Reverse(usage.map(|u| (u.count, u.last_pick))),
         Reverse(modified),
     )
+}
+
+/// How a query matches the filename, before recency and usage are compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FileMatchRank {
+    exact_name_or_stem: bool,
+    basename_tier: u8,
+    depth: std::cmp::Reverse<usize>,
+    unmatched_prefix_tail: std::cmp::Reverse<usize>,
+}
+
+impl FileMatchRank {
+    pub(crate) fn new(
+        exact_name_or_stem: bool,
+        basename_tier: u8,
+        depth: usize,
+        unmatched_prefix_tail: usize,
+    ) -> Self {
+        Self {
+            exact_name_or_stem,
+            basename_tier,
+            depth: std::cmp::Reverse(depth),
+            unmatched_prefix_tail: std::cmp::Reverse(unmatched_prefix_tail),
+        }
+    }
+}
+
+/// How often and how lately the person picked a row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UsageEntry {
+    pub count: u32,
+    pub last_pick: u64,
 }
 
 /// One stop of a picker: data defined in code.
@@ -130,7 +162,7 @@ pub(crate) const PALETTE_STOPS: &[Stop] = &[
 ];
 
 /// The most rows one answer shows; ranking decides which.
-pub(crate) const MAX_SOURCE_ROWS: usize = crate::search::MAX_SEARCH_HITS;
+pub(crate) const MAX_SOURCE_ROWS: usize = 250;
 
 /// A row's identity: `<source id>:<stable id>`, split on the first `:`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -185,7 +217,7 @@ pub(crate) struct PickerRow {
     /// for an empty query or a row that matched without a score.
     pub score: Option<i64>,
     /// Filename and depth preferences used by the Files stop.
-    pub file_match: Option<files::FileMatchRank>,
+    pub file_match: Option<FileMatchRank>,
     /// Pinned rows lead the list whatever the query.
     pub pinned: bool,
     /// When set the row stays listed, shows the reason and refuses Enter.
@@ -193,7 +225,7 @@ pub(crate) struct PickerRow {
     pub actions: Vec<RowAction>,
     pub attention: Option<AttentionRank>,
     /// How often and how lately this row was picked (`RankingPreset::Usage`).
-    pub usage: Option<usage::UsageEntry>,
+    pub usage: Option<UsageEntry>,
     /// Last modification, unix seconds (`RankingPreset::Usage`).
     pub modified: Option<u64>,
     /// What the preview half shows for this row, on a stop with a preview.
@@ -275,8 +307,39 @@ pub(crate) enum InputOrigin {
 #[derive(Default, Clone, PartialEq, Eq)]
 pub(crate) struct ActivationInput {
     pub(crate) origin: InputOrigin,
-    pub(crate) pane_root: Option<crate::host::context::PaneCwd>,
+    pub(crate) pane_root: Option<ActivationCapture>,
 }
+
+/// A host value that rides through the reducer untouched: the reducer holds,
+/// clones and compares it but never looks inside.
+pub(crate) trait Capture: std::any::Any + std::fmt::Debug + Send + Sync {
+    /// True when `other` is the same kind of value and equal to this one.
+    fn same(&self, other: &dyn Capture) -> bool;
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// A [`Capture`] taken when an activation was requested.
+#[derive(Debug, Clone)]
+pub(crate) struct ActivationCapture(std::sync::Arc<dyn Capture>);
+
+impl ActivationCapture {
+    pub(crate) fn new(value: impl Capture) -> Self {
+        Self(std::sync::Arc::new(value))
+    }
+
+    /// The captured value, when it is a `T`.
+    pub(crate) fn get<T: Capture>(&self) -> Option<&T> {
+        self.0.as_any().downcast_ref()
+    }
+}
+
+impl PartialEq for ActivationCapture {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.same(other.0.as_ref())
+    }
+}
+
+impl Eq for ActivationCapture {}
 
 impl std::fmt::Debug for ActivationInput {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1153,9 +1216,6 @@ impl Pickers {
     }
 }
 
-pub(crate) mod files;
-pub(crate) mod preview;
-pub(crate) mod usage;
 
 #[cfg(test)]
 mod tests;
