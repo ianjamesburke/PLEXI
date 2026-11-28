@@ -95,6 +95,7 @@ def test_init_without_a_server_id_fails_visibly() -> None:
     data = _apply(effects)
     assert not _of(effects, McpConnect)
     assert "mcp_servers.toml" in data["fatal"]
+    assert "plexi view open ./plugins/dev/mcp-bridge -- filesystem" in data["fatal"]
 
 
 def test_connect_then_initialize_then_tools_list() -> None:
