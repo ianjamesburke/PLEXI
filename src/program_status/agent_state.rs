@@ -1,7 +1,7 @@
 //! Map OSC 7501 records onto Plexi's [`PaneAgentState`].
 use super::records::{Kind, Record, State};
 use super::{ProgramStatusStore, SharedProgramStatus};
-use crate::protocol::{AgentState, PaneAgentState};
+use plexi_protocol::{AgentState, PaneAgentState};
 
 /// Fallback `PaneAgentState::agent` when no record or ancestor names a plugin.
 const DEFAULT_APP: &str = "program";

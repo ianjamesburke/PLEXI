@@ -434,14 +434,14 @@ impl PlexiApp {
                                                     .is_some_and(|s| s.is_failure())
                                         });
                                     let activity = if is_error_exit {
-                                        Some(crate::protocol::AgentState::Interrupted)
+                                        Some(plexi_protocol::AgentState::Interrupted)
                                     } else {
                                         pane_ref
                                             .and_then(|p| {
                                                 p.effective_activity().cloned().or_else(|| {
                                                     p.as_terminal().and_then(|t| {
                                                         t.standby_session.as_ref().map(|_| {
-                                                            crate::protocol::AgentState::NeedsYou
+                                                            plexi_protocol::AgentState::NeedsYou
                                                         })
                                                     })
                                                 })
@@ -480,7 +480,7 @@ impl PlexiApp {
                             && computed_state.pane_count == 0
                             && matches!(
                                 computed_state.status,
-                                crate::protocol::ContextStatus::Idle
+                                plexi_protocol::ContextStatus::Idle
                             ) {
                             existing_state.cloned().unwrap_or(computed_state)
                         } else {
@@ -530,7 +530,7 @@ impl PlexiApp {
                                 && computed.pane_count == 0
                                 && matches!(
                                     computed.status,
-                                    crate::protocol::ContextStatus::Idle
+                                    plexi_protocol::ContextStatus::Idle
                                 )
                                 && portal.context_state.is_some()
                             {

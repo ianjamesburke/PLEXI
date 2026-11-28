@@ -106,7 +106,7 @@ mod tests {
             "event":"HarnessExit","detail":"harness exited with code 0 without agent done"})).unwrap());
         h.hidden_frame();
         let worker = h.app.windows.iter().find_map(|window| window.panes.get(&panes[2])).unwrap();
-        assert_eq!(worker.agent().unwrap().state, crate::protocol::AgentState::ExitedUnreported);
+        assert_eq!(worker.agent().unwrap().state, plexi_protocol::AgentState::ExitedUnreported);
         let response: Value =
             serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
         assert_eq!(response["status"], "PARTIAL");
@@ -178,7 +178,7 @@ mod tests {
         let response: Value =
             serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
         assert_eq!(response["status"], status);
-        let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let fleet = h.app.agents_view(plexi_protocol::FleetFilter::All);
         for (i, pane) in panes.iter().enumerate().skip(valid) {
             let terminal = h
                 .app
@@ -188,7 +188,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 terminal.agent().unwrap().state,
-                crate::protocol::AgentState::Failed
+                plexi_protocol::AgentState::Failed
             );
             let row = fleet
                 .tasks
@@ -240,7 +240,7 @@ mod tests {
         assert!(terminal.agent_completed);
         assert_ne!(
             terminal.agent.as_ref().unwrap().state,
-            crate::protocol::AgentState::Failed
+            plexi_protocol::AgentState::Failed
         );
         h.app.team_runs[0].deadline = std::time::Instant::now();
         h.hidden_frame();
@@ -384,9 +384,9 @@ mod tests {
             .panes
             .get_mut(&caller)
             .unwrap()
-            .set_agent(Some(crate::protocol::PaneAgentState {
+            .set_agent(Some(plexi_protocol::PaneAgentState {
                 agent: "codex".into(),
-                state: crate::protocol::AgentState::Working,
+                state: plexi_protocol::AgentState::Working,
                 pane_id: caller,
                 detail: None,
                 session_id: None,
@@ -472,7 +472,7 @@ mod tests {
             !reply.exists(),
             "team run must park until all members finish"
         );
-        let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+        let fleet = h.app.agents_view(plexi_protocol::FleetFilter::All);
         let task = fleet
             .tasks
             .iter()
@@ -905,7 +905,7 @@ impl PlexiApp {
                 if terminal
                     .and_then(|terminal| terminal.agent.as_ref())
                     .is_some_and(|agent| {
-                        agent.state == crate::protocol::AgentState::ExitedUnreported
+                        agent.state == plexi_protocol::AgentState::ExitedUnreported
                     })
                 {
                     let text = self
@@ -941,7 +941,7 @@ impl PlexiApp {
                 if let Some(agent) = terminal
                     .agent
                     .as_ref()
-                    .filter(|a| a.state == crate::protocol::AgentState::Failed)
+                    .filter(|a| a.state == plexi_protocol::AgentState::Failed)
                 {
                     return Some(MemberOutcome::Failed(
                         agent
@@ -1039,7 +1039,7 @@ impl PlexiApp {
                 {
                     t.agent_completed = true;
                     if let Some(agent) = &mut t.agent {
-                        agent.state = crate::protocol::AgentState::Completed;
+                        agent.state = plexi_protocol::AgentState::Completed;
                         agent.detail = Some(format!("{status}: {}", summaries.join("; ")));
                     }
                 }
@@ -1109,9 +1109,9 @@ impl PlexiApp {
                     terminal.agent_completed = false;
                     terminal.fleet_done_unseen = false;
                 }
-                let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                let _ = pane.set_agent(Some(plexi_protocol::PaneAgentState {
                     pane_id,
-                    state: crate::protocol::AgentState::Failed,
+                    state: plexi_protocol::AgentState::Failed,
                     agent: agent
                         .as_ref()
                         .map(|a| a.agent.clone())
@@ -1145,9 +1145,9 @@ impl PlexiApp {
                     terminal.fleet_seen = false;
                     terminal.fleet_since = crate::platform::clock::now_secs();
                 }
-                let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                let _ = pane.set_agent(Some(plexi_protocol::PaneAgentState {
                     pane_id,
-                    state: crate::protocol::AgentState::ExitedUnreported,
+                    state: plexi_protocol::AgentState::ExitedUnreported,
                     agent: agent
                         .as_ref()
                         .map(|a| a.agent.clone())
@@ -1160,7 +1160,7 @@ impl PlexiApp {
         }
         self.report_agent_attention(
             pane_id,
-            &crate::protocol::AgentState::ExitedUnreported,
+            &plexi_protocol::AgentState::ExitedUnreported,
             Some(reason),
         );
         self.refresh_portal_context_states();

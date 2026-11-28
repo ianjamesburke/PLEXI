@@ -158,7 +158,7 @@ fn core_only_status_reports_startup_mode_after_config_is_changed() {
     let mut h = HostHarness::from_profile_dir(profile.path());
     std::fs::write(profile.path().join("config.toml"), "core_only = false\n").unwrap();
     let response = profile.path().join("status.json");
-    h.inject_ipc(crate::protocol::HostRequest::GetBuildInfo {
+    h.inject_ipc(plexi_protocol::HostRequest::GetBuildInfo {
         response_file: response.to_string_lossy().into_owned(),
     });
     h.run_frames(2);

@@ -10,7 +10,7 @@
 //! a caller cannot read one without the other.
 
 use crate::host::pane::Pane;
-use crate::protocol::AgentState;
+use plexi_protocol::AgentState;
 
 /// Read the pane's `status` slot (the agent-authored liveness claim), if one
 /// has been written. The value is opaque to the host — an agent embeds its

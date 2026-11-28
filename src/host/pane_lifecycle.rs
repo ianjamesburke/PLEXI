@@ -10,7 +10,7 @@
 //! kernel exit code or signal, or is explicitly unknown when unavailable. Slot values are lossless byte arrays after the write.
 //! Records have the timeline's in-memory lifetime; this is not a durable replay
 //! or restart contract. CLI wait/follow consumers use `plugin::event_stream`.
-use crate::protocol::{AgentBlockedReason, AgentState};
+use plexi_protocol::{AgentBlockedReason, AgentState};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -170,7 +170,7 @@ mod tests {
     use super::*;
     use crate::broker::{ActorType, GrantDuration};
     use crate::host::plugin_timeline::{EmittedEvent, PluginTimeline, SubscriptionRecord};
-    use crate::protocol::{EventStreamDecl, PayloadMode, PluginEventActor, TriggerMode};
+    use plexi_protocol::{EventStreamDecl, PayloadMode, PluginEventActor, TriggerMode};
 
     #[test]
     fn pane_lifecycle_uses_scoped_resource_filtered_bus_and_reserves_publisher() {

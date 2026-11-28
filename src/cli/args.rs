@@ -1943,7 +1943,7 @@ pub struct FileOpenArgs {
     pub window: bool,
     /// Placement by name
     #[arg(long, value_enum, value_name = "PLACEMENT")]
-    pub split: Option<crate::protocol::OpenPlacement>,
+    pub split: Option<plexi_protocol::OpenPlacement>,
     /// Place the new pane relative to this pane id or name instead of the
     /// calling pane. It does not change what PATH means.
     #[arg(long, value_name = "PANE_ID")]
@@ -1955,8 +1955,8 @@ pub struct FileOpenArgs {
 
 impl FileOpenArgs {
     /// The explicit placement, or `None` so the host applies its default.
-    pub fn placement(&self) -> Option<crate::protocol::OpenPlacement> {
-        use crate::protocol::OpenPlacement;
+    pub fn placement(&self) -> Option<plexi_protocol::OpenPlacement> {
+        use plexi_protocol::OpenPlacement;
         self.split.or_else(|| {
             [
                 (self.right, OpenPlacement::Right),
@@ -2907,7 +2907,7 @@ pub enum ContextCmd {
         /// Defaults to `tiled` when the pane count fills a square grid (4, 9, …)
         /// and `columns` otherwise so no grid cell is left empty.
         #[arg(long, value_enum)]
-        layout: Option<crate::protocol::SubContextLayout>,
+        layout: Option<plexi_protocol::SubContextLayout>,
         /// Zoom into the new sub-context after creation. Default: stay put.
         #[arg(long)]
         focus: bool,
@@ -3177,7 +3177,7 @@ pub enum AgentCmd {
         cmd: Option<AgentFleetCmd>,
         /// Select all, needs-attention, working, or done workers.
         #[arg(long, value_enum, default_value = "all")]
-        filter: crate::protocol::FleetFilter,
+        filter: plexi_protocol::FleetFilter,
     },
     /// Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
     ///
@@ -3487,7 +3487,7 @@ pub enum AgentCmd {
         event: Option<String>,
         /// Explicit blocking reason; state-only callers remain supported.
         #[arg(long, value_enum, requires = "state")]
-        blocked_reason: Option<crate::protocol::AgentBlockedReason>,
+        blocked_reason: Option<plexi_protocol::AgentBlockedReason>,
     },
     /// Show current agent state for all panes.
     ///

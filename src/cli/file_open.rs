@@ -7,7 +7,7 @@
 
 use super::args::FileOpenArgs;
 use super::reply::OutputMode;
-use crate::protocol::HostRequest;
+use plexi_protocol::HostRequest;
 
 /// The request both spellings send. `response_file` is filled in by the
 /// transport.

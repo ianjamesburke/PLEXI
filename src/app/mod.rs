@@ -89,7 +89,7 @@ pub(crate) fn is_finished_script_session(session: &crate::workspace::SavedAgentS
     crate::cli::AgentHarness::parse(&session.harness) == Some(crate::cli::AgentHarness::Script)
         && matches!(
             session.last_state,
-            crate::protocol::AgentState::Completed | crate::protocol::AgentState::ExitedUnreported
+            plexi_protocol::AgentState::Completed | plexi_protocol::AgentState::ExitedUnreported
         )
 }
 
@@ -886,7 +886,7 @@ pub(crate) fn handle_socket_line_in(
         .and_then(|mut frame| {
             let claims: &[&str] = match frame["type"].as_str() {
                 Some("notify") => &["source_pane_id", "source_context_id"],
-                Some("shutdown") => crate::protocol::REMOVED_IDENTITY_FIELDS,
+                Some("shutdown") => plexi_protocol::REMOVED_IDENTITY_FIELDS,
                 _ => return None,
             };
             let kind = frame["type"].as_str().unwrap_or_default().to_string();
@@ -902,9 +902,9 @@ pub(crate) fn handle_socket_line_in(
             })
         });
     let line = legacy_notify.as_deref().unwrap_or(line);
-    match serde_json::from_str::<crate::protocol::HostRequest>(line) {
+    match serde_json::from_str::<plexi_protocol::HostRequest>(line) {
         Ok(mut cmd) => {
-            if let Some(field) = crate::protocol::removed_payload_identity_field(&cmd) {
+            if let Some(field) = plexi_protocol::removed_payload_identity_field(&cmd) {
                 refuse_removed_field(ack_writer, field);
                 return;
             }
@@ -923,17 +923,17 @@ pub(crate) fn handle_socket_line_in(
                 return;
             }
             let protected_reply = match &mut cmd {
-                crate::protocol::HostRequest::SecretGet { response_file, .. }
-                | crate::protocol::HostRequest::SecretSet { response_file, .. }
-                | crate::protocol::HostRequest::SecretDelete { response_file, .. }
-                | crate::protocol::HostRequest::FolderSecretExec { response_file, .. }
-                | crate::protocol::HostRequest::RunSecrets { response_file, .. }
-                | crate::protocol::HostRequest::FolderSecretRead { response_file, .. }
-                | crate::protocol::HostRequest::FolderSecretSet { response_file, .. }
-                | crate::protocol::HostRequest::FolderSecretRm { response_file, .. } => {
+                plexi_protocol::HostRequest::SecretGet { response_file, .. }
+                | plexi_protocol::HostRequest::SecretSet { response_file, .. }
+                | plexi_protocol::HostRequest::SecretDelete { response_file, .. }
+                | plexi_protocol::HostRequest::FolderSecretExec { response_file, .. }
+                | plexi_protocol::HostRequest::RunSecrets { response_file, .. }
+                | plexi_protocol::HostRequest::FolderSecretRead { response_file, .. }
+                | plexi_protocol::HostRequest::FolderSecretSet { response_file, .. }
+                | plexi_protocol::HostRequest::FolderSecretRm { response_file, .. } => {
                     Some((response_file, SECRET_STREAM))
                 }
-                crate::protocol::HostRequest::NeedsYouApi { op, response_file, .. }
+                plexi_protocol::HostRequest::NeedsYouApi { op, response_file, .. }
                     if op == "claude_hook" =>
                 {
                     Some((response_file, CLAUDE_STREAM))
@@ -959,8 +959,8 @@ pub(crate) fn handle_socket_line_in(
             // waits for this ack before exiting gets it once the witness exists.
             let needs_identity_ack = matches!(
                 cmd,
-                crate::protocol::HostRequest::Notify { .. }
-                    | crate::protocol::HostRequest::DismissNotification { .. }
+                plexi_protocol::HostRequest::Notify { .. }
+                    | plexi_protocol::HostRequest::DismissNotification { .. }
             ) || reply_token.is_none();
             if needs_identity_ack {
                 // The witness was captured synchronously in the accept loop,
@@ -983,7 +983,7 @@ pub(crate) fn handle_socket_line_in(
                     }
                 } else if ack_writer.requires_reply_stream()
                     && (protected_stream
-                        || matches!(cmd, crate::protocol::HostRequest::SendToPane { .. }))
+                        || matches!(cmd, plexi_protocol::HostRequest::SendToPane { .. }))
                 {
                     log::warn!("pane_ipc: refusing request without a retained reply stream");
                     if let Err(error) = ack_writer.write_all(br#"{"error":"could not retain the reply connection; request was not dispatched","error_code":"reply_connection_unavailable"}"#) {
@@ -994,7 +994,7 @@ pub(crate) fn handle_socket_line_in(
             }
             // A queued spawn is written only after this byte: the reply stream
             // is registered by then, so the drain cannot answer into nothing.
-            if matches!(cmd, crate::protocol::HostRequest::SpawnReceipt { .. }) {
+            if matches!(cmd, plexi_protocol::HostRequest::SpawnReceipt { .. }) {
                 if let Err(error) = ack_writer.write_all(PEER_IDENTITY_ACK) {
                     log::warn!("spawn-queue: receipt ack failed: {error}");
                 }
@@ -1015,7 +1015,7 @@ pub(crate) fn handle_socket_line_in(
         Err(e) => {
             if let Some(field) = serde_json::from_str::<serde_json::Value>(line)
                 .ok()
-                .and_then(|frame| crate::protocol::removed_identity_field(&frame))
+                .and_then(|frame| plexi_protocol::removed_identity_field(&frame))
             {
                 refuse_removed_field(ack_writer, field);
                 return;
@@ -1024,7 +1024,7 @@ pub(crate) fn handle_socket_line_in(
                 .ok()
                 .and_then(|frame| frame["type"].as_str().map(str::to_string));
             if let Some((kind, message)) = kind.and_then(|kind| {
-                crate::protocol::removed_host_request(&kind).map(|message| (kind, message))
+                plexi_protocol::removed_host_request(&kind).map(|message| (kind, message))
             }) {
                 log::info!(
                     "pane_ipc: refused removed request kind={kind} surface=socket \
@@ -1070,7 +1070,7 @@ pub(crate) fn handle_socket_line_in(
 /// Tell an older client which identity field this host no longer reads.
 fn refuse_removed_field(ack_writer: &mut impl SocketAckWriter, field: &str) {
     log::info!("pane_ipc: refused removed identity field={field} outcome=removed_field");
-    let reply = crate::protocol::removed_field_reply(field);
+    let reply = plexi_protocol::removed_field_reply(field);
     if let Err(error) = ack_writer.write_all(reply.to_string().as_bytes()) {
         log::warn!("pane_ipc: could not report removed field {field}: {error}");
     }
@@ -1501,7 +1501,7 @@ fn handle_events_publish(
     // parsed here — the UI thread host-stamps them.
     let action = match val["type"].as_str() {
         Some("events_declare") => {
-            match serde_json::from_value::<Vec<crate::protocol::EventStreamDecl>>(
+            match serde_json::from_value::<Vec<plexi_protocol::EventStreamDecl>>(
                 val["streams"].clone(),
             ) {
                 Ok(decls) => PublishAction::Declare(decls),
@@ -1515,7 +1515,7 @@ fn handle_events_publish(
             let emitted = crate::host::plugin_timeline::EmittedEvent {
                 event: val["event"].as_str().unwrap_or_default().to_string(),
                 actor: serde_json::from_value(val["actor"].clone())
-                    .unwrap_or(crate::protocol::PluginEventActor::Agent),
+                    .unwrap_or(plexi_protocol::PluginEventActor::Agent),
                 // Host-stamped by the UI thread from the pane identity.
                 actor_id: None,
                 caused_by: None,
@@ -2821,7 +2821,7 @@ impl PlexiApp {
     fn queue_event_to_view_pane_anywhere(
         &mut self,
         pane_id: crate::spatial::tiling::PaneId,
-        event: crate::protocol::PlexiEvent,
+        event: plexi_protocol::PlexiEvent,
     ) {
         let Some((window_index, _)) = self.find_pane_in_any_window(pane_id) else {
             log::warn!("plugin event: target pane {pane_id} closed before delivery");
@@ -2871,7 +2871,7 @@ impl PlexiApp {
                 );
                 self.queue_event_to_view_pane_anywhere(
                     pane_id,
-                    crate::protocol::PlexiEvent::PluginEvent {
+                    plexi_protocol::PlexiEvent::PluginEvent {
                         subscription_id: delivery.subscription_id,
                         plugin_id: delivery.plugin_id,
                         event: delivery.event,
@@ -2895,8 +2895,8 @@ impl PlexiApp {
         request_id: String,
         publisher_plugin_id: String,
         event_names: Vec<String>,
-        payload_mode: crate::protocol::PayloadMode,
-        trigger_mode: crate::protocol::TriggerMode,
+        payload_mode: plexi_protocol::PayloadMode,
+        trigger_mode: plexi_protocol::TriggerMode,
         resource_id: Option<String>,
     ) {
         let Some((subscriber_plugin_id, workspace_root)) = self.windows.iter().find_map(|window| {
@@ -2959,13 +2959,13 @@ impl PlexiApp {
                 Ok(crate::host::event_subscriptions::HostSubscribeReply::Ok {
                     subscription_id,
                     ..
-                }) => Some(crate::protocol::PlexiEvent::PluginEventsSubscribed {
+                }) => Some(plexi_protocol::PlexiEvent::PluginEventsSubscribed {
                     request_id: pending.request_id.clone(),
                     subscription_id: Some(subscription_id),
                     error: None,
                 }),
                 Ok(crate::host::event_subscriptions::HostSubscribeReply::Err { message }) => {
-                    Some(crate::protocol::PlexiEvent::PluginEventsSubscribed {
+                    Some(plexi_protocol::PlexiEvent::PluginEventsSubscribed {
                         request_id: pending.request_id.clone(),
                         subscription_id: None,
                         error: Some(message),
@@ -3857,7 +3857,7 @@ impl eframe::App for PlexiApp {
                     notify_id: notifications::new_notify_id("socket-lost"),
                     title: "Plexi lost its command socket".to_string(),
                     body: message,
-                    scope: crate::protocol::NotifyScope::Global,
+                    scope: plexi_protocol::NotifyScope::Global,
                     required: true,
                     ..Default::default()
                 },
@@ -6028,7 +6028,7 @@ pub(crate) fn restore_workspace(
             // Do not respawn completed ephemeral agent panes on startup.
             let is_completed_ephemeral = saved_pane.agent_session.as_ref().is_some_and(|s| {
                 s.ephemeral
-                    && (s.last_state == crate::protocol::AgentState::Completed
+                    && (s.last_state == plexi_protocol::AgentState::Completed
                         || saved_pane.slots.contains_key("completed"))
             });
             if is_completed_ephemeral
@@ -6226,8 +6226,8 @@ pub(crate) fn restore_workspace(
                         .filter(|_| restore_mode != config::AgentRestoreMode::Off)
                         .map(|s| {
                             let mut s = s.clone();
-                            if s.last_state == crate::protocol::AgentState::Working {
-                                s.last_state = crate::protocol::AgentState::Interrupted;
+                            if s.last_state == plexi_protocol::AgentState::Working {
+                                s.last_state = plexi_protocol::AgentState::Interrupted;
                             }
                             s
                         });
@@ -6459,9 +6459,9 @@ pub(crate) fn restore_workspace(
                                 pane.last_blocked_reason = session.last_blocked_reason;
                                 pane.tail_preview = session.tail_preview.clone();
                                 pane.agent_completed = session.last_state
-                                    == crate::protocol::AgentState::Completed
+                                    == plexi_protocol::AgentState::Completed
                                     || saved_pane.slots.contains_key("completed");
-                                pane.agent = Some(crate::protocol::PaneAgentState {
+                                pane.agent = Some(plexi_protocol::PaneAgentState {
                                     pane_id: saved_pane.id,
                                     state: session.last_state.clone(),
                                     agent: session.harness.clone(),
@@ -6634,7 +6634,7 @@ pub(crate) fn restore_workspace(
     // immediately reflect child Blocked / NeedsYou / Idle states on startup.
     let subcontext_states: std::collections::HashMap<
         u64,
-        crate::protocol::ContextState,
+        plexi_protocol::ContextState,
     > = contexts
         .iter()
         .filter(|c| c.parent_id.is_some())

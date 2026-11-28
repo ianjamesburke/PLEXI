@@ -15,7 +15,7 @@ use super::model::{PendingPermission, PermissionChoice, Turn, TurnRole};
 use super::AssistantView;
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
 use crate::plexi_ai::turn_loop::TurnDelta;
-use crate::protocol::HostRequest;
+use plexi_protocol::HostRequest;
 use crate::testing::HostHarness;
 
 struct ReplyBroker {

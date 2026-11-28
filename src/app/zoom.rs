@@ -1218,7 +1218,7 @@ impl PlexiApp {
     /// What a context's card should look like: its own asks first, then any
     /// failure, then live agent activity, else a quiet shell.
     pub(crate) fn context_card_state(&self, context_id: u64) -> CardState {
-        use crate::protocol::AgentState;
+        use plexi_protocol::AgentState;
         if self.attention_queue.ask_count_for_context(context_id) > 0 {
             return CardState::NeedsYou;
         }

@@ -477,13 +477,13 @@ fn store_of(reports: &[&str]) -> ProgramStatusStore {
     store
 }
 
-fn mapped(reports: &[&str]) -> Option<crate::protocol::PaneAgentState> {
+fn mapped(reports: &[&str]) -> Option<plexi_protocol::PaneAgentState> {
     super::root_or_best_agent_state(&store_of(reports), 9)
 }
 
 #[test]
 fn ps7501_mapping_states_and_empty() {
-    use crate::protocol::AgentState as A;
+    use plexi_protocol::AgentState as A;
     assert!(mapped(&[]).is_none());
     for (payload, want) in [
         ("state=working", A::Working),
@@ -519,7 +519,7 @@ fn ps7501_mapping_detail_text() {
 
 #[test]
 fn ps7501_mapping_priority_and_plugin_inheritance() {
-    use crate::protocol::AgentState as A;
+    use plexi_protocol::AgentState as A;
     // A blocked child beats a working root and inherits the root's plugin.
     let got = mapped(&[
         "state=working:app=claude",

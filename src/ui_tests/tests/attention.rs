@@ -444,9 +444,9 @@ fn add_attention_result_terminal(
     if let Some((harness, role)) = agent {
         terminal.agent_harness = Some(harness.into());
         terminal.agent_role = Some(role.into());
-        terminal.agent = Some(crate::protocol::PaneAgentState {
+        terminal.agent = Some(plexi_protocol::PaneAgentState {
             pane_id,
-            state: crate::protocol::AgentState::Idle,
+            state: plexi_protocol::AgentState::Idle,
             agent: harness.into(),
             detail: None,
             session_id: None,

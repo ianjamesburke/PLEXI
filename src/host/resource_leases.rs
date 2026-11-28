@@ -365,7 +365,7 @@ mod integration_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("reply.json");
         h.inject_socket(
-            crate::protocol::HostRequest::ResourceLease {
+            plexi_protocol::HostRequest::ResourceLease {
                 op: op.into(),
                 name: Some("lanes".into()),
                 max: Some(1),
@@ -444,7 +444,7 @@ mod integration_tests {
 
     #[test]
     fn leases_wire_cannot_supply_holder_authority() {
-        let request = serde_json::from_value::<crate::protocol::HostRequest>(json!({
+        let request = serde_json::from_value::<plexi_protocol::HostRequest>(json!({
             "type": "resource_lease", "op": "acquire", "name": "lanes", "max": 1,
             "holder_pid": 10, "peer_ancestry": [10], "response_file": "/tmp/unused"
         }));
@@ -459,7 +459,7 @@ mod integration_tests {
         let mut harness = crate::testing::HostHarness::new();
         let dir = tempfile::tempdir().unwrap();
         let reply = dir.path().join("reply.json");
-        harness.inject_socket(crate::protocol::HostRequest::ResourceLease {
+        harness.inject_socket(plexi_protocol::HostRequest::ResourceLease {
             op: "acquire".into(),
             name: Some("lanes".into()),
             max: Some(1),
@@ -469,7 +469,7 @@ mod integration_tests {
         harness.hidden_frame();
         let body: Value = serde_json::from_slice(&std::fs::read(&reply).unwrap()).unwrap();
         assert_eq!(body["error_code"], "permission_denied");
-        harness.inject_socket(crate::protocol::HostRequest::ResourceLease {
+        harness.inject_socket(plexi_protocol::HostRequest::ResourceLease {
             op: "release".into(),
             name: None,
             max: None,

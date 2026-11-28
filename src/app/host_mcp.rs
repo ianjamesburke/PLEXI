@@ -742,10 +742,10 @@ fn tool_subscribe_and_wait(
         }
     };
     let payload_mode = match args.get("payload").and_then(|v| v.as_str()) {
-        Some("off") => crate::protocol::PayloadMode::Off,
-        Some("summary") => crate::protocol::PayloadMode::Summary,
-        Some("state_ref") => crate::protocol::PayloadMode::StateRef,
-        _ => crate::protocol::PayloadMode::Full,
+        Some("off") => plexi_protocol::PayloadMode::Off,
+        Some("summary") => plexi_protocol::PayloadMode::Summary,
+        Some("state_ref") => plexi_protocol::PayloadMode::StateRef,
+        _ => plexi_protocol::PayloadMode::Full,
     };
     let timeout_secs = args
         .get("timeout_secs")
@@ -766,7 +766,7 @@ fn tool_subscribe_and_wait(
         publisher_plugin_id: plugin_id.clone(),
         event_names,
         payload_mode,
-        trigger_mode: crate::protocol::TriggerMode::Conversation,
+        trigger_mode: plexi_protocol::TriggerMode::Conversation,
         resource_id: None,
         from_pane_id: Some(caller.pane_id),
         subscriber_override: Some(delivery_id),
@@ -1163,7 +1163,7 @@ mod tests {
     #[test]
     fn pane_credential_lists_and_calls_only_context_view_tools() {
         use crate::plexi_ai::tool_dispatch::{self, PluginEventSender, ToolCallResult};
-        use crate::protocol::{AiTool, PlexiEvent};
+        use plexi_protocol::{AiTool, PlexiEvent};
 
         let (port, _test_token, profile) = start_test_server(None);
         let context_a = 900_000_100u64;
@@ -1329,7 +1329,7 @@ mod tests {
     #[test]
     fn subscribe_and_wait_delivers_emitted_event() {
         use crate::host::plugin_timeline::EmittedEvent;
-        use crate::protocol::{EventStreamDecl, PluginEventActor};
+        use plexi_protocol::{EventStreamDecl, PluginEventActor};
         let app = "mcp-it-app";
         let stream = "it.tick";
         // `start_test_server` registers its pane credential with `context_id
@@ -1429,7 +1429,7 @@ mod tests {
     /// broker does not admit are refused under a deny default.
     #[test]
     fn mcp_ceiling_bounds_every_route() {
-        use crate::protocol::EventStreamDecl;
+        use plexi_protocol::EventStreamDecl;
         let app = "mcp-ceiling-app";
         let stream = "ceiling.tick";
         let target = format!("{app}::{stream}");

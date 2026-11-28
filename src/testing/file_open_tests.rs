@@ -7,7 +7,7 @@ use egui_tiles::{Container, LinearDir, Tile};
 
 use crate::host::pane::ViewRuntime;
 use crate::broker::caller::{AncestryEnd, PeerHop, PeerWitness};
-use crate::protocol::{HostRequest, OpenPlacement};
+use plexi_protocol::{HostRequest, OpenPlacement};
 use crate::spatial::tiling::PaneId;
 use crate::testing::HostHarness;
 
@@ -381,14 +381,14 @@ fn open_artifact_checks_and_opens_the_root_joined_path_from_a_background_window(
     h.app.dispatch_open_artifact(
         sender,
         "../escape.md".into(),
-        crate::protocol::ArtifactOpenMode::OpenInPane,
+        plexi_protocol::ArtifactOpenMode::OpenInPane,
     );
     assert_eq!(pane_count(&h), before, "a path outside the root is refused");
 
     h.app.dispatch_open_artifact(
         sender,
         "inside.md".into(),
-        crate::protocol::ArtifactOpenMode::OpenInPane,
+        plexi_protocol::ArtifactOpenMode::OpenInPane,
     );
     let editor = h
         .app
@@ -482,7 +482,7 @@ fn open_artifact_opens_the_canonical_file_it_checked() {
     h.app.dispatch_open_artifact(
         sender,
         "sub/../x.md".into(),
-        crate::protocol::ArtifactOpenMode::OpenInPane,
+        plexi_protocol::ArtifactOpenMode::OpenInPane,
     );
     let editor = h
         .app
@@ -738,7 +738,7 @@ fn explorer_falls_through_a_failed_manifest_handler_to_the_editor() {
     h.app.dispatch_open_artifact(
         sender,
         "notes.md".into(),
-        crate::protocol::ArtifactOpenMode::OpenInPane,
+        plexi_protocol::ArtifactOpenMode::OpenInPane,
     );
     let editor = h
         .app

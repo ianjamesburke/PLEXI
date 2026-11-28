@@ -3212,7 +3212,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drop-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::DropFile {
+                    app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, plexi_protocol::HostRequest::DropFile {
                         pane_id,
                         path_or_url: drop_file.value.clone(),
                         response_file: response.to_string_lossy().into_owned(),
@@ -3247,7 +3247,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drag-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::DragPane {
+                    app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, plexi_protocol::HostRequest::DragPane {
                         pane_id,
                         from: drag.from,
                         from_node: drag.from_node.clone(),
@@ -3349,11 +3349,11 @@ impl HeadlessBackend {
                             source_window_id: 0,
                             title,
                             body,
-                            kind: crate::protocol::NotifyKind::Message,
+                            kind: plexi_protocol::NotifyKind::Message,
                             options: Vec::new(),
                             input_prompt: None,
                             required,
-                            scope: crate::protocol::NotifyScope::Global,
+                            scope: plexi_protocol::NotifyScope::Global,
                             image_inline: None,
                             image_pipe_id: None,
                             response_file: None,
@@ -3412,9 +3412,9 @@ impl HeadlessBackend {
                     })?;
                     terminal.agent_role = Some("Reviewer".into());
                     terminal.agent_harness = Some("scene-agent".into());
-                    terminal.agent = Some(crate::protocol::PaneAgentState {
+                    terminal.agent = Some(plexi_protocol::PaneAgentState {
                         pane_id,
-                        state: crate::protocol::AgentState::Failed,
+                        state: plexi_protocol::AgentState::Failed,
                         agent: "scene-agent".into(),
                         detail: Some("Review command failed".into()),
                         session_id: None,
@@ -3464,9 +3464,9 @@ impl HeadlessBackend {
                     else {
                         return false;
                     };
-                    if !pane.set_agent(Some(crate::protocol::PaneAgentState {
+                    if !pane.set_agent(Some(plexi_protocol::PaneAgentState {
                         pane_id,
-                        state: crate::protocol::AgentState::Failed,
+                        state: plexi_protocol::AgentState::Failed,
                         agent: "scene-agent".into(),
                         detail: Some("Scene agent failed".into()),
                         session_id: None,
@@ -3804,7 +3804,7 @@ impl HeadlessBackend {
                         .to_string_lossy()
                         .into_owned();
                     self.h.with_app_mut(|app| {
-                        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::AgentDone {
+                        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, plexi_protocol::HostRequest::AgentDone {
                             pane_id: id,
                             result: Some("{}".into()),
                             summary: Some("Verified".into()),
@@ -4015,7 +4015,7 @@ impl HeadlessBackend {
                         .workspace_root()
                         .join(format!("chess-key-{key}-{}.json", uuid::Uuid::new_v4()));
                     self.h.with_app_mut(|app| {
-                        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, crate::protocol::HostRequest::KeyPane {
+                        app.handle_pane_ipc_request(crate::broker::caller::RequestOrigin::HostSystem, plexi_protocol::HostRequest::KeyPane {
                             pane_id: chess,
                             key: (*key).to_string(),
                             response_file: Some(response.to_string_lossy().into_owned()),

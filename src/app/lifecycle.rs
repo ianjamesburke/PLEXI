@@ -554,7 +554,7 @@ impl PlexiApp {
     pub(crate) fn agent_spawn_reply(
         &mut self,
         origin: &crate::broker::caller::RequestOrigin,
-        request: &crate::protocol::HostRequest,
+        request: &plexi_protocol::HostRequest,
     ) -> serde_json::Value {
         match super::agent_open::admit_agent_mesh_route("AgentSpawn") {
             Ok(admitted) => self.agent_spawn_reply_admitted(origin, None, request, admitted, None),
@@ -571,11 +571,11 @@ impl PlexiApp {
         &mut self,
         origin: &crate::broker::caller::RequestOrigin,
         host_parent: Option<crate::spatial::tiling::PaneId>,
-        request: &crate::protocol::HostRequest,
+        request: &plexi_protocol::HostRequest,
         _admitted: super::agent_open::AdmittedAgentMeshRoute,
         prepared: Option<&crate::pane_ops::create::ConfiguredAgentLaunch>,
     ) -> serde_json::Value {
-        let crate::protocol::HostRequest::AgentSpawn {
+        let plexi_protocol::HostRequest::AgentSpawn {
             role,
             harness,
             command,
@@ -808,7 +808,7 @@ impl PlexiApp {
                             t.slots = record.slots.clone();
                             if let Some(ref mut a) = t.agent {
                                 a.session_id = record.session_id.clone();
-                                a.state = crate::protocol::AgentState::Idle;
+                                a.state = plexi_protocol::AgentState::Idle;
                             }
                         }
                         break;
@@ -952,11 +952,11 @@ impl PlexiApp {
                             workspace_roots.push(win.path.clone());
                         }
                         let done_state = if agent_harness.as_deref() == Some("script") {
-                            crate::protocol::AgentState::Completed
+                            plexi_protocol::AgentState::Completed
                         } else {
-                            crate::protocol::AgentState::Idle
+                            plexi_protocol::AgentState::Idle
                         };
-                        let _ = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                        let _ = pane.set_agent(Some(plexi_protocol::PaneAgentState {
                             pane_id: *pane_id,
                             state: done_state,
                             agent: agent_label.clone(),
@@ -1041,7 +1041,7 @@ impl PlexiApp {
                 }
                 self.report_agent_attention(
                     *pane_id,
-                    &crate::protocol::AgentState::Completed,
+                    &plexi_protocol::AgentState::Completed,
                     (!summary_str.is_empty()).then_some(summary_str),
                 );
                 if self.fleet_focused_pane() == Some(*pane_id) {
@@ -1201,10 +1201,10 @@ impl PlexiApp {
     pub(crate) fn handle_pane_ipc_request(
         &mut self,
         origin: crate::broker::caller::RequestOrigin,
-        cmd: crate::protocol::HostRequest,
+        cmd: plexi_protocol::HostRequest,
     ) {
         match &cmd {
-            crate::protocol::HostRequest::SubmitAssistantTurn {
+            plexi_protocol::HostRequest::SubmitAssistantTurn {
                 text,
                 request_id,
                 response_file,
@@ -1268,7 +1268,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::AgentsDashboard {
+            plexi_protocol::HostRequest::AgentsDashboard {
                 op,
                 payload,
                 response_file,
@@ -1346,7 +1346,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, body);
             }
-            crate::protocol::HostRequest::AssistantHostTool {
+            plexi_protocol::HostRequest::AssistantHostTool {
                 name,
                 input_json,
                 response_file,
@@ -1370,7 +1370,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, body);
             }
-            crate::protocol::HostRequest::ResourceLease {
+            plexi_protocol::HostRequest::ResourceLease {
                 op,
                 name,
                 max,
@@ -1410,16 +1410,16 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::ListPermissionRequests { response_file } => {
+            plexi_protocol::HostRequest::ListPermissionRequests { response_file } => {
                 self.observe_permissions(&origin, "list", None, None, response_file);
             }
-            crate::protocol::HostRequest::ShowPermissionRequest {
+            plexi_protocol::HostRequest::ShowPermissionRequest {
                 pending_request_id,
                 response_file,
             } => {
                 self.observe_permissions(&origin, "show", Some(pending_request_id), None, response_file);
             }
-            crate::protocol::HostRequest::ResolvePermissionRequest {
+            plexi_protocol::HostRequest::ResolvePermissionRequest {
                 pending_request_id,
                 choice,
                 response_file,
@@ -1432,7 +1432,7 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::HostRequest::Permissions {
+            plexi_protocol::HostRequest::Permissions {
                 op,
                 id,
                 duration,
@@ -1447,7 +1447,7 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::HostRequest::CallerContext {
+            plexi_protocol::HostRequest::CallerContext {
                 workspace_cwd,
                 response_file,
             } => {
@@ -1471,7 +1471,7 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::HostRequest::FileOpen {
+            plexi_protocol::HostRequest::FileOpen {
                 path,
                 cwd,
                 from_pane_id,
@@ -1488,30 +1488,30 @@ impl PlexiApp {
                 };
                 self.serve_file_open(&request, &origin, response_file);
             }
-            crate::protocol::HostRequest::ListNeedsYou { response_file } => {
+            plexi_protocol::HostRequest::ListNeedsYou { response_file } => {
                 self.observe_needs_you(&origin, "list", None, None, response_file);
             }
-            crate::protocol::HostRequest::ResolveNeedsYou {
+            plexi_protocol::HostRequest::ResolveNeedsYou {
                 id,
                 approve,
                 response_file,
             } => {
                 self.observe_needs_you(&origin, "resolve", Some(id), Some(*approve), response_file);
             }
-            crate::protocol::HostRequest::NeedsYouApi {
+            plexi_protocol::HostRequest::NeedsYouApi {
                 op,
                 payload,
                 response_file,
             } => {
                 self.handle_needs_you_api(op, payload, &origin, response_file);
             }
-            crate::protocol::HostRequest::PaneSecretList {
+            plexi_protocol::HostRequest::PaneSecretList {
                 context,
                 response_file,
             } => {
                 self.serve_secret_list(context, &origin, response_file);
             }
-            crate::protocol::HostRequest::SecretGet {
+            plexi_protocol::HostRequest::SecretGet {
                 name,
                 global,
                 workspace_root,
@@ -1525,7 +1525,7 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::HostRequest::SecretSet {
+            plexi_protocol::HostRequest::SecretSet {
                 name,
                 global,
                 workspace_root,
@@ -1541,7 +1541,7 @@ impl PlexiApp {
                     Some((value.clone(), route_name.clone())),
                 );
             }
-            crate::protocol::HostRequest::SecretDelete {
+            plexi_protocol::HostRequest::SecretDelete {
                 name,
                 global,
                 workspace_root,
@@ -1555,10 +1555,10 @@ impl PlexiApp {
                     None,
                 );
             }
-            crate::protocol::HostRequest::FolderSecretExec { cwd, response_file } => {
+            plexi_protocol::HostRequest::FolderSecretExec { cwd, response_file } => {
                 self.serve_secret_bundle(cwd, None, &origin, response_file);
             }
-            crate::protocol::HostRequest::RunSecrets {
+            plexi_protocol::HostRequest::RunSecrets {
                 command,
                 cwd,
                 workspace_root,
@@ -1571,7 +1571,7 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::HostRequest::FolderSecretRead {
+            plexi_protocol::HostRequest::FolderSecretRead {
                 name,
                 folder,
                 cwd,
@@ -1584,7 +1584,7 @@ impl PlexiApp {
                 };
                 self.serve_secret_read(name, ask, &origin, response_file);
             }
-            crate::protocol::HostRequest::FolderSecretSet {
+            plexi_protocol::HostRequest::FolderSecretSet {
                 name,
                 folder,
                 value,
@@ -1598,7 +1598,7 @@ impl PlexiApp {
                     Some((value.clone(), None)),
                 );
             }
-            crate::protocol::HostRequest::FolderSecretRm {
+            plexi_protocol::HostRequest::FolderSecretRm {
                 name,
                 folder,
                 response_file,
@@ -1611,7 +1611,7 @@ impl PlexiApp {
                     None,
                 );
             }
-            crate::protocol::HostRequest::AgentsApi {
+            plexi_protocol::HostRequest::AgentsApi {
                 op,
                 payload,
                 response_file,
@@ -1655,7 +1655,7 @@ impl PlexiApp {
                 }
                 crate::rpc::write_json_response(response_file, value);
             }
-            crate::protocol::HostRequest::SetPaneTitle { pane_id, name } => {
+            plexi_protocol::HostRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                 let mut found = false;
                 for win in &mut self.windows {
@@ -1702,7 +1702,7 @@ impl PlexiApp {
                     log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
                 }
             }
-            crate::protocol::HostRequest::LogMarker {
+            plexi_protocol::HostRequest::LogMarker {
                 source,
                 message,
                 response_file,
@@ -1716,7 +1716,7 @@ impl PlexiApp {
                     write_json_response(response_file, serde_json::json!({"ok": true}));
                 }
             }
-            crate::protocol::HostRequest::GetBuildInfo { response_file } => {
+            plexi_protocol::HostRequest::GetBuildInfo { response_file } => {
                 log::info!(
                     "host: reporting running build identity {}",
                     env!("PLEXI_BUILD_ID")
@@ -1726,7 +1726,7 @@ impl PlexiApp {
                 value["core_only"] = serde_json::json!(self.config.core_only.unwrap_or(false));
                 write_json_response(response_file, value);
             }
-            crate::protocol::HostRequest::ListPanes {
+            plexi_protocol::HostRequest::ListPanes {
                 response_file,
                 context_id: filter_context_id,
             } => {
@@ -1861,7 +1861,7 @@ impl PlexiApp {
                 let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::HostRequest::ListContexts { response_file } => {
+            plexi_protocol::HostRequest::ListContexts { response_file } => {
                 log::info!(
                     "pane_ipc: kind=list_contexts response_file={:?}",
                     response_file
@@ -1885,7 +1885,7 @@ impl PlexiApp {
                 let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::HostRequest::GetPaneInfo {
+            plexi_protocol::HostRequest::GetPaneInfo {
                 pane_id,
                 response_file,
             } => {
@@ -2018,7 +2018,7 @@ impl PlexiApp {
                     write_response(response_file, json_str.as_bytes());
                 }
             }
-            crate::protocol::HostRequest::GetPreviousPaneInfo {
+            plexi_protocol::HostRequest::GetPreviousPaneInfo {
                 response_file,
                 steps,
             } => {
@@ -2098,7 +2098,7 @@ impl PlexiApp {
                 };
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::HostRequest::SlotWrite {
+            plexi_protocol::HostRequest::SlotWrite {
                 pane_id,
                 slot_name,
                 content,
@@ -2126,7 +2126,7 @@ impl PlexiApp {
                     Err(msg) => slot_error(response_file, msg),
                 }
             }
-            crate::protocol::HostRequest::SlotWait {
+            plexi_protocol::HostRequest::SlotWait {
                 pane_id,
                 slot_name,
                 pattern,
@@ -2215,7 +2215,7 @@ impl PlexiApp {
                         expires_at,
                     });
             }
-            crate::protocol::HostRequest::PaneMessageSend {
+            plexi_protocol::HostRequest::PaneMessageSend {
                 pane_id,
                 payload,
                 submit,
@@ -2295,7 +2295,7 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::HostRequest::PaneMessageRecv {
+            plexi_protocol::HostRequest::PaneMessageRecv {
                 pane_id,
                 wait,
                 timeout_secs,
@@ -2347,7 +2347,7 @@ impl PlexiApp {
                         expires_at,
                     });
             }
-            crate::protocol::HostRequest::PaneResultSchemaSet {
+            plexi_protocol::HostRequest::PaneResultSchemaSet {
                 pane_id,
                 schema,
                 response_file,
@@ -2400,7 +2400,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::PaneResultWrite {
+            plexi_protocol::HostRequest::PaneResultWrite {
                 pane_id,
                 payload,
                 response_file,
@@ -2460,7 +2460,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::PaneResultRead {
+            plexi_protocol::HostRequest::PaneResultRead {
                 pane_id,
                 wait,
                 timeout_secs,
@@ -2559,7 +2559,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::SlotRead {
+            plexi_protocol::HostRequest::SlotRead {
                 pane_id,
                 slot_name,
                 response_file,
@@ -2596,7 +2596,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::SlotList {
+            plexi_protocol::HostRequest::SlotList {
                 pane_id,
                 response_file,
             } => {
@@ -2617,7 +2617,7 @@ impl PlexiApp {
                     None => slot_error(response_file, format!("pane {pane_id} not found")),
                 }
             }
-            crate::protocol::HostRequest::SlotDelete {
+            plexi_protocol::HostRequest::SlotDelete {
                 pane_id,
                 slot_name,
                 response_file,
@@ -2682,7 +2682,7 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::HostRequest::WorkspaceCleanSlots {
+            plexi_protocol::HostRequest::WorkspaceCleanSlots {
                 dry_run,
                 response_file,
             } => {
@@ -2775,7 +2775,7 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::HostRequest::ContextRename {
+            plexi_protocol::HostRequest::ContextRename {
                 context_id,
                 name,
                 response_file,
@@ -2788,7 +2788,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::HostRequest::ContextClose {
+            plexi_protocol::HostRequest::ContextClose {
                 context_id,
                 response_file,
             } => {
@@ -2798,7 +2798,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::HostRequest::ContextPark {
+            plexi_protocol::HostRequest::ContextPark {
                 context_id,
                 parked,
                 response_file,
@@ -2816,7 +2816,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::HostRequest::PaneZoom {
+            plexi_protocol::HostRequest::PaneZoom {
                 pane_id,
                 response_file,
             } => {
@@ -2830,7 +2830,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::PaneSwap {
+            plexi_protocol::HostRequest::PaneSwap {
                 pane_id,
                 direction,
                 response_file,
@@ -2860,7 +2860,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::WorkspaceSnapshot { response_file } => {
+            plexi_protocol::HostRequest::WorkspaceSnapshot { response_file } => {
                 let context_id = self.router.active().context_id;
                 // Focus and visibility can change while the host is occluded. Refresh
                 // the snapshot from the last rendered tile rects without waiting for UI.
@@ -2924,17 +2924,17 @@ impl PlexiApp {
                 );
                 write_json_response(response_file, reply);
             }
-            crate::protocol::HostRequest::ShowHost { response_file } => {
+            plexi_protocol::HostRequest::ShowHost { response_file } => {
                 self.show_host_window(&self.ctx);
                 log::info!("host_startup: handled show_host request: restored the running window");
                 write_json_response(response_file, serde_json::json!({"ok": true}));
             }
-            crate::protocol::HostRequest::ReloadConfig { response_file } => {
+            plexi_protocol::HostRequest::ReloadConfig { response_file } => {
                 log::info!("config_reload: CLI requested reload");
                 self.reload_config();
                 write_json_response(response_file, serde_json::json!({"ok":true}));
             }
-            crate::protocol::HostRequest::FocusHistory {
+            plexi_protocol::HostRequest::FocusHistory {
                 forward,
                 response_file,
             } => {
@@ -2946,13 +2946,13 @@ impl PlexiApp {
                 }
                 write_json_response(response_file, serde_json::json!({"ok":true}));
             }
-            crate::protocol::HostRequest::FocusPane { pane_id } => {
+            plexi_protocol::HostRequest::FocusPane { pane_id } => {
                 log::info!("pane_ipc: kind=focus_pane pane_id={pane_id}");
                 if !self.pane_navigate(*pane_id) {
                     log::warn!("pane_ipc: focus_pane: pane_id={pane_id} not found");
                 }
             }
-            crate::protocol::HostRequest::ClosePane {
+            plexi_protocol::HostRequest::ClosePane {
                 pane_id,
                 response_file,
             } => {
@@ -2984,7 +2984,7 @@ impl PlexiApp {
                     self.close_pane_by_id(*pane_id);
                 }
             }
-            crate::protocol::HostRequest::SpawnPane { response_file, .. } => {
+            plexi_protocol::HostRequest::SpawnPane { response_file, .. } => {
                 let spec = match crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(
                     &cmd,
                     origin.clone(),
@@ -3185,7 +3185,7 @@ impl PlexiApp {
                 }
                 self.reply_spawn_pane(&spec, &launch_result.map(|()| response_pane_id));
             }
-            crate::protocol::HostRequest::SendToPane {
+            plexi_protocol::HostRequest::SendToPane {
                 pane_id,
                 text,
                 operation_id,
@@ -3678,7 +3678,7 @@ impl PlexiApp {
                     write_response(rf, json.as_bytes());
                 }
             }
-            crate::protocol::HostRequest::PaneHeartbeat {
+            plexi_protocol::HostRequest::PaneHeartbeat {
                 pane_id,
                 every_ms,
                 text,
@@ -3735,7 +3735,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::KeyPane {
+            plexi_protocol::HostRequest::KeyPane {
                 pane_id,
                 key,
                 response_file,
@@ -3894,7 +3894,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::DropFile {
+            plexi_protocol::HostRequest::DropFile {
                 pane_id,
                 path_or_url,
                 response_file,
@@ -3938,7 +3938,7 @@ impl PlexiApp {
                 write_json_response(response_file, json);
                 self.ctx.request_repaint();
             }
-            crate::protocol::HostRequest::ClickPane {
+            plexi_protocol::HostRequest::ClickPane {
                 pane_id,
                 x,
                 y,
@@ -4072,7 +4072,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::ClickPaneNode {
+            plexi_protocol::HostRequest::ClickPaneNode {
                 pane_id,
                 node_ref,
                 response_file,
@@ -4147,7 +4147,7 @@ impl PlexiApp {
                     write_response(rf, json.to_string().as_bytes());
                 }
             }
-            crate::protocol::HostRequest::DragPane {
+            plexi_protocol::HostRequest::DragPane {
                 pane_id,
                 from,
                 from_node,
@@ -4313,7 +4313,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::CapturePane {
+            plexi_protocol::HostRequest::CapturePane {
                 pane_id,
                 lines,
                 response_file,
@@ -4395,7 +4395,7 @@ impl PlexiApp {
                                     );
                                 }
                                 if term.agent.as_ref().is_some_and(|a| {
-                                    a.state == crate::protocol::AgentState::Interrupted
+                                    a.state == plexi_protocol::AgentState::Interrupted
                                 }) {
                                     if let Some(tail) = term
                                         .tail_preview
@@ -4436,7 +4436,7 @@ impl PlexiApp {
                 };
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::HostRequest::PaneStatus {
+            plexi_protocol::HostRequest::PaneStatus {
                 pane_id,
                 response_file,
             } => {
@@ -4484,7 +4484,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, json);
             }
-            crate::protocol::HostRequest::Screenshot {
+            plexi_protocol::HostRequest::Screenshot {
                 pane_id,
                 output_path,
                 response_file,
@@ -4517,7 +4517,7 @@ impl PlexiApp {
                     self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                 }
             }
-            crate::protocol::HostRequest::HostKey { key, response_file } => {
+            plexi_protocol::HostRequest::HostKey { key, response_file } => {
                 log::info!(
                     "pane_ipc: kind=host_key key={key:?} key_chars={}",
                     key.chars().count()
@@ -4543,7 +4543,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::GetPaneState {
+            plexi_protocol::HostRequest::GetPaneState {
                 pane_id,
                 response_file,
                 stale_after_secs,
@@ -4635,7 +4635,7 @@ impl PlexiApp {
                 };
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::HostRequest::SendPaneAction {
+            plexi_protocol::HostRequest::SendPaneAction {
                 pane_id,
                 action,
                 args,
@@ -4695,7 +4695,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::CallPluginTool {
+            plexi_protocol::HostRequest::CallPluginTool {
                 plugin_id,
                 tool,
                 input_json,
@@ -4715,14 +4715,14 @@ impl PlexiApp {
                     *wait_approved,
                 );
             }
-            crate::protocol::HostRequest::ListPluginTools {
+            plexi_protocol::HostRequest::ListPluginTools {
                 plugin_id,
                 context_id,
                 response_file,
             } => {
                 self.list_plugin_tools(plugin_id.as_deref(), *context_id, &origin, response_file);
             }
-            crate::protocol::HostRequest::SetAgentState {
+            plexi_protocol::HostRequest::SetAgentState {
                 pane_id,
                 state,
                 agent,
@@ -4746,7 +4746,7 @@ impl PlexiApp {
                         .and_then(|p| p.as_terminal())
                         .is_some_and(|t| t.agent_completed || t.slots.contains_key("completed"));
                 if (event.as_deref() == Some("HarnessExit")
-                    || *state == crate::protocol::AgentState::ExitedUnreported)
+                    || *state == plexi_protocol::AgentState::ExitedUnreported)
                     && already_completed
                 {
                     log::info!(
@@ -4761,7 +4761,7 @@ impl PlexiApp {
                                 t.agent_completed = true;
                             }
                             if let Some(mut a) = existing_agent {
-                                a.state = crate::protocol::AgentState::Completed;
+                                a.state = plexi_protocol::AgentState::Completed;
                                 let _ = pane.set_agent(Some(a));
                                 self.attention_queue
                                     .dismissed_ids
@@ -4802,7 +4802,7 @@ impl PlexiApp {
                             (t.capture_tail_preview(), t.parent_pane_id, label)
                         })
                         .unwrap_or_else(|| (None, None, agent.clone()));
-                    if *state == crate::protocol::AgentState::ExitedUnreported {
+                    if *state == plexi_protocol::AgentState::ExitedUnreported {
                         let final_output = tail.unwrap_or_default();
                         let result_state = self.pane_results.entry(*pane_id).or_default();
                         let fallback = if let Some(schema) = result_state.schema.as_ref() {
@@ -4904,8 +4904,8 @@ impl PlexiApp {
                             }
                             let new_reason = if matches!(
                                 state,
-                                crate::protocol::AgentState::Blocked
-                                    | crate::protocol::AgentState::NeedsYou
+                                plexi_protocol::AgentState::Blocked
+                                    | plexi_protocol::AgentState::NeedsYou
                             ) {
                                 *blocked_reason
                             } else {
@@ -4915,7 +4915,7 @@ impl PlexiApp {
                                 t.last_blocked_reason = new_reason;
                                 dirty = true;
                             }
-                            if *state == crate::protocol::AgentState::Completed
+                            if *state == plexi_protocol::AgentState::Completed
                                 && !t.agent_completed
                             {
                                 t.agent_completed = true;
@@ -4927,7 +4927,7 @@ impl PlexiApp {
                             .and_then(|t| t.agent_role.clone())
                             .unwrap_or_else(|| agent.clone());
                         let (set_ok, state_dirty) =
-                            pane.set_agent_with_dirty(Some(crate::protocol::PaneAgentState {
+                            pane.set_agent_with_dirty(Some(plexi_protocol::PaneAgentState {
                                 pane_id: *pane_id,
                                 state: state.clone(),
                                 agent: effective_agent,
@@ -4950,9 +4950,9 @@ impl PlexiApp {
                 if found {
                     if !matches!(
                         state,
-                        crate::protocol::AgentState::Failed
-                            | crate::protocol::AgentState::Blocked
-                            | crate::protocol::AgentState::ExitedUnreported
+                        plexi_protocol::AgentState::Failed
+                            | plexi_protocol::AgentState::Blocked
+                            | plexi_protocol::AgentState::ExitedUnreported
                     ) {
                         self.attention_queue
                             .dismissed_ids
@@ -4975,7 +4975,7 @@ impl PlexiApp {
                     let session_ended = matches!(&fact, PaneLifecycleEvent::SessionEnded { .. });
                     let boot_failed =
                         session_ended || matches!(&fact, PaneLifecycleEvent::TurnFailed { .. });
-                    let idle = *state == crate::protocol::AgentState::Idle
+                    let idle = *state == plexi_protocol::AgentState::Idle
                         && matches!(
                             &fact,
                             PaneLifecycleEvent::TurnFinished { .. }
@@ -4994,7 +4994,7 @@ impl PlexiApp {
                         if let Some(tracked) = self.host.pane_lifecycle.get_mut(pane_id) {
                             tracked.booted = false;
                         }
-                    } else if *state == crate::protocol::AgentState::Idle
+                    } else if *state == plexi_protocol::AgentState::Idle
                         && (session_started || event.is_none())
                     {
                         self.emit_agent_booted(*pane_id, provenance);
@@ -5008,11 +5008,11 @@ impl PlexiApp {
                     // Tier 2 (`AgentState::NeedsYou`, or `Blocked` on an unparented root agent)
                     // files a human-owned NeedsYou record.
                     let should_file_human_needs_you = match state {
-                        crate::protocol::AgentState::NeedsYou => true,
-                        crate::protocol::AgentState::Blocked => {
+                        plexi_protocol::AgentState::NeedsYou => true,
+                        plexi_protocol::AgentState::Blocked => {
                             !has_parent_pane
                                 && *blocked_reason
-                                    != Some(crate::protocol::AgentBlockedReason::PermissionPrompt)
+                                    != Some(plexi_protocol::AgentBlockedReason::PermissionPrompt)
                         }
                         _ => false,
                     };
@@ -5021,7 +5021,7 @@ impl PlexiApp {
                             .clone()
                             .filter(|text| !text.is_empty())
                             .unwrap_or_else(|| format!("{agent} is blocked"));
-                        let kind = if *state == crate::protocol::AgentState::NeedsYou
+                        let kind = if *state == plexi_protocol::AgentState::NeedsYou
                             || event.as_deref() == Some("AskQuestion")
                             || event.as_deref() == Some("AgentAsk")
                         {
@@ -5034,8 +5034,8 @@ impl PlexiApp {
                             self.file_pane_needs_you(*pane_id, kind, summary, session_id.clone());
                     } else if !matches!(
                         state,
-                        crate::protocol::AgentState::NeedsYou
-                            | crate::protocol::AgentState::Blocked
+                        plexi_protocol::AgentState::NeedsYou
+                            | plexi_protocol::AgentState::Blocked
                     ) {
                         self.withdraw_agent_attention_items(*pane_id);
                     }
@@ -5047,7 +5047,7 @@ impl PlexiApp {
                         self.fail_agent_boots_from_terminal_report(*pane_id);
                     } else {
                         self.complete_agent_boots(*pane_id);
-                        if *state == crate::protocol::AgentState::Idle {
+                        if *state == plexi_protocol::AgentState::Idle {
                             self.flush_pending_child_results_if_idle(*pane_id);
                         }
                     }
@@ -5057,7 +5057,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::SetPipStatus { pane_id, status } => {
+            plexi_protocol::HostRequest::SetPipStatus { pane_id, status } => {
                 log::info!("pane_ipc: kind=set_pip_status pane_id={pane_id} status={status:?}");
                 let mut found = false;
                 for win in &mut self.windows {
@@ -5074,9 +5074,9 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::GetAgentStates { response_file } => {
+            plexi_protocol::HostRequest::GetAgentStates { response_file } => {
                 log::info!("pane_ipc: kind=get_agent_states response_file={response_file:?}");
-                let states: Vec<crate::protocol::PaneAgentState> = self
+                let states: Vec<plexi_protocol::PaneAgentState> = self
                     .windows
                     .iter()
                     .flat_map(|win| win.panes.values())
@@ -5085,7 +5085,7 @@ impl PlexiApp {
                 let json_str = serde_json::to_string(&states).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::HostRequest::Notify {
+            plexi_protocol::HostRequest::Notify {
                 notify_id,
                 title,
                 body,
@@ -5140,8 +5140,8 @@ impl PlexiApp {
                 // is refused, never widened: the sender limited its audience
                 // (Codex 3290 r3). Only an unscoped notify falls back below.
                 let explicit_unresolvable = match scope {
-                    Some(crate::protocol::NotifyScope::Context) => caller_context_id.is_none(),
-                    Some(crate::protocol::NotifyScope::Window) => caller_window_id.is_none(),
+                    Some(plexi_protocol::NotifyScope::Context) => caller_context_id.is_none(),
+                    Some(plexi_protocol::NotifyScope::Window) => caller_window_id.is_none(),
                     _ => false,
                 };
                 if explicit_unresolvable {
@@ -5162,12 +5162,12 @@ impl PlexiApp {
                     return;
                 }
                 let effective_scope = match scope.unwrap_or_default() {
-                    crate::protocol::NotifyScope::Global => crate::protocol::NotifyScope::Global,
-                    crate::protocol::NotifyScope::Context if caller_context_id.is_some() => {
-                        crate::protocol::NotifyScope::Context
+                    plexi_protocol::NotifyScope::Global => plexi_protocol::NotifyScope::Global,
+                    plexi_protocol::NotifyScope::Context if caller_context_id.is_some() => {
+                        plexi_protocol::NotifyScope::Context
                     }
-                    crate::protocol::NotifyScope::Window if caller_window_id.is_some() => {
-                        crate::protocol::NotifyScope::Window
+                    plexi_protocol::NotifyScope::Window if caller_window_id.is_some() => {
+                        plexi_protocol::NotifyScope::Window
                     }
                     unresolvable => {
                         log::warn!(
@@ -5175,7 +5175,7 @@ impl PlexiApp {
                              escalating to global so the notification stays reachable",
                             origin.class()
                         );
-                        crate::protocol::NotifyScope::Global
+                        plexi_protocol::NotifyScope::Global
                     }
                 };
                 // The host-resolved sender pane, so `dismiss_notification_from_sender`
@@ -5191,7 +5191,7 @@ impl PlexiApp {
                 // CLI notifications opt out of on purpose.
                 let dismiss_owner_pane_id = resolved.map(|(pane_id, ..)| pane_id).unwrap_or(0);
                 let is_invalid_choice =
-                    matches!(kind, crate::protocol::NotifyKind::Choice) && options.is_empty();
+                    matches!(kind, plexi_protocol::NotifyKind::Choice) && options.is_empty();
                 if is_invalid_choice {
                     log::warn!(
                         "pane_ipc: notify id={internal_id:?} has no choices; resolving explicitly"
@@ -5231,7 +5231,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::DismissNotification {
+            plexi_protocol::HostRequest::DismissNotification {
                 notify_id,
                 response_file,
             } => {
@@ -5260,7 +5260,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::CreateContext {
+            plexi_protocol::HostRequest::CreateContext {
                 root,
                 name,
                 parent_name,
@@ -5454,7 +5454,7 @@ impl PlexiApp {
                 }
                 self.mark_workspace_dirty();
             }
-            crate::protocol::HostRequest::CreateSubContext {
+            plexi_protocol::HostRequest::CreateSubContext {
                 name,
                 root,
                 parent_context_id,
@@ -5595,7 +5595,7 @@ impl PlexiApp {
                 }
                 self.mark_workspace_dirty();
             }
-            crate::protocol::HostRequest::FocusContext {
+            plexi_protocol::HostRequest::FocusContext {
                 root,
                 response_file,
             } => {
@@ -5615,7 +5615,7 @@ impl PlexiApp {
                     write_json_response(file, reply);
                 }
             }
-            crate::protocol::HostRequest::SetContextRoot {
+            plexi_protocol::HostRequest::SetContextRoot {
                 root,
                 context_id,
                 response_file,
@@ -5641,7 +5641,7 @@ impl PlexiApp {
                     write_json_response(file, reply);
                 }
             }
-            crate::protocol::HostRequest::SetContextDescription {
+            plexi_protocol::HostRequest::SetContextDescription {
                 description,
                 context_id,
                 response_file,
@@ -5665,7 +5665,7 @@ impl PlexiApp {
                     write_json_response(file, reply);
                 }
             }
-            crate::protocol::HostRequest::ZoomIntoContext {
+            plexi_protocol::HostRequest::ZoomIntoContext {
                 context_id,
                 response_file,
             } => {
@@ -5696,24 +5696,24 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::HostRequest::ZoomOutOfContext => {
+            plexi_protocol::HostRequest::ZoomOutOfContext => {
                 log::info!(
                     "pane_ipc: kind=zoom_out_of_context depth={}",
                     self.router.current_depth()
                 );
                 self.zoom_out_of_context();
             }
-            crate::protocol::HostRequest::PushPaneToSubcontext { name, pane_id } => {
+            plexi_protocol::HostRequest::PushPaneToSubcontext { name, pane_id } => {
                 log::info!(
                     "pane_ipc: kind=push_pane_to_subcontext name={name:?} pane_id={pane_id:?}"
                 );
                 self.push_pane_to_subcontext(name.clone(), *pane_id);
             }
-            crate::protocol::HostRequest::ListPermissions { response_file } => {
+            plexi_protocol::HostRequest::ListPermissions { response_file } => {
                 log::info!("pane_ipc: kind=list_permissions response_file={response_file:?}");
                 self.handle_list_permissions(&origin, response_file);
             }
-            crate::protocol::HostRequest::AgentCall {
+            plexi_protocol::HostRequest::AgentCall {
                 role,
                 task,
                 call_credential,
@@ -5743,7 +5743,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::HostRequest::AgentMessage {
+            plexi_protocol::HostRequest::AgentMessage {
                 pane_id,
                 text,
                 call_credential,
@@ -5768,11 +5768,11 @@ impl PlexiApp {
                     );
                 }
             }
-            request @ crate::protocol::HostRequest::AgentSpawn { response_file, .. } => {
+            request @ plexi_protocol::HostRequest::AgentSpawn { response_file, .. } => {
                 let payload = self.agent_spawn_reply(&origin, request);
                 write_json_response(response_file, payload);
             }
-            crate::protocol::HostRequest::AgentWait {
+            plexi_protocol::HostRequest::AgentWait {
                 pane_ids,
                 timeout_secs,
                 response_file,
@@ -5782,7 +5782,7 @@ impl PlexiApp {
                 );
                 self.handle_agent_wait(pane_ids.clone(), *timeout_secs, response_file.clone());
             }
-            crate::protocol::HostRequest::AgentDone {
+            plexi_protocol::HostRequest::AgentDone {
                 pane_id,
                 result,
                 summary,
@@ -5800,9 +5800,9 @@ impl PlexiApp {
                     self.close_completed_ephemeral_child(*pane_id);
                 }
             }
-            crate::protocol::HostRequest::AgentNext { response_file } => {
+            plexi_protocol::HostRequest::AgentNext { response_file } => {
                 let pane_id = self.next_blocked_agent();
-                let view = self.agents_view(crate::protocol::FleetFilter::All);
+                let view = self.agents_view(plexi_protocol::FleetFilter::All);
                 let row = pane_id.and_then(|id| {
                     view.tasks
                         .iter()
@@ -5820,14 +5820,14 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::HostRequest::AgentFleet {
+            plexi_protocol::HostRequest::AgentFleet {
                 filter,
                 response_file,
             } => {
                 log::info!("agents: fleet query filter={filter:?}");
                 write_json_response(response_file, serde_json::json!(self.agents_view(*filter)));
             }
-            crate::protocol::HostRequest::AgentFleetDismiss {
+            plexi_protocol::HostRequest::AgentFleetDismiss {
                 target,
                 all_failed,
                 response_file,
@@ -5841,7 +5841,7 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::HostRequest::AgentAsk {
+            plexi_protocol::HostRequest::AgentAsk {
                 pane_id,
                 question,
                 response_file,
@@ -5878,7 +5878,7 @@ impl PlexiApp {
                         if let Some(t) = pane.as_terminal_mut() {
                             parent_pane_id = t.parent_pane_id;
                             t.last_blocked_reason =
-                                Some(crate::protocol::AgentBlockedReason::Unknown);
+                                Some(plexi_protocol::AgentBlockedReason::Unknown);
                             if let Some(ref r) = t.agent_role {
                                 agent_label = r.clone();
                             } else if let Some(ref h) = t.agent_harness {
@@ -5888,9 +5888,9 @@ impl PlexiApp {
                             }
                             session_id = t.agent_session_id.clone();
                         }
-                        found = pane.set_agent(Some(crate::protocol::PaneAgentState {
+                        found = pane.set_agent(Some(plexi_protocol::PaneAgentState {
                             pane_id: *pane_id,
-                            state: crate::protocol::AgentState::Blocked,
+                            state: plexi_protocol::AgentState::Blocked,
                             agent: agent_label.clone(),
                             detail: Some(question.clone()),
                             session_id: session_id.clone(),
@@ -5926,7 +5926,7 @@ impl PlexiApp {
                         *pane_id,
                         PaneLifecycleEvent::AgentBlocked {
                             provenance,
-                            reason: crate::protocol::AgentBlockedReason::Unknown,
+                            reason: plexi_protocol::AgentBlockedReason::Unknown,
                         },
                     );
                     self.refresh_portal_context_states();
@@ -5968,7 +5968,7 @@ impl PlexiApp {
                     write_json_response(response_file, payload);
                 }
             }
-            crate::protocol::HostRequest::AgentOpen {
+            plexi_protocol::HostRequest::AgentOpen {
                 name,
                 cwd,
                 response_file,
@@ -5990,7 +5990,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, payload);
             }
-            crate::protocol::HostRequest::AgentNewChat {
+            plexi_protocol::HostRequest::AgentNewChat {
                 name,
                 cwd,
                 response_file,
@@ -6010,7 +6010,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, payload);
             }
-            crate::protocol::HostRequest::AgentReopen {
+            plexi_protocol::HostRequest::AgentReopen {
                 query,
                 subcontext,
                 response_file,
@@ -6049,22 +6049,22 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, payload);
             }
-            crate::protocol::HostRequest::SpawnReceipt { response_file } => {
+            plexi_protocol::HostRequest::SpawnReceipt { response_file } => {
                 // The reply stream is registered; the queue drain answers it,
                 // or releases it once its client has gone.
                 log::info!("spawn-queue: receipt connection held token={response_file:?}");
                 self.spawn_receipts.insert(response_file.clone());
             }
-            crate::protocol::HostRequest::Wake => {
+            plexi_protocol::HostRequest::Wake => {
                 // A wake may arrive just after the throttled idle poll. Drain
                 // here, in this logic pass, without waiting for another event.
                 log::info!("pane_ipc: kind=wake draining queued spawns");
                 self.drain_spawn_queue();
             }
-            crate::protocol::HostRequest::ShutdownForRestart { response_file } => {
+            plexi_protocol::HostRequest::ShutdownForRestart { response_file } => {
                 self.queue_restart_shutdown(response_file);
             }
-            crate::protocol::HostRequest::Shutdown { response_file } => {
+            plexi_protocol::HostRequest::Shutdown { response_file } => {
                 // `update_preamble` checks live editors before accepting
                 // the stop. Accepted stops reply from `exit_host`.
                 if let Some(reply) = response_file {
@@ -6325,7 +6325,7 @@ impl PlexiApp {
     /// PTY output settle. This covers both a hook-silent boot and a stale hook
     /// Idle that contradicts sustained fresh PTY activity.
     pub(super) fn tick_terminal_activity(&mut self) {
-        use crate::protocol::AgentState;
+        use plexi_protocol::AgentState;
         let mut transitions = Vec::new();
         let mut departed_history = Vec::new();
         let mut observed_dirty = false;
@@ -6464,7 +6464,7 @@ impl PlexiApp {
                         // A TUI that has stopped redrawing on its own is
                         // sitting at its prompt; host-induced repaints
                         // (a committed resize) do not count (stints 1231, 1438).
-                        crate::protocol::PaneAgentState {
+                        plexi_protocol::PaneAgentState {
                             pane_id: *pane_id,
                             state: t.observed_output_state(std::time::Instant::now()),
                             agent: t.agent_role.clone().unwrap_or_else(|| agent.to_string()),
@@ -6749,8 +6749,8 @@ impl PlexiApp {
             .find(|c| c.root.as_path() == source_root)
             .map(|c| c.context_id);
         let (scope, source_context_id) = match ctx_id {
-            Some(id) => (crate::protocol::NotifyScope::Context, id),
-            None => (crate::protocol::NotifyScope::Global, 0),
+            Some(id) => (plexi_protocol::NotifyScope::Context, id),
+            None => (plexi_protocol::NotifyScope::Global, 0),
         };
         let queued = self.enqueue_notification(
             crate::app::notifications::NotifySource::HostInternal,
@@ -6924,7 +6924,7 @@ impl PlexiApp {
                         .collect()
                 })
                 .unwrap_or_default();
-            let request = crate::protocol::HostRequest::SpawnPane {
+            let request = plexi_protocol::HostRequest::SpawnPane {
                 type_id,
                 layout: val["layout"].as_str().map(str::to_string),
                 args,
@@ -7057,7 +7057,7 @@ impl PlexiApp {
                                 if newly_exited && t.is_agent_pane() {
                                     let (state, detail) = t.effective_agent_state();
                                     if (prior_agent_state != state || prior_agent_detail != detail)
-                                        && state == crate::protocol::AgentState::Failed
+                                        && state == plexi_protocol::AgentState::Failed
                                         && detail.as_deref() == Some(status.summary().as_str())
                                     {
                                         log::info!("agents: pane {id} effective state overridden to Failed on {}", status.summary());
@@ -7264,7 +7264,7 @@ mod subscription_tests {
     };
     use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
     use crate::host::plugin_timeline::{AdmittedScope, PluginTimeline};
-    use crate::protocol::{PayloadMode, TriggerMode};
+    use plexi_protocol::{PayloadMode, TriggerMode};
     use crate::testing::HostHarness;
     use std::sync::{mpsc, Arc, Mutex};
 

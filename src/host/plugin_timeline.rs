@@ -19,7 +19,7 @@
 //! ambient workflow, or prompt first. Until then deliveries accumulate here.
 
 use crate::broker::{ActorType, GrantDuration};
-use crate::protocol::{EventStreamDecl, PayloadMode, PluginEventActor, TriggerMode};
+use plexi_protocol::{EventStreamDecl, PayloadMode, PluginEventActor, TriggerMode};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};

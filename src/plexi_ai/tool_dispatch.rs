@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::host::scope::{evaluate_reach, Reach, ScopeOrigin};
-use crate::protocol::{AiTool, PlexiEvent};
+use plexi_protocol::{AiTool, PlexiEvent};
 
 // ── PluginEventSender ──────────────────────────────────────────────────────────
 
@@ -1570,7 +1570,7 @@ fn authorization_envelope(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::AiTool;
+    use plexi_protocol::AiTool;
     use std::path::PathBuf;
 
     fn make_tool(name: &str) -> AiTool {

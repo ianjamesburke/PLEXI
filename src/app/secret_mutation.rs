@@ -1,7 +1,7 @@
 //! Admitted mutations on the host's secret worker.
 use super::*;
 use crate::broker::gate::{AdmitRequest, UseDecision};
-use crate::protocol::SecretInput;
+use plexi_protocol::SecretInput;
 use crate::workspace::secrets::manager::{mutate_secret, Mutation, SecretTarget};
 
 impl PlexiApp {

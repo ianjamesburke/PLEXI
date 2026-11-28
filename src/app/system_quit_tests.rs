@@ -53,7 +53,7 @@ fn open_editor(h: &mut HostHarness, path: &Path) -> PaneId {
 }
 
 fn inject_host_stop(h: &HostHarness, reply: &Path) {
-    h.inject_ipc(crate::protocol::HostRequest::Shutdown {
+    h.inject_ipc(plexi_protocol::HostRequest::Shutdown {
         response_file: Some(reply.to_str().unwrap().to_owned()),
     });
 }
@@ -121,7 +121,7 @@ fn restart_shutdown_refusal_names_every_unsaved_editor() {
     let notes = root.path().join("notes.txt");
     let second = open_unsaved_editor(&mut h, &notes);
     let reply_path = root.path().join("restart-stop.json");
-    h.inject_ipc(crate::protocol::HostRequest::ShutdownForRestart {
+    h.inject_ipc(plexi_protocol::HostRequest::ShutdownForRestart {
         response_file: reply_path.to_str().unwrap().to_owned(),
     });
     h.hidden_frame();

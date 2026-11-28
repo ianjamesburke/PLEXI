@@ -10760,7 +10760,7 @@ mod tests {
             ));
         });
         let response_file = crate::rpc::response_file_in(profile, "host-status", "json");
-        let request = crate::protocol::HostRequest::ListPanes {
+        let request = plexi_protocol::HostRequest::ListPanes {
             response_file: response_file.clone(),
             context_id: None,
         };

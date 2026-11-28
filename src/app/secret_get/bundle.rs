@@ -2,7 +2,7 @@
 use super::*;
 use crate::broker::principal::RecordOwner;
 use crate::cli::run::{resolve_command_target, ResolvedRunTarget};
-use crate::protocol::{
+use plexi_protocol::{
     ApprovedBundle, BundleDefinition, BundleValue, SecretBundleReply, SecretInput,
 };
 use crate::workspace::secrets::{self, ResolveOutcome, WorkspaceConfig, WorkspaceSecrets};

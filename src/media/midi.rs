@@ -24,7 +24,7 @@ pub struct MidiPortInfo {
     pub default: bool,
 }
 
-impl From<MidiPortInfo> for crate::protocol::MidiPortWire {
+impl From<MidiPortInfo> for plexi_protocol::MidiPortWire {
     fn from(info: MidiPortInfo) -> Self {
         Self {
             id: info.id,

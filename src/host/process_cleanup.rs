@@ -1653,7 +1653,7 @@ wait
             if mode == "host-stop" {
                 // `exit_host` answers this token with its real exit outcome
                 // (stint 1430); with no socket stream it lands in this file.
-                h.inject_ipc(crate::protocol::HostRequest::Shutdown {
+                h.inject_ipc(plexi_protocol::HostRequest::Shutdown {
                     response_file: Some(evidence.join("stop-reply.json").display().to_string()),
                 });
                 h.run_hidden_frames(3);

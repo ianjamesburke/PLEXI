@@ -2027,7 +2027,7 @@ pub(super) fn nudge_running_instance() {
     let Ok(mut stream) = IpcStream::connect(&path) else {
         return;
     };
-    let Ok(payload) = serde_json::to_string(&crate::protocol::HostRequest::Wake) else {
+    let Ok(payload) = serde_json::to_string(&plexi_protocol::HostRequest::Wake) else {
         return;
     };
     if stream.write_all(format!("{payload}\n").as_bytes()).is_ok() {

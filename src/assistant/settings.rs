@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::protocol::ModelTier;
+use plexi_protocol::ModelTier;
 use crate::broker::Decision;
 
 /// One Assistant settings layer, in increasing precedence order.
@@ -496,7 +496,7 @@ mod tests {
 
         assert_eq!(
             settings.model.tier.value,
-            crate::protocol::ModelTier::Medium
+            plexi_protocol::ModelTier::Medium
         );
         assert_eq!(settings.model.tier.source.scope, SettingsScope::Default);
         assert_eq!(settings.tools.enabled.value, Vec::<String>::new());

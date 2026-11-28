@@ -1,4 +1,4 @@
-use crate::protocol::{AgentState, PaneAgentState};
+use plexi_protocol::{AgentState, PaneAgentState};
 
 const STATUS_TAIL_LINES: usize = 32;
 

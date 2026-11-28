@@ -309,7 +309,7 @@ impl PlexiApp {
     /// the request's own origin (stint 1285).
     fn start_named_agent_chat(
         &mut self,
-        request: &crate::protocol::HostRequest,
+        request: &plexi_protocol::HostRequest,
         launch: &crate::pane_ops::create::ConfiguredAgentLaunch,
         origin: &crate::broker::caller::RequestOrigin,
         caller: Option<u64>,
@@ -534,7 +534,7 @@ fn named_agent_start(
     cwd: &Path,
 ) -> Result<
     (
-        crate::protocol::HostRequest,
+        plexi_protocol::HostRequest,
         crate::pane_ops::create::ConfiguredAgentLaunch,
     ),
     String,

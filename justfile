@@ -157,7 +157,7 @@ pi-plexi-live:
     bash scripts/pi-plexi-live.sh
 
 # Regenerate the canonical PGAP JSON Schema and Python protocol models.
-# Run after any change to src/protocol/.
+# Run after any change to crates/plexi-protocol/src/.
 gen-schema:
     bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_schema
     python3 tools/gen_protocol_py.py
@@ -226,7 +226,7 @@ gen-sdk-docs:
 check-sdk-docs: (check-generated "website/src/content/docs/sdk.md" "python3 tools/gen_sdk_docs.py --stdout" "gen-sdk-docs" "SDK docs are up to date.")
 
 # Generate PGAP capability reference docs from the protocol JSON schema.
-# Run after any change to src/protocol/ (via just gen-schema first).
+# Run after any change to crates/plexi-protocol/src/ (via just gen-schema first).
 gen-capability-docs:
     python3 tools/gen_capability_docs.py
 
@@ -276,7 +276,7 @@ run:
 # src/cli/args.rs                    → website/src/content/docs/cli.md           → cargo run -p gen_cli_docs
 # src/config/mod.rs                  → website/src/content/docs/config.md        → cargo run -p gen_config_docs
 # scripts/default-config.toml        → website/src/content/docs/config.md        → cargo run -p gen_config_docs
-# src/protocol/*.rs                  → sdk/protocol/pgap.schema.json             → cargo run -p gen_schema
+# crates/plexi-protocol/src/*.rs     → sdk/protocol/pgap.schema.json             → cargo run -p gen_schema
 #                                    → sdk/python/plexi_sdk/_protocol.py         → python3 tools/gen_protocol_py.py
 # website/src/content/docs/          → (coverage assertion)                      → tools/check_docs_coverage.sh
 regen-if-stale:
@@ -297,8 +297,8 @@ regen-if-stale:
         echo "Config source changed — regenerating config docs..."
         bash scripts/gen-doc-safe.sh website/src/content/docs/config.md -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_config_docs
     fi
-    if [[ -n "$(find src/protocol -name '*.rs' -newer sdk/protocol/pgap.schema.json -print -quit)" ]]; then
-        echo "src/protocol/ changed — regenerating schema..."
+    if [[ -n "$(find crates/plexi-protocol/src -name '*.rs' -newer sdk/protocol/pgap.schema.json -print -quit)" ]]; then
+        echo "crates/plexi-protocol/src/ changed — regenerating schema..."
         bash scripts/gen-doc-safe.sh sdk/protocol/pgap.schema.json -- bash scripts/cargo-with-lease.sh --class short cargo run -p gen_schema
         python3 tools/gen_protocol_py.py
     fi

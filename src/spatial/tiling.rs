@@ -1,5 +1,5 @@
 use crate::host::pane::{Pane, TerminalPane, ViewRuntime};
-use crate::protocol::AgentState;
+use plexi_protocol::AgentState;
 use crate::render;
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -434,7 +434,7 @@ pub struct MiniPane {
     /// False for terminal panes that have exited; dims the pane in the minimap.
     pub active: bool,
     /// Agent/terminal activity state; renders a dot in the pane's top-left corner.
-    pub activity: Option<crate::protocol::AgentState>,
+    pub activity: Option<plexi_protocol::AgentState>,
     pub static_health_pip: bool,
 }
 
@@ -455,7 +455,7 @@ pub struct PortalPreview {
     pub notification_count: usize,
     pub windows: Vec<MiniWindow>,
     pub window_count: usize,
-    pub status: crate::protocol::ContextStatus,
+    pub status: plexi_protocol::ContextStatus,
     pub status_summary: Option<String>,
 }
 
@@ -468,7 +468,7 @@ impl Default for PortalPreview {
             notification_count: 0,
             windows: Vec::new(),
             window_count: 0,
-            status: crate::protocol::ContextStatus::Idle,
+            status: plexi_protocol::ContextStatus::Idle,
             status_summary: None,
         }
     }
@@ -1265,7 +1265,7 @@ pub(crate) fn paint_portal_minimap(
             let is_error_cell = !pane.active
                 && matches!(
                     pane.activity,
-                    Some(crate::protocol::AgentState::Interrupted)
+                    Some(plexi_protocol::AgentState::Interrupted)
                 );
             let cell_escalation_col = crate::ui::activity::escalation_color(
                 pane.activity.as_ref(),

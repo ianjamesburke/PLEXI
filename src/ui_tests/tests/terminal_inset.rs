@@ -13,7 +13,7 @@ fn install_inset_fixture_terminal(h: &mut PlexiUiHarness, pane: u64) {
         term.outside_workspace_root = Some(app.router.active().root.clone());
         term.spawned_by = Some("human".into());
         term.name = Some("fixture".into());
-        term.agent = Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None });
+        term.agent = Some(plexi_protocol::PaneAgentState { pane_id: pane, state: plexi_protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None });
         app.ctx.data_mut(|d| d.insert_temp(egui::Id::new(("provenance_icon_rect", pane)), egui::Rect::NOTHING));
         let win = app.active_window;
         app.windows[win].replace_pane_for_test(pane, Pane::Terminal(Box::new(term)));
@@ -531,9 +531,9 @@ fn terminal_inset_screenshots(script: &str, ready: &str, name: impl Fn(&str, f32
                 term.spawned_by = Some("human".into());
                 term.outside_workspace_root = Some(app.router.active().root.clone());
                 term.outside_workspace_checked_at = Some(Instant::now());
-                term.agent = Some(crate::protocol::PaneAgentState {
+                term.agent = Some(plexi_protocol::PaneAgentState {
                     pane_id: pane,
-                    state: crate::protocol::AgentState::Working,
+                    state: plexi_protocol::AgentState::Working,
                     agent: "fixture".into(),
                     detail: None,
                     session_id: None,
@@ -608,7 +608,7 @@ fn screenshot_terminal_inset_colored_background_tui() {
 
 #[test]
 fn pane_chrome_state_ring_is_visible_with_and_without_focus() {
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
     let (mut h, pane, other) = pane_chrome_fixture(1.0);
     for state in [
         AgentState::Working,
@@ -623,7 +623,7 @@ fn pane_chrome_state_ring_is_visible_with_and_without_focus() {
                     .panes
                     .get_mut(&pane)
                     .unwrap()
-                    .set_agent(Some(crate::protocol::PaneAgentState {
+                    .set_agent(Some(plexi_protocol::PaneAgentState {
                         pane_id: pane,
                         state: state.clone(),
                         agent: "fixture".into(),
@@ -673,7 +673,7 @@ fn pane_chrome_state_ring_is_visible_with_and_without_focus() {
 /// the edge band is the pane background. The gray `state_waiting` ring was the stray line.
 #[test]
 fn unfocused_quiet_pane_edge_is_pane_background() {
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
     let (mut h, pane, other) = pane_chrome_fixture(1.0);
     for state in [AgentState::Idle, AgentState::Completed] {
         h.with_app_mut(|app| {
@@ -681,7 +681,7 @@ fn unfocused_quiet_pane_edge_is_pane_background() {
                 .panes
                 .get_mut(&pane)
                 .unwrap()
-                .set_agent(Some(crate::protocol::PaneAgentState {
+                .set_agent(Some(plexi_protocol::PaneAgentState {
                     pane_id: pane,
                     state: state.clone(),
                     agent: "fixture".into(),
@@ -721,9 +721,9 @@ fn header_and_body_layout_is_identical_focused_and_unfocused() {
             term.name = Some("fixture".into());
             term.spawned_by = Some("researcher".into());
         }
-        t.set_agent(Some(crate::protocol::PaneAgentState {
+        t.set_agent(Some(plexi_protocol::PaneAgentState {
             pane_id: pane,
-            state: crate::protocol::AgentState::Idle,
+            state: plexi_protocol::AgentState::Idle,
             agent: "fixture".into(),
             detail: None,
             session_id: None,
@@ -781,9 +781,9 @@ fn unfocused_idle_pane_has_no_seam_or_outline_pixels() {
     let (mut h, pane, other) = pane_chrome_fixture(1.0);
     h.with_app_mut(|app| {
         let t = app.windows[app.active_window].panes.get_mut(&pane).unwrap();
-        t.set_agent(Some(crate::protocol::PaneAgentState {
+        t.set_agent(Some(plexi_protocol::PaneAgentState {
             pane_id: pane,
-            state: crate::protocol::AgentState::Idle,
+            state: plexi_protocol::AgentState::Idle,
             agent: "fixture".into(),
             detail: None,
             session_id: None,

@@ -743,7 +743,7 @@ mod tests {
         h.app.agent_attention.pending_os.clear();
 
         let done_reply = root.join("done.json");
-        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
+        h.inject_ipc(plexi_protocol::HostRequest::AgentDone {
             pane_id,
             result: Some("{\"answer\":\"42\"}".into()),
             summary: Some("Audit complete".into()),
@@ -766,7 +766,7 @@ mod tests {
         h.app.agent_attention.reports.remove(&pane_id);
         h.app.report_agent_attention(
             pane_id,
-            &crate::protocol::AgentState::Completed,
+            &plexi_protocol::AgentState::Completed,
             Some("Audit complete"),
         );
         assert!(
@@ -775,7 +775,7 @@ mod tests {
                 .pending_os
                 .iter()
                 .any(|(id, state, _)| {
-                    id.number() == pane_id && *state == crate::protocol::AgentState::Completed
+                    id.number() == pane_id && *state == plexi_protocol::AgentState::Completed
                 }),
             "human-started agent done must queue an OS notification"
         );
@@ -796,7 +796,7 @@ mod tests {
             .into_iter()
             .find(|a| a.pane_id == pane_id)
             .unwrap();
-        assert_eq!(agent_input.state, crate::protocol::AgentState::Completed);
+        assert_eq!(agent_input.state, plexi_protocol::AgentState::Completed);
 
         // Keyboard-only flow: focus_approval (Cmd+Alt+P) -> Enter opens RESULT.md in text-editor split and settles item.
         let now = Instant::now();
@@ -876,7 +876,7 @@ mod tests {
             )
             .unwrap();
         let child_reply = root.join("child_done.json");
-        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
+        h.inject_ipc(plexi_protocol::HostRequest::AgentDone {
             pane_id: child,
             result: Some("{\"sub\":1}".into()),
             summary: Some("Child done".into()),

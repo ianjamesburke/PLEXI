@@ -27,7 +27,7 @@ use crate::plexi_ai::ledger::{self, LedgerRow, RunKind, RunTags};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::plexi_ai::turn_loop::{self, TurnError};
 use crate::plexi_ai::CancelToken;
-use crate::protocol::{AiMessage, AiTool, ModelTier};
+use plexi_protocol::{AiMessage, AiTool, ModelTier};
 
 /// The two user-configurable broker targets. This deliberately has no
 /// medium tier: callers choose cheap/quick FAST or deliberate SLOW work.
@@ -1703,7 +1703,7 @@ mod tests {
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };
-        use crate::protocol::AiTool;
+        use plexi_protocol::AiTool;
         use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
 
@@ -1791,7 +1791,7 @@ mod tests {
             concrete_model: None,
             reasoning_effort: None,
             system: "sys".to_string(),
-            messages: vec![crate::protocol::AiMessage {
+            messages: vec![plexi_protocol::AiMessage {
                 role: "user".to_string(),
                 content: "go".to_string(),
             }],
@@ -1850,7 +1850,7 @@ mod tests {
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };
-        use crate::protocol::AiTool;
+        use plexi_protocol::AiTool;
         use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
 

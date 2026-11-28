@@ -1384,7 +1384,7 @@ mod tests {
     use crate::host::context::{Context, Window};
     use crate::host::keys::Direction;
     use crate::host::pane::{Pane, PortalPane, ViewPane, ViewRuntime};
-    use crate::protocol::HostRequest;
+    use plexi_protocol::HostRequest;
     use crate::testing::HostHarness;
     use std::collections::HashMap;
 
@@ -4096,7 +4096,7 @@ mod tests {
             session_id: None,
             cwd: root.clone(),
             ephemeral: false,
-            last_state: crate::protocol::AgentState::Completed,
+            last_state: plexi_protocol::AgentState::Completed,
             last_blocked_reason: None,
             last_detail: None,
             summary: None,
@@ -4159,7 +4159,7 @@ mod tests {
             session_id: None,
             cwd: root.clone(),
             ephemeral: false,
-            last_state: crate::protocol::AgentState::Completed,
+            last_state: plexi_protocol::AgentState::Completed,
             last_blocked_reason: None,
             last_detail: None,
             summary: None,
@@ -4234,7 +4234,7 @@ mod tests {
                 .declare_streams(
                     context_id,
                     &app_id,
-                    vec![crate::protocol::EventStreamDecl {
+                    vec![plexi_protocol::EventStreamDecl {
                         name: "cli.tick".to_string(),
                         schema: json!({"type": "object"}),
                         description: None,
@@ -4263,8 +4263,8 @@ mod tests {
                 .admit_subscribe_request(crate::host::event_subscriptions::HostSubscribeRequest {
                     publisher_plugin_id: app_id.clone(),
                     event_names: vec!["cli.tick".into()],
-                    payload_mode: crate::protocol::PayloadMode::Full,
-                    trigger_mode: crate::protocol::TriggerMode::Conversation,
+                    payload_mode: plexi_protocol::PayloadMode::Full,
+                    trigger_mode: plexi_protocol::TriggerMode::Conversation,
                     resource_id: None,
                     from_pane_id: None,
                     subscriber_override: Some(format!("cli-conn-{pane}")),
@@ -4485,9 +4485,9 @@ mod tests {
             .get_mut(&shell)
             .and_then(|p| p.as_terminal_mut())
             .unwrap()
-            .agent = Some(crate::protocol::PaneAgentState {
+            .agent = Some(plexi_protocol::PaneAgentState {
             pane_id: shell,
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             agent: "claude".into(),
             detail: None,
             session_id: None,
@@ -4728,9 +4728,9 @@ mod tests {
                 .and_then(|p| p.as_terminal_mut())
                 .unwrap();
             terminal.agent_harness = Some("pi".into());
-            terminal.agent = Some(crate::protocol::PaneAgentState {
+            terminal.agent = Some(plexi_protocol::PaneAgentState {
                 pane_id: agent,
-                state: crate::protocol::AgentState::Idle,
+                state: plexi_protocol::AgentState::Idle,
                 agent: "pi".into(),
                 detail: None,
                 session_id: None,
@@ -4775,9 +4775,9 @@ mod tests {
                 .and_then(|p| p.as_terminal_mut())
                 .unwrap();
             terminal.agent_harness = Some("pi".into());
-            terminal.agent = Some(crate::protocol::PaneAgentState {
+            terminal.agent = Some(plexi_protocol::PaneAgentState {
                 pane_id: agent,
-                state: crate::protocol::AgentState::Idle,
+                state: plexi_protocol::AgentState::Idle,
                 agent: "pi".into(),
                 detail: None,
                 session_id: None,

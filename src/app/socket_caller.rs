@@ -103,7 +103,7 @@ pub(crate) enum PaneIpcMessage {
     /// A `HostRequest` and where it came from.
     Request {
         ingress: Ingress,
-        request: Box<crate::protocol::HostRequest>,
+        request: Box<plexi_protocol::HostRequest>,
     },
     /// A streaming frame the socket thread serves itself, waiting for the
     /// host thread's admission of its peer.
@@ -127,7 +127,7 @@ pub(crate) struct StreamAdmission {
 }
 
 impl PaneIpcMessage {
-    pub(crate) fn host(request: crate::protocol::HostRequest) -> Self {
+    pub(crate) fn host(request: plexi_protocol::HostRequest) -> Self {
         Self::Request {
             ingress: Ingress::Host,
             request: Box::new(request),

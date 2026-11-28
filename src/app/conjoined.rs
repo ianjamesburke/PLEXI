@@ -1,6 +1,7 @@
 //! A parent remains in its owning context while its child context pins a live view.
 use super::PlexiApp;
-use crate::agent::fleet::{AgentRow, FleetFilter};
+use crate::agent::fleet::AgentRow;
+use plexi_protocol::FleetFilter;
 use std::collections::HashMap;
 
 impl PlexiApp {

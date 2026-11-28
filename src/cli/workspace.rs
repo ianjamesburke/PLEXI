@@ -936,8 +936,8 @@ pub fn folder_secret_read(name: &str, folder: Option<&Path>) -> i32 {
 pub(super) fn request_bundle(
     label: &str,
     request: Value,
-) -> Result<crate::protocol::ApprovedBundle, i32> {
-    use crate::protocol::SecretBundleReply as Reply;
+) -> Result<plexi_protocol::ApprovedBundle, i32> {
+    use plexi_protocol::SecretBundleReply as Reply;
     let body = receive_secret(label, request, |reply| reply.map(zeroize::Zeroizing::new))?
         .map_err(|_| {
             eprintln!(

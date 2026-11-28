@@ -6,7 +6,7 @@ use crossbeam_queue::ArrayQueue;
 
 use crate::app::view_trait::{View, ViewRenderContext};
 use crate::media::video::{VideoDecoder, VideoHandle};
-use crate::protocol::VideoState;
+use plexi_protocol::VideoState;
 use crate::ui::{
     button::{self, ButtonKind},
     style,

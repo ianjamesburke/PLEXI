@@ -1858,12 +1858,12 @@ mod plexi_family_tests {
             for (label, state, is_error) in [
                 (
                     "needs status",
-                    Some(crate::protocol::AgentState::NeedsYou),
+                    Some(plexi_protocol::AgentState::NeedsYou),
                     false,
                 ),
                 (
                     "failed status",
-                    Some(crate::protocol::AgentState::Failed),
+                    Some(plexi_protocol::AgentState::Failed),
                     false,
                 ),
                 ("error status", None, true),

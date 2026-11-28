@@ -1,6 +1,6 @@
 //! Derived fleet roster shared by the host pane and CLI.
 
-use crate::protocol::AgentState;
+use plexi_protocol::{AgentState, FleetFilter};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
@@ -296,31 +296,14 @@ impl DisplayState {
         }
     }
 }
-pub use crate::protocol::FleetFilter;
-impl FleetFilter {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::All => "All",
-            Self::NeedsAttention => "Needs attention",
-            Self::Working => "Working",
-            Self::Done => "Done",
-        }
-    }
-    pub fn next(self) -> Self {
-        match self {
-            Self::All => Self::NeedsAttention,
-            Self::NeedsAttention => Self::Working,
-            Self::Working => Self::Done,
-            Self::Done => Self::All,
-        }
-    }
-    pub(crate) fn matches(self, row: &AgentRow) -> bool {
-        match self {
-            Self::All => true,
-            Self::NeedsAttention => row.display_state.rank(row.needs_you) <= 3,
-            Self::Working => row.display_state == DisplayState::Working,
-            Self::Done => row.completed || row.display_state == DisplayState::DoneUnseen,
-        }
+/// Whether `row` belongs in the fleet view under `filter`. Host-side: it reads
+/// host row state the wire type must not know about.
+pub(crate) fn filter_matches(filter: FleetFilter, row: &AgentRow) -> bool {
+    match filter {
+        FleetFilter::All => true,
+        FleetFilter::NeedsAttention => row.display_state.rank(row.needs_you) <= 3,
+        FleetFilter::Working => row.display_state == DisplayState::Working,
+        FleetFilter::Done => row.completed || row.display_state == DisplayState::DoneUnseen,
     }
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -577,7 +560,7 @@ impl AgentsView {
                     r.events
                 },
             };
-            if filter.matches(&row) {
+            if filter_matches(filter, &row) {
                 if is_stale_failure {
                     older.push(row);
                 } else {
@@ -628,7 +611,7 @@ fn is_zero_usize(v: &usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::AgentState;
+    use plexi_protocol::AgentState;
 
     fn row(id: u64, state: AgentState) -> AgentInput {
         AgentInput {

@@ -1732,7 +1732,7 @@ impl PlexiApp {
         // Nor does the new guest inherit the old one's directed pipes.
         self.retire_directed_pipes_for(
             &[(retired, plugin_id)],
-            crate::protocol::PipeCloseReason::PeerReloaded,
+            plexi_protocol::PipeCloseReason::PeerReloaded,
         );
         true
     }
@@ -1943,7 +1943,7 @@ impl PlexiApp {
         context: &PaneContextEnv,
         cwd: PathBuf,
         commands: &[Option<String>],
-        layout: crate::protocol::SubContextLayout,
+        layout: plexi_protocol::SubContextLayout,
         source: &crate::broker::pane_authority::GrantSource,
     ) -> Option<ContextPaneSet> {
         if commands.is_empty() {
@@ -2846,9 +2846,9 @@ impl PlexiApp {
         }
         pane.name = Some(role.to_string());
         pane.name_locked = true;
-        pane.agent = Some(crate::protocol::PaneAgentState {
+        pane.agent = Some(plexi_protocol::PaneAgentState {
             pane_id: new_id,
-            state: crate::protocol::AgentState::Working,
+            state: plexi_protocol::AgentState::Working,
             agent: role.to_string(),
             detail: (!task.is_empty()).then(|| task.to_string()),
             session_id: None,

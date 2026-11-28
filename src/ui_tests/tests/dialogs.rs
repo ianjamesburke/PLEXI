@@ -153,10 +153,10 @@ fn screenshot_working_agent_quit_confirmation() {
     let pane = add_focused_pane(&mut h);
     h.with_app_mut(|app| {
         app.windows[0].panes.get_mut(&pane).unwrap().set_agent(Some(
-            crate::protocol::PaneAgentState {
+            plexi_protocol::PaneAgentState {
                 pane_id: pane,
                 agent: "codex".into(),
-                state: crate::protocol::AgentState::Working,
+                state: plexi_protocol::AgentState::Working,
                 detail: Some("Validating the release build".into()),
                 session_id: None,
             },

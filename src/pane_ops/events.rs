@@ -137,7 +137,7 @@ impl PlexiApp {
         self.emit_pane_lifecycle(
             pane_id,
             PaneLifecycleEvent::AgentBlocked {
-                reason: crate::protocol::AgentBlockedReason::BootFailure,
+                reason: plexi_protocol::AgentBlockedReason::BootFailure,
                 provenance: self.pane_observation_provenance(pane_id),
             },
         );
@@ -146,7 +146,7 @@ impl PlexiApp {
     pub(crate) fn emit_observed_agent_transition(
         &mut self,
         pane_id: u64,
-        agent: &crate::protocol::PaneAgentState,
+        agent: &plexi_protocol::PaneAgentState,
     ) {
         let provenance = Provenance {
             source: crate::host::pane_lifecycle::Source::HostObservation,
@@ -154,7 +154,7 @@ impl PlexiApp {
             session_id: agent.session_id.clone(),
             raw_event: None,
         };
-        if agent.state == crate::protocol::AgentState::Idle {
+        if agent.state == plexi_protocol::AgentState::Idle {
             self.emit_agent_booted(pane_id, provenance.clone());
         }
         self.emit_pane_lifecycle(

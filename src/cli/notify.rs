@@ -8,12 +8,12 @@ use super::reply::OutputMode;
 /// silently reinterprets `--scope global` whenever that default changes.
 pub fn parse_notify_scope(
     scope: Option<&str>,
-) -> Result<Option<crate::protocol::NotifyScope>, String> {
+) -> Result<Option<plexi_protocol::NotifyScope>, String> {
     match scope {
         None => Ok(None),
-        Some("window") => Ok(Some(crate::protocol::NotifyScope::Window)),
-        Some("context") => Ok(Some(crate::protocol::NotifyScope::Context)),
-        Some("global") => Ok(Some(crate::protocol::NotifyScope::Global)),
+        Some("window") => Ok(Some(plexi_protocol::NotifyScope::Window)),
+        Some("context") => Ok(Some(plexi_protocol::NotifyScope::Context)),
+        Some("global") => Ok(Some(plexi_protocol::NotifyScope::Global)),
         Some(other) => Err(format!(
             "error: --scope must be window, context, or global — got {other:?}"
         )),
@@ -28,7 +28,7 @@ pub struct NotifyCliArgs<'a> {
     pub wait_for_response: bool,
     pub display_timeout_secs: u64,
     pub wait_timeout_secs: u64,
-    pub scope: Option<crate::protocol::NotifyScope>,
+    pub scope: Option<plexi_protocol::NotifyScope>,
     /// `--json`: a refusal's body is the command's stdout.
     pub mode: OutputMode,
 }
@@ -59,10 +59,10 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     };
     if matches!(
         scope,
-        Some(crate::protocol::NotifyScope::Window | crate::protocol::NotifyScope::Context)
+        Some(plexi_protocol::NotifyScope::Window | plexi_protocol::NotifyScope::Context)
     ) && context_id.is_none()
     {
-        let scope_name = if scope == Some(crate::protocol::NotifyScope::Window) {
+        let scope_name = if scope == Some(plexi_protocol::NotifyScope::Window) {
             "window"
         } else {
             "context"
@@ -121,9 +121,9 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
     }
     if let Some(s) = scope {
         let s_str = match s {
-            crate::protocol::NotifyScope::Window => "window",
-            crate::protocol::NotifyScope::Context => "context",
-            crate::protocol::NotifyScope::Global => "global",
+            plexi_protocol::NotifyScope::Window => "window",
+            plexi_protocol::NotifyScope::Context => "context",
+            plexi_protocol::NotifyScope::Global => "global",
         };
         payload["scope"] = serde_json::Value::String(s_str.to_string());
     }
@@ -549,8 +549,8 @@ mod notify_tests {
         listener.set_nonblocking(true).unwrap();
         env.set(&socket_path);
         for scope in [
-            crate::protocol::NotifyScope::Context,
-            crate::protocol::NotifyScope::Window,
+            plexi_protocol::NotifyScope::Context,
+            plexi_protocol::NotifyScope::Window,
         ] {
             let code = notify_cli(NotifyCliArgs {
                 title: "T",

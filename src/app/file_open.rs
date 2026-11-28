@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 use super::file_handlers::FileHandler;
 use super::PlexiApp;
-use crate::protocol::OpenPlacement;
+use plexi_protocol::OpenPlacement;
 use crate::spatial::tiling::PaneId;
 
 /// The operation id both CLI spellings and every in-host entry point share.

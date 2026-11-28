@@ -36,7 +36,7 @@ pub struct AudioDeviceInfo {
     pub default: bool,
 }
 
-impl From<AudioDeviceInfo> for crate::protocol::AudioDeviceWire {
+impl From<AudioDeviceInfo> for plexi_protocol::AudioDeviceWire {
     fn from(info: AudioDeviceInfo) -> Self {
         Self {
             id: info.id,

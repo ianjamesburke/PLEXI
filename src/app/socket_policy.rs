@@ -5,7 +5,7 @@
 //! does not compile until it is classified.
 
 use crate::broker::caller::SocketCaller;
-use crate::protocol::HostRequest;
+use plexi_protocol::HostRequest;
 
 /// What a socket caller needs before its request reaches a handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -28,7 +28,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use super::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
-use crate::protocol::ModelTier;
+use plexi_protocol::ModelTier;
 
 /// A JSON number as a token count. Missing or null stays `None` — callers
 /// must not substitute `0`, which is indistinguishable from "the provider

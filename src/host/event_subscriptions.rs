@@ -31,7 +31,7 @@ use crate::broker::{
 };
 use crate::host::event_log;
 use crate::host::plugin_timeline::{EmittedEvent, PluginTimeline, SubscriptionRecord};
-use crate::protocol::{EventStreamDecl, PayloadMode, TriggerMode};
+use plexi_protocol::{EventStreamDecl, PayloadMode, TriggerMode};
 
 pub fn plugin_subscriber_id(pane_id: u64) -> String {
     format!("app-pane:{pane_id}")
@@ -1442,7 +1442,7 @@ mod tests {
     use super::*;
     use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource};
     use crate::host::plugin_timeline::EmittedEvent;
-    use crate::protocol::{EventStreamDecl, PluginEventActor};
+    use plexi_protocol::{EventStreamDecl, PluginEventActor};
 
     /// Fixed owning/viewer context for tests that don't exercise
     /// cross-context behavior (that's `plugin_timeline.rs`'s job) — keeps every

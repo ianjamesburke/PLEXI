@@ -9,7 +9,7 @@
 use super::view_trait::ViewEmitter;
 use super::PlexiApp;
 use crate::host::pane::{Pane, ViewPane};
-use crate::protocol::PlexiEvent;
+use plexi_protocol::PlexiEvent;
 
 /// The emitting view instance in `pane`, in the slot or under an overlay
 /// that covers it.

@@ -650,8 +650,8 @@ mod waiter_tests {
     fn public_dashboard_cancel_sends_cancel() {
         let (output, request) = run_against_host("dashboard cancel", r#"{"ok":true}"#, false);
         assert!(output.status.success(), "{output:?}");
-        let request: crate::protocol::HostRequest = serde_json::from_value(request).unwrap();
-        let crate::protocol::HostRequest::AgentsDashboard { op, payload, .. } = request else {
+        let request: plexi_protocol::HostRequest = serde_json::from_value(request).unwrap();
+        let plexi_protocol::HostRequest::AgentsDashboard { op, payload, .. } = request else {
             panic!("expected a dashboard request");
         };
         assert_eq!(op, "cancel");

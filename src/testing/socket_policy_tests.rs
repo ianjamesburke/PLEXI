@@ -472,8 +472,8 @@ fn pane_send_from_outside_reaches_the_pane_and_from_a_pane_needs_the_broker() {
     );
     // From the person's own pane: the broker asks; nothing is typed until a
     // desktop click approves.
-    let mut request: crate::protocol::HostRequest = serde_json::from_value(send_to).unwrap();
-    if let crate::protocol::HostRequest::SendToPane { response_file, .. } = &mut request {
+    let mut request: plexi_protocol::HostRequest = serde_json::from_value(send_to).unwrap();
+    if let plexi_protocol::HostRequest::SendToPane { response_file, .. } = &mut request {
         *response_file = Some(crate::rpc::response_file("socket-policy-send", "json"));
     }
     h.inject_from_pane(caller, request);
@@ -1176,7 +1176,7 @@ fn minimal_instance(schema: &serde_json::Value, defs: &serde_json::Value) -> ser
 
 /// Every `HostRequest` wire tag with a minimal request of that variant.
 fn host_request_variants() -> Vec<(String, serde_json::Value)> {
-    let schema = serde_json::to_value(schemars::schema_for!(crate::protocol::HostRequest)).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(plexi_protocol::HostRequest)).unwrap();
     let defs = &schema["$defs"];
     schema["oneOf"]
         .as_array()
@@ -1190,7 +1190,7 @@ fn host_request_variants() -> Vec<(String, serde_json::Value)> {
 }
 
 /// The request a row names, with any suboperation set.
-fn row_request(op: Op, variants: &[(String, serde_json::Value)]) -> Option<crate::protocol::HostRequest> {
+fn row_request(op: Op, variants: &[(String, serde_json::Value)]) -> Option<plexi_protocol::HostRequest> {
     let (tag, field, value) = match op {
         Op::Request(tag) => (tag, None, None),
         Op::Sub(tag, field, value) => (tag, Some(field), Some(value)),
@@ -1277,7 +1277,7 @@ fn every_socket_operation_is_classified() {
 /// (shutdown, close, spawn) runs.
 fn entry_outcome(
     h: &mut HostHarness,
-    request: crate::protocol::HostRequest,
+    request: plexi_protocol::HostRequest,
     peer: Option<PeerWitness>,
     dispatch: bool,
 ) -> Option<String> {

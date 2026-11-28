@@ -42,7 +42,7 @@ use std::sync::Arc;
 
 use crossbeam_queue::ArrayQueue;
 
-use crate::protocol::VideoState;
+use plexi_protocol::VideoState;
 
 // ─── Public types ────────────────────────────────────────────────────────────
 

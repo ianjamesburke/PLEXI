@@ -20,7 +20,7 @@ use crate::broker::{
 use crate::plexi_ai::tool_dispatch::{
     self, DispatchScope, PluginEventSender, ToolCallResult, ToolDispatcher,
 };
-use crate::protocol::{AiTool, HostRequest};
+use plexi_protocol::{AiTool, HostRequest};
 use crate::testing::HostHarness;
 
 fn play(rev: i64, op: &str, mv: &str, game: &str) -> serde_json::Value {
@@ -855,9 +855,9 @@ fn assert_waiting_plugin_call(choice: ApprovalChoice) {
         tool_dispatch::unregister(target);
         return;
     }
-    let event: crate::protocol::PlexiEvent =
+    let event: plexi_protocol::PlexiEvent =
         serde_json::from_str(&rx.recv_timeout(Duration::from_secs(2)).unwrap()).unwrap();
-    let crate::protocol::PlexiEvent::ToolCall {
+    let plexi_protocol::PlexiEvent::ToolCall {
         call_id,
         input_json,
         ..

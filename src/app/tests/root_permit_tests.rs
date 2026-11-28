@@ -29,7 +29,7 @@ fn root_change_from_a_foreign_pane_is_refused_with_no_effect() {
     let id = before.context_id;
     let revision = h.app.context_scope_revision(id);
     let target = tempfile::tempdir().unwrap();
-    let request = crate::protocol::HostRequest::SetContextRoot {
+    let request = plexi_protocol::HostRequest::SetContextRoot {
         root: target.path().into(),
         context_id: Some(id),
         response_file: None,

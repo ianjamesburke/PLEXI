@@ -297,7 +297,7 @@ fn sdk_and_host_agree_on_wire_message_kinds() {
     let mut host_sends = sent.kinds;
     for file in ["events.rs", "commands.rs"] {
         host_sends.extend(tagged_enum_kinds(
-            &repo_root().join("src/protocol").join(file),
+            &repo_root().join("crates/plexi-protocol/src").join(file),
         ));
     }
     let sdk_only: BTreeSet<String> = SDK_ONLY_HANDLED_KINDS

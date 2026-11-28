@@ -840,7 +840,7 @@ impl PlexiApp {
         let origin = crate::broker::caller::RequestOrigin::PluginGuest(
             crate::broker::principal::PluginInstance::in_pane("assistant", origin_pane_id),
         );
-        self.handle_pane_ipc_request(origin, crate::protocol::HostRequest::SpawnPane {
+        self.handle_pane_ipc_request(origin, plexi_protocol::HostRequest::SpawnPane {
             type_id: type_id.to_string(),
             layout,
             args,

@@ -12,7 +12,7 @@ pub use intent::{
 };
 
 use crate::app::view_trait::{View, ViewCommand, ViewRenderContext};
-use crate::protocol::ArtifactOpenMode;
+use plexi_protocol::ArtifactOpenMode;
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::list;
 use crate::ui::overlay::ModalShell;
@@ -1430,7 +1430,7 @@ impl FileBrowserView {
                 self.pending_cmds.push(ViewCommand::OpenArtifact {
                     sender_pane_id: 0,
                     path: path.to_string_lossy().to_string(),
-                    mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
+                    mode: plexi_protocol::ArtifactOpenMode::OpenWithDefault,
                 });
                 Ok(())
             }
@@ -1439,7 +1439,7 @@ impl FileBrowserView {
                 self.pending_cmds.push(ViewCommand::OpenArtifact {
                     sender_pane_id: 0,
                     path: path.to_string_lossy().to_string(),
-                    mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
+                    mode: plexi_protocol::ArtifactOpenMode::RevealInFinder,
                 });
                 Ok(())
             }
@@ -5760,7 +5760,7 @@ mod tests {
         assert_eq!(browser_selected(&mut harness), 0);
 
         // Drive Down arrow via HostRequest::KeyPane (the socket IPC for `plexi pane key <id> down`)
-        harness.inject_ipc(crate::protocol::HostRequest::KeyPane {
+        harness.inject_ipc(plexi_protocol::HostRequest::KeyPane {
             pane_id,
             key: "down".into(),
             response_file: None,
@@ -5769,7 +5769,7 @@ mod tests {
         assert_eq!(browser_selected(&mut harness), 1);
 
         // Drive Up arrow via KeyPane
-        harness.inject_ipc(crate::protocol::HostRequest::KeyPane {
+        harness.inject_ipc(plexi_protocol::HostRequest::KeyPane {
             pane_id,
             key: "up".into(),
             response_file: None,
@@ -6435,7 +6435,7 @@ mod tests {
 
     #[test]
     fn slash_reveal_and_open_with_default_emit_os_modes() {
-        use crate::protocol::ArtifactOpenMode;
+        use plexi_protocol::ArtifactOpenMode;
 
         let (mut app, dir) = make_file_only_dir_plugin();
         app.take_pending_commands();
@@ -7584,7 +7584,7 @@ mod tests {
             &cmds[0],
             ViewCommand::OpenArtifact {
                 path,
-                mode: crate::protocol::ArtifactOpenMode::OpenInPane,
+                mode: plexi_protocol::ArtifactOpenMode::OpenInPane,
                 ..
             } if path == &expected_path.display().to_string()
         ));
@@ -7977,7 +7977,7 @@ mod tests {
         let selected = browser.selected_search_hit().unwrap().path.clone();
         let before = h.pane_count();
 
-        h.inject_ipc(crate::protocol::HostRequest::KeyPane {
+        h.inject_ipc(plexi_protocol::HostRequest::KeyPane {
             pane_id: pane,
             key: "enter".into(),
             response_file: None,

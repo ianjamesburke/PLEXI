@@ -158,7 +158,7 @@ pub fn context_sub_cli(
     path: Option<&str>,
     agents: u32,
     commands: &[String],
-    layout: Option<crate::protocol::SubContextLayout>,
+    layout: Option<plexi_protocol::SubContextLayout>,
     placement: ContextSpawnPlacement,
     mode: OutputMode,
 ) -> i32 {
@@ -463,10 +463,10 @@ mod context_sub_tests {
     fn set_root_names_the_callers_context() {
         let frame = super::set_root_frame(std::path::Path::new("/w"), Some(7));
         assert_eq!(frame["context_id"], 7, "{frame}");
-        let request: crate::protocol::HostRequest = serde_json::from_value(frame).unwrap();
+        let request: plexi_protocol::HostRequest = serde_json::from_value(frame).unwrap();
         assert!(matches!(
             request,
-            crate::protocol::HostRequest::SetContextRoot { context_id: Some(7), .. }
+            plexi_protocol::HostRequest::SetContextRoot { context_id: Some(7), .. }
         ));
     }
 

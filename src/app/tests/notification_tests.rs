@@ -38,11 +38,11 @@ fn snoozed_notification_invisible_then_visible() {
         source_window_id: h.app.windows[h.app.active_window].window_id,
         title: "Snoozed".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::protocol::NotifyScope::Global,
+        scope: plexi_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -84,7 +84,7 @@ fn snoozed_notification_is_excluded_from_queue_and_context_badge() {
         notify_id: "snoozed-consistency".into(),
         source_context_id: context_id,
         source_window_id: window_id,
-        scope: crate::protocol::NotifyScope::Context,
+        scope: plexi_protocol::NotifyScope::Context,
         deliver_after: Some(std::time::Instant::now() + std::time::Duration::from_secs(60)),
         ..Default::default()
     });
@@ -104,7 +104,7 @@ fn parked_context_suppresses_and_restores_its_notification_badge() {
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "parked-consistency".into(),
         source_context_id: context_id,
-        scope: crate::protocol::NotifyScope::Context,
+        scope: plexi_protocol::NotifyScope::Context,
         ..Default::default()
     });
     assert_eq!(h.app.context_notification_count(0), 1);
@@ -132,11 +132,11 @@ fn snoozed_notification_exempt_from_timeout() {
         source_window_id: h.app.windows[h.app.active_window].window_id,
         title: "ShouldNotTimeout".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::protocol::NotifyScope::Global,
+        scope: plexi_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -173,11 +173,11 @@ fn persist_roundtrip() {
         source_window_id: 1,
         title: "Test".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::protocol::NotifyScope::Global,
+        scope: plexi_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: Some("/tmp/resp".into()),
@@ -233,9 +233,9 @@ fn restored_orphaned_scope_is_reviewable_without_reused_sender_delivery() {
         dismiss_owner_pane_id: reused_pane_id,
         source_context_id: 999_999,
         source_window_id: 999_999,
-        scope: crate::protocol::NotifyScope::Context,
-        kind: crate::protocol::NotifyKind::Choice,
-        options: vec![crate::protocol::NotifyOption {
+        scope: plexi_protocol::NotifyScope::Context,
+        kind: plexi_protocol::NotifyKind::Choice,
+        options: vec![plexi_protocol::NotifyOption {
             label: "Continue".into(),
             value: String::new(),
             shortcut: None,
@@ -388,11 +388,11 @@ fn window_scoped_notification_visible_only_on_source_window() {
         source_window_id: win0_id,
         title: "Window Notification".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::protocol::NotifyScope::Window,
+        scope: plexi_protocol::NotifyScope::Window,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -444,12 +444,12 @@ fn stale_pinned_notification_is_replaced_after_context_switch() {
         notify_id: "context-a".into(),
         source_context_id: first_context_id,
         source_window_id: first_window_id,
-        scope: crate::protocol::NotifyScope::Context,
+        scope: plexi_protocol::NotifyScope::Context,
         ..Default::default()
     });
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "global".into(),
-        scope: crate::protocol::NotifyScope::Global,
+        scope: plexi_protocol::NotifyScope::Global,
         ..Default::default()
     });
     h.app.current_notify_id = Some("context-a".into());
@@ -484,11 +484,11 @@ fn auto_dismiss_removes_message_when_sender_focused() {
         source_window_id: win_id,
         title: "Should go away".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::protocol::NotifyScope::Global,
+        scope: plexi_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -529,8 +529,8 @@ fn auto_dismiss_does_not_drop_focused_choice_prompt() {
         sender_pane_id: pane_id,
         source_context_id: h.app.router.active().context_id,
         source_window_id: h.app.windows[h.app.active_window].window_id,
-        kind: crate::protocol::NotifyKind::Choice,
-        options: vec![crate::protocol::NotifyOption {
+        kind: plexi_protocol::NotifyKind::Choice,
+        options: vec![plexi_protocol::NotifyOption {
             label: "Continue".into(),
             value: "continue".into(),
             shortcut: None,
@@ -557,7 +557,7 @@ fn disabled_notification_writes_explicit_terminal_outcome() {
         crate::app::notifications::NotifySource::Cli,
         PendingNotification {
             notify_id: "disabled-choice".into(),
-            kind: crate::protocol::NotifyKind::Choice,
+            kind: plexi_protocol::NotifyKind::Choice,
             response_file: Some(response_path.clone()),
             ..Default::default()
         },
@@ -582,7 +582,7 @@ fn source_exit_resolves_interactive_prompt() {
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "source-ended-choice".into(),
         sender_pane_id: pane_id,
-        kind: crate::protocol::NotifyKind::Choice,
+        kind: plexi_protocol::NotifyKind::Choice,
         response_file: Some(response_path.clone()),
         ..Default::default()
     });
@@ -615,11 +615,11 @@ fn auto_dismiss_spares_required_notifications() {
         source_window_id: win_id,
         title: "Must stay".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: true, // <-- required
-        scope: crate::protocol::NotifyScope::Global,
+        scope: plexi_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -663,11 +663,11 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
         source_window_id: win_id,
         title: "From other pane".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::protocol::NotifyScope::Global,
+        scope: plexi_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -771,11 +771,11 @@ fn cue_test_notification(id: &str) -> PendingNotification {
         source_window_id: 0,
         title: "Title".into(),
         body: "Body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::protocol::NotifyScope::Global,
+        scope: plexi_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -967,8 +967,8 @@ fn enqueue_notification_only_interrupts_for_decisions() {
     assert_eq!(h.app.visible_notification_count(), 1);
 
     let mut choice = cue_test_notification("decision");
-    choice.kind = crate::protocol::NotifyKind::Choice;
-    choice.options.push(crate::protocol::NotifyOption {
+    choice.kind = plexi_protocol::NotifyKind::Choice;
+    choice.options.push(plexi_protocol::NotifyOption {
         label: "Continue".into(),
         value: "continue".into(),
         shortcut: None,
@@ -984,7 +984,7 @@ fn enqueue_notification_only_interrupts_for_decisions() {
     assert_eq!(h.app.current_notify_id.as_deref(), Some("decision"));
 
     let mut input = cue_test_notification("input-decision");
-    input.kind = crate::protocol::NotifyKind::Input;
+    input.kind = plexi_protocol::NotifyKind::Input;
     assert!(
         h.app.notification_may_interrupt(&input),
         "input must retain the same intentional decision path"
@@ -1053,7 +1053,7 @@ fn cue_suppressed_for_invisible_notification() {
     h.app.notifications_sound = Some("/tmp/cue.wav".to_string());
 
     let mut n = cue_test_notification("invisible");
-    n.scope = crate::protocol::NotifyScope::Context;
+    n.scope = plexi_protocol::NotifyScope::Context;
     n.source_context_id = 999_999; // not the active context
     assert!(
         !h.app.notification_is_visible(&n),
@@ -1156,11 +1156,11 @@ fn disabled_notifications_never_play_a_cue() {
 /// expanded to the single-hop witness `PlexiApp::classify_socket_peer` reads —
 /// callers pass the pid they want matched directly (typically a live pane's
 /// own `child_pid`), same as the pre-0636-fix single-pid API.
-fn cli_notify_request(scope: Option<crate::protocol::NotifyScope>) -> crate::protocol::HostRequest {
-    crate::protocol::HostRequest::Notify {
+fn cli_notify_request(scope: Option<plexi_protocol::NotifyScope>) -> plexi_protocol::HostRequest {
+    plexi_protocol::HostRequest::Notify {
         title: "CLI notify".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
@@ -1215,7 +1215,7 @@ fn parked_view_window_notification_narrows_without_active_window_provenance() {
     let context_id = h.app.router.active().context_id;
     let (scope, source_window_id) = h
         .app
-        .resolve_plugin_notification_provenance(0, crate::protocol::NotifyScope::Window);
+        .resolve_plugin_notification_provenance(0, plexi_protocol::NotifyScope::Window);
     h.app.enqueue_notification(
         crate::app::notifications::NotifySource::View,
         PendingNotification {
@@ -1226,7 +1226,7 @@ fn parked_view_window_notification_narrows_without_active_window_provenance() {
             source_window_id,
             title: "Parked".into(),
             body: "body".into(),
-            kind: crate::protocol::NotifyKind::Message,
+            kind: plexi_protocol::NotifyKind::Message,
             options: vec![],
             input_prompt: None,
             required: false,
@@ -1246,7 +1246,7 @@ fn parked_view_window_notification_narrows_without_active_window_provenance() {
     );
 
     let notification = &h.app.pending_notifications[0];
-    assert_eq!(notification.scope, crate::protocol::NotifyScope::Context);
+    assert_eq!(notification.scope, plexi_protocol::NotifyScope::Context);
     assert_eq!(notification.source_window_id, 0);
     assert_eq!(notification.source_context_id, context_id);
 }
@@ -1273,10 +1273,10 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
 
-    h.inject_socket(crate::protocol::HostRequest::Notify {
+    h.inject_socket(plexi_protocol::HostRequest::Notify {
         title: "sticky".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
@@ -1306,7 +1306,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     // A different real pane (its own genuine socket peer) claims to be the
     // owner via the wire fields — those claims must be ignored; only the
     // resolved `peer_pid` decides ownership, and it names a stranger.
-    h.inject_socket(crate::protocol::HostRequest::DismissNotification {
+    h.inject_socket(plexi_protocol::HostRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
         response_file: response_file.to_string_lossy().into_owned(),
     }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[foreign_peer_pid])));
@@ -1317,7 +1317,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
         "foreign pane must not dismiss, even while claiming to be the owner"
     );
 
-    h.inject_socket(crate::protocol::HostRequest::DismissNotification {
+    h.inject_socket(plexi_protocol::HostRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
         response_file: response_file.to_string_lossy().into_owned(),
     }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[owner_peer_pid])));
@@ -1342,10 +1342,10 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
     // nothing.
     let unresolvable_peer = std::process::id();
 
-    h.inject_socket(crate::protocol::HostRequest::Notify {
+    h.inject_socket(plexi_protocol::HostRequest::Notify {
         title: "t".into(),
         body: "b".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
@@ -1365,7 +1365,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
     let posted = &h.app.pending_notifications[0];
     assert_eq!(
         posted.scope,
-        crate::protocol::NotifyScope::Global,
+        plexi_protocol::NotifyScope::Global,
         "an unresolvable peer must escalate to Global rather than trust the claimed context"
     );
     assert_eq!(
@@ -1375,7 +1375,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
 
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
-    h.inject_socket(crate::protocol::HostRequest::DismissNotification {
+    h.inject_socket(plexi_protocol::HostRequest::DismissNotification {
         notify_id: "unresolvable-peer".into(),
         response_file: response_file.to_string_lossy().into_owned(),
     }, Some(crate::broker::caller::PeerWitness::capture(unresolvable_peer)));
@@ -1405,10 +1405,10 @@ fn forged_source_pane_is_ignored_in_favor_of_resolved_peer() {
     };
     assert_ne!(real_ctx, forged_ctx);
 
-    h.inject_socket(crate::protocol::HostRequest::Notify {
+    h.inject_socket(plexi_protocol::HostRequest::Notify {
         title: "t".into(),
         body: "b".into(),
-        kind: crate::protocol::NotifyKind::Message,
+        kind: plexi_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
         required: false,
@@ -1419,7 +1419,7 @@ fn forged_source_pane_is_ignored_in_favor_of_resolved_peer() {
         timeout_secs: None,
         on_dismiss: None,
         response_file: None,
-        scope: Some(crate::protocol::NotifyScope::Context),
+        scope: Some(plexi_protocol::NotifyScope::Context),
     }, Some(crate::broker::caller::PeerWitness::for_live_pids(&[real_peer_pid])));
     h.run_frames(2);
 
@@ -1449,7 +1449,7 @@ fn cli_notify_without_scope_defaults_to_context() {
     assert_eq!(h.app.pending_notifications.len(), 1, "notification queued");
     assert_eq!(
         h.app.pending_notifications[0].scope,
-        crate::protocol::NotifyScope::Context,
+        plexi_protocol::NotifyScope::Context,
         "unscoped CLI notify must stay in its own context, not leak globally"
     );
     assert_eq!(
@@ -1464,13 +1464,13 @@ fn cli_notify_explicit_global_scope_survives_the_new_default() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
 
-    h.inject_ipc(cli_notify_request(Some(crate::protocol::NotifyScope::Global)));
+    h.inject_ipc(cli_notify_request(Some(plexi_protocol::NotifyScope::Global)));
     h.run_frames(2);
 
     assert_eq!(h.app.pending_notifications.len(), 1);
     assert_eq!(
         h.app.pending_notifications[0].scope,
-        crate::protocol::NotifyScope::Global,
+        plexi_protocol::NotifyScope::Global,
         "--scope global must still be global"
     );
 }
@@ -1500,7 +1500,7 @@ fn cli_notify_attaches_to_callers_context_not_active() {
 
     assert_eq!(h.app.pending_notifications.len(), 1);
     let n = &h.app.pending_notifications[0];
-    assert_eq!(n.scope, crate::protocol::NotifyScope::Context);
+    assert_eq!(n.scope, plexi_protocol::NotifyScope::Context);
     assert_eq!(
         n.source_context_id, real_ctx,
         "provenance must be the socket peer's own context, not dispatch-time active state"
@@ -1525,7 +1525,7 @@ fn cli_notify_stale_identity_escalates_to_global() {
     let n = &h.app.pending_notifications[0];
     assert_eq!(
         n.scope,
-        crate::protocol::NotifyScope::Global,
+        plexi_protocol::NotifyScope::Global,
         "a stale identity must escalate to global, not attach elsewhere"
     );
     assert_eq!(n.source_context_id, 0, "0 = no context, the host sentinel");
@@ -1545,7 +1545,7 @@ fn cli_notify_outside_pane_unscoped_escalates_to_global() {
     assert_eq!(h.app.pending_notifications.len(), 1);
     assert_eq!(
         h.app.pending_notifications[0].scope,
-        crate::protocol::NotifyScope::Global,
+        plexi_protocol::NotifyScope::Global,
         "no identity → no context to attach to → global"
     );
 }
@@ -1554,13 +1554,13 @@ fn cli_notify_outside_pane_unscoped_escalates_to_global() {
 #[test]
 fn notify_scope_default_is_context() {
     assert_eq!(
-        crate::protocol::NotifyScope::default(),
-        crate::protocol::NotifyScope::Context
+        plexi_protocol::NotifyScope::default(),
+        plexi_protocol::NotifyScope::Context
     );
-    let unset: Option<crate::protocol::NotifyScope> = None;
+    let unset: Option<plexi_protocol::NotifyScope> = None;
     assert_eq!(
         unset.unwrap_or_default(),
-        crate::protocol::NotifyScope::Context
+        plexi_protocol::NotifyScope::Context
     );
 }
 
@@ -1569,7 +1569,7 @@ fn notify_scope_default_is_context() {
 /// flag the moment the default changed — that was the actual regression.
 #[test]
 fn parse_notify_scope_maps_every_named_scope_explicitly() {
-    use crate::protocol::NotifyScope;
+    use plexi_protocol::NotifyScope;
     assert_eq!(crate::cli::parse_notify_scope(None), Ok(None));
     assert_eq!(
         crate::cli::parse_notify_scope(Some("global")),
@@ -1703,11 +1703,11 @@ fn resurface_test_notification(id: &str, sender_pane_id: u64) -> PendingNotifica
         source_window_id: 0,
         title: "Resurface me".into(),
         body: "body".into(),
-        kind: crate::protocol::NotifyKind::Choice,
+        kind: plexi_protocol::NotifyKind::Choice,
         options: vec![],
         input_prompt: None,
         required: false,
-        scope: crate::protocol::NotifyScope::Global,
+        scope: plexi_protocol::NotifyScope::Global,
         image_inline: None,
         image_pipe_id: None,
         response_file: None,
@@ -2072,7 +2072,7 @@ fn focus_mode_suppresses_resurface() {
 #[test]
 fn notification_visible_matches_scope_semantics_matrix() {
     use crate::app::notifications::notification_visible;
-    use crate::protocol::NotifyScope;
+    use plexi_protocol::NotifyScope;
 
     let active_window_id = 10;
     let active_context_id = 20;
@@ -2171,9 +2171,9 @@ fn notification_is_visible_agrees_with_extracted_scope_match_when_not_snoozed() 
     let active_context_id = h.app.router.active().context_id;
 
     for scope in [
-        crate::protocol::NotifyScope::Global,
-        crate::protocol::NotifyScope::Window,
-        crate::protocol::NotifyScope::Context,
+        plexi_protocol::NotifyScope::Global,
+        plexi_protocol::NotifyScope::Window,
+        plexi_protocol::NotifyScope::Context,
     ] {
         for (source_window_id, source_context_id) in [
             (active_window_id, active_context_id),
@@ -2208,7 +2208,7 @@ fn notification_is_visible_agrees_with_extracted_scope_match_when_not_snoozed() 
 #[test]
 fn notification_counts_toward_context_matrix() {
     use crate::app::notifications::notification_counts_toward_context;
-    use crate::protocol::NotifyScope;
+    use plexi_protocol::NotifyScope;
 
     assert!(!notification_counts_toward_context(
         NotifyScope::Global,
