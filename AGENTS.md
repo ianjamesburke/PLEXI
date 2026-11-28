@@ -76,6 +76,7 @@ Every new feature must be instrumented: no new capability, command, or user-visi
 - Test-first for host logic. Define done by the test, not the code. No partial merges.
 - Observable state belongs in TOML scenes; return values and invariants belong in Rust tests.
 - Hosted CI is Apple Silicon only and runs no PR builds; the beta release build and main release builds run the host tests. The manual `Rust host` workflow runs the full suite with the PTY tests.
+- Windows and Linux are paused until after v1 (owner ruling, 2026-11-27). Mac is the only platform to build, test or report on. Do not run or ask for a Windows or Linux build, and do not list a missing one as a gap, risk, caveat, skipped check or open thread.
 - Host UI changes: visual review via harness screenshot test is mandatory before shipping.
 
 ## Panic Discipline
