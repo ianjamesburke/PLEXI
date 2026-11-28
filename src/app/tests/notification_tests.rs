@@ -91,30 +91,7 @@ fn snoozed_notification_is_excluded_from_queue_and_context_badge() {
 
     assert_eq!(h.app.visible_notification_count(), 0);
     assert_eq!(h.app.sorted_notification_ids(), Vec::<String>::new());
-    assert_eq!(h.app.context_notification_count(0), 0);
-}
-
-/// Parked contexts intentionally suppress their sidebar badge, but do not
-/// delete queued work; un-parking restores the same count. This makes the
-/// quiet parked policy explicit without conflating it with a snooze.
-#[test]
-fn parked_context_suppresses_and_restores_its_notification_badge() {
-    let mut h = HostHarness::new();
-    let context_id = h.app.router.active().context_id;
-    h.app.pending_notifications.push(PendingNotification {
-        notify_id: "parked-consistency".into(),
-        source_context_id: context_id,
-        scope: plexi_protocol::NotifyScope::Context,
-        ..Default::default()
-    });
-    assert_eq!(h.app.context_notification_count(0), 1);
-
-    h.app.router.get_mut(0).parked = true;
-    assert_eq!(h.app.context_notification_count(0), 0);
-    assert_eq!(h.app.pending_notifications.len(), 1);
-
-    h.app.router.get_mut(0).parked = false;
-    assert_eq!(h.app.context_notification_count(0), 1);
+    assert_eq!(h.app.context_notification_count_recursive(context_id), 0);
 }
 
 /// #840: tick_notification_timeouts must not time out a snoozed notification.

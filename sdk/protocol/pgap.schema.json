@@ -985,10 +985,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Inline image attachment (PNG / JPEG, base64-encoded). Rendered above\nthe action buttons. Decoded size > 50 KB triggers a placeholder.\n`Option` is the natural empty/missing wire shape — no\n`#[serde(default)]` shim. Mutually exclusive with `image_pipe_id`;\nwhen both set, inline wins and the pipe is ignored (logged warn)."
+              "description": "Inline image attachment (PNG / JPEG, base64-encoded). Accepted and\nstored with the notification; the host does not display it.\n`Option` is the natural empty/missing wire shape — no\n`#[serde(default)]` shim."
             },
             "image_pipe_id": {
-              "description": "Pipe-referenced image. Host drains the binary ring lazily when the\nnotification is visible. Payload format: `width: u32 LE`,\n`height: u32 LE`, then `width * height * 4` bytes of RGBA.",
+              "description": "Pipe-referenced image. Accepted; the host does not read the pipe\nor display the image.",
               "type": [
                 "string",
                 "null"

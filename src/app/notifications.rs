@@ -1053,26 +1053,6 @@ impl PlexiApp {
         self.sync_attention_queue();
     }
 
-    /// Count of window- or context-scoped notifications whose source_context_id == the id of ctx_idx.
-    /// Used for per-context sidebar badges on inactive contexts. Global notifications
-    /// are excluded — they already appear everywhere via notification_is_visible.
-    /// Returns 0 for parked contexts — they produce no visual noise.
-    #[cfg(test)]
-    pub(crate) fn context_notification_count(&self, ctx_idx: usize) -> usize {
-        let ctx = self.router.get(ctx_idx);
-        if ctx.parked {
-            return 0;
-        }
-        let ctx_id = ctx.context_id;
-        self.pending_notifications
-            .iter()
-            .filter(|n| {
-                !self.notification_is_snoozed(n)
-                    && notification_counts_toward_context(n.scope, n.source_context_id, ctx_id)
-            })
-            .count()
-    }
-
     /// Recursively sum notification count for a context and all its descendants.
     /// Used for the notification badge on Portal tiles.
     pub(crate) fn context_notification_count_recursive(&self, ctx_id: u64) -> usize {

@@ -432,16 +432,14 @@ pub enum HostRequest {
         /// If set, host sends PlexiEvent::NotifyAction when the user responds.
         #[serde(default)]
         notify_id: Option<String>,
-        /// Inline image attachment (PNG / JPEG, base64-encoded). Rendered above
-        /// the action buttons. Decoded size > 50 KB triggers a placeholder.
+        /// Inline image attachment (PNG / JPEG, base64-encoded). Accepted and
+        /// stored with the notification; the host does not display it.
         /// `Option` is the natural empty/missing wire shape — no
-        /// `#[serde(default)]` shim. Mutually exclusive with `image_pipe_id`;
-        /// when both set, inline wins and the pipe is ignored (logged warn).
+        /// `#[serde(default)]` shim.
         #[serde(skip_serializing_if = "Option::is_none")]
         image_inline: Option<NotificationImage>,
-        /// Pipe-referenced image. Host drains the binary ring lazily when the
-        /// notification is visible. Payload format: `width: u32 LE`,
-        /// `height: u32 LE`, then `width * height * 4` bytes of RGBA.
+        /// Pipe-referenced image. Accepted; the host does not read the pipe
+        /// or display the image.
         #[serde(skip_serializing_if = "Option::is_none")]
         image_pipe_id: Option<String>,
         /// Auto-dismiss after this many seconds. On expiry, host delivers
@@ -2984,9 +2982,7 @@ mod tests {
 
     #[test]
     fn notify_with_inline_image_round_trips_serde() {
-        // 4-byte base64 payload — well under the 50 KB cap. The host will
-        // attempt to decode + render; tiny or invalid images render a
-        // placeholder, never crash.
+        // The host stores the attachment without decoding it.
         let json = r#"{"type":"notify","title":"Pic","body":"see image","kind":"message","image_inline":{"mime":"image/png","base64":"AAAA"}}"#;
         let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
