@@ -1,5 +1,64 @@
 use super::*;
 
+#[cfg(unix)]
+#[test]
+fn file_browser_shift_down_clears_open_refusal() {
+    check_shift_down_open_refusal(None);
+}
+
+#[cfg(unix)]
+#[test]
+fn screenshot_file_browser_shift_down_clears_open_refusal() {
+    check_shift_down_open_refusal(Some(&evidence_png!()));
+}
+
+#[cfg(unix)]
+fn check_shift_down_open_refusal(screenshot: Option<&str>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().canonicalize().expect("canonical fixture path");
+    let folder = root.join("explorer");
+    std::fs::create_dir(&folder).expect("create Explorer folder");
+    let outside = root.join("outside.md");
+    std::fs::write(&outside, "# Outside\n").expect("write outside file");
+    std::os::unix::fs::symlink(&outside, folder.join("a-link.md")).expect("create outgoing link");
+    // Explorer sorts by newest first by default.
+    std::fs::File::create(folder.join("b-local.md"))
+        .expect("create local file")
+        .set_modified(std::time::SystemTime::UNIX_EPOCH)
+        .expect("sort the local file below the link");
+
+    let mut h = PlexiUiHarness::new_sized(720.0, 520.0);
+    h.open_file_browser(folder);
+    h.run_steps(3);
+
+    let warning = "The selected file is outside this folder";
+    h.harness().key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let paints = |h: &mut PlexiUiHarness, label| {
+        h.harness().output().shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+        })
+    };
+    assert!(paints(&mut h, warning), "the outgoing link must be refused");
+
+    h.harness()
+        .key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowDown);
+    h.run_steps(2);
+
+    assert!(
+        paints(&mut h, "2 items · selected:   2"),
+        "Shift+Down must extend the selection"
+    );
+    assert!(
+        !paints(&mut h, warning),
+        "the refusal must clear when Shift+Down moves to the local file"
+    );
+    if let Some(path) = screenshot {
+        h.save_screenshot(path)
+            .expect("render Explorer after Shift+Down");
+    }
+}
+
 #[test]
 fn screenshot_file_browser_middle_elision_distinguishes_suffixes() {
     let dir = tempfile::tempdir().unwrap();
