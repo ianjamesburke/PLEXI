@@ -1,7 +1,7 @@
 //! Audio playback (#341) + real-time output streaming (WASM audio).
 //!
 //! [`AudioDeviceInfo`] is the on-the-wire device row; it is still referenced by
-//! `protocol::AudioDeviceWire`. The `AudioDevice` trait, its cpal-backed
+//! `plexi_protocol::AudioDeviceWire`. The `AudioDevice` trait, its cpal-backed
 //! `CoreAudioDevice` impl and the mic-capture path they served were never
 //! reachable from any build configuration and were deleted by stint 0750, along
 //! with the CoreMIDI stack in `crate::media::midi`. The `list_audio_devices` /

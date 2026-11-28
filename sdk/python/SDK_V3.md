@@ -433,7 +433,7 @@ All UINode types are dataclasses in `plexi_sdk/ui/__init__.py`. They map to WIT 
 > live Python surface; do not treat it as the component index.
 >
 > The host-rendered node vocabulary was settled in stint 0328 to a Polaris-class
-> spectrum. Native `UiNode` variants (see `src/protocol/ui_nodes.rs`) now cover:
+> spectrum. Native `UiNode` variants (see `crates/plexi-protocol/src/`) now cover:
 > form controls (`checkbox`, `radio`, `switch`, `slider`, `select`,
 > `date_time_picker`, `text_edit`), data/display (`table`, `key_value`,
 > `code_block`, `banner`, `progress`, `spinner`, `skeleton`, `empty_state`,
@@ -815,7 +815,7 @@ defaulted version. Python requirement remains repo-standard `>=3.11`.
 
 - `src/host/wasm_python.rs`: `fs.read` / `fs.write` capability gating and workspace scoping for Python host requests.
 - `src/host/wasm_python.rs` tests: regression coverage proves Python SDK v3 plugins launch through the CPython-in-WASM adapter (stint 0285), not a native subprocess.
-- `src/protocol/events.rs` and `src/protocol/commands.rs`: serde round-trips for new event/request fields.
+- `crates/plexi-protocol/src/events.rs` and `crates/plexi-protocol/src/commands.rs`: serde round-trips for new event/request fields.
 
 ### App tests
 
