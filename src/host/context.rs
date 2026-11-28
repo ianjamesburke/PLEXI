@@ -1,5 +1,5 @@
 use crate::host::keys::Direction;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::host::pane::Pane;
 use crate::host::shell;
 use crate::spatial::tiling::TabGroupInfo;

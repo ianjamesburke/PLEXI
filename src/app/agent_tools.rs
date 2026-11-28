@@ -371,9 +371,9 @@ impl PlexiApp {
     pub(crate) fn set_root_from_pane(
         &mut self,
         source: PaneCwd,
-        origin: crate::host::picker::InputOrigin,
+        origin: plexi_host_model::picker::InputOrigin,
     ) {
-        use crate::host::picker::InputOrigin;
+        use plexi_host_model::picker::InputOrigin;
         let id = source.target_context_id;
         let result = match origin {
             InputOrigin::Human => self.commit_context_root(

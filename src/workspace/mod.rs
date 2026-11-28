@@ -2,7 +2,7 @@ pub mod router;
 pub mod secrets;
 
 use crate::host::context::Context;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use egui_tiles::{TileId, Tree};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,7 +24,7 @@ pub struct WorkspaceFile {
     pub contexts: Vec<Context>,
     pub windows: Vec<SavedWindow>,
     #[serde(default, serialize_with = "sorted_map")]
-    pub strips: HashMap<u64, crate::strip::Strip>,
+    pub strips: HashMap<u64, plexi_host_model::strip::Strip>,
     #[serde(default, serialize_with = "sorted_map")]
     pub conjoined_contexts: HashMap<u64, PaneId>,
     /// context_id → last active window_id for that context.
@@ -769,9 +769,9 @@ impl WorkspaceFile {
             let mut kept = std::mem::take(&mut strip.columns).into_iter();
             for panes in expected {
                 let column = if panes.iter().all(|pane| once_hidden.contains(pane)) {
-                    let id = crate::strip::ColumnId(next_id);
+                    let id = plexi_host_model::strip::ColumnId(next_id);
                     next_id += 1;
-                    crate::strip::Column::new_stacked(id, panes, Default::default())
+                    plexi_host_model::strip::Column::new_stacked(id, panes, Default::default())
                 } else {
                     let mut column = kept.next().ok_or_else(|| {
                         io::Error::new(
@@ -965,12 +965,12 @@ impl WorkspaceFile {
                     )));
                 }
                 let valid_width = match column.width {
-                    crate::strip::ColumnWidth::Preset(_) => true,
-                    crate::strip::ColumnWidth::CustomRatio(value) => {
+                    plexi_host_model::strip::ColumnWidth::Preset(_) => true,
+                    plexi_host_model::strip::ColumnWidth::CustomRatio(value) => {
                         value.is_finite() && (0.05..=0.95).contains(&value)
                     }
-                    crate::strip::ColumnWidth::CustomPixels(value)
-                    | crate::strip::ColumnWidth::FixedPx(value) => value.is_finite() && value > 0.0,
+                    plexi_host_model::strip::ColumnWidth::CustomPixels(value)
+                    | plexi_host_model::strip::ColumnWidth::FixedPx(value) => value.is_finite() && value > 0.0,
                 };
                 if !valid_width {
                     return Err(invalid(format!("strip {context} has invalid column width")));
@@ -1279,8 +1279,8 @@ impl WorkspaceFile {
     /// context whose columns follow the saved window trees exactly as
     /// `validate` expects. Focus follows the context's active window.
     pub(crate) fn with_strips_from_windows(mut self) -> Self {
-        use crate::strip::model::ColumnWidthPreset;
-        use crate::strip::{Column, ColumnWidth, Strip};
+        use plexi_host_model::strip::ColumnWidthPreset;
+        use plexi_host_model::strip::{Column, ColumnWidth, Strip};
         self.version = CURRENT_VERSION;
         self.strips.clear();
         for context in &self.contexts {
@@ -1544,7 +1544,7 @@ mod tests {
         let mut workspace: WorkspaceFile = serde_json::from_str(
             r#"{"version":3,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#,
         ).unwrap();
-        workspace.strips.insert(42, crate::strip::Strip::new(42));
+        workspace.strips.insert(42, plexi_host_model::strip::Strip::new(42));
         let original = serde_json::to_vec(&workspace).unwrap();
         std::fs::write(&path, &original).unwrap();
         assert!(WorkspaceFile::load_from(profile.path()).is_err());

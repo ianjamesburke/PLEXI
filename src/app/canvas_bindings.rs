@@ -9,7 +9,7 @@
 use super::PlexiApp;
 use crate::host::pane::Pane;
 use plexi_protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::Tile;
 

@@ -7,7 +7,7 @@
 //! see only the edits that precede the delivery's first picker command, and
 //! applies that command after the field has drawn (stint 1391).
 
-use crate::host::picker::{
+use plexi_host_model::picker::{
     Hit, InputOrigin, PickerCommand, PickerState, PreviewBody, PreviewStatus, RowKey, Step,
 };
 use crate::ui::{

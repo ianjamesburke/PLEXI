@@ -1617,12 +1617,12 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
     let root_a = tempfile::tempdir().expect("root a");
     let root_b = tempfile::tempdir().expect("root b");
 
-    let mut tree_a: egui_tiles::Tree<crate::host::model::PaneId> =
+    let mut tree_a: egui_tiles::Tree<plexi_host_model::model::PaneId> =
         egui_tiles::Tree::empty("win-a");
     let tile_a = tree_a.tiles.insert_pane(41);
     tree_a.root = Some(tile_a);
 
-    let mut tree_b: egui_tiles::Tree<crate::host::model::PaneId> =
+    let mut tree_b: egui_tiles::Tree<plexi_host_model::model::PaneId> =
         egui_tiles::Tree::empty("win-b");
     let tile_b = tree_b.tiles.insert_pane(42);
     tree_b.root = Some(tile_b);
@@ -1778,17 +1778,17 @@ fn legacy_view_pane_without_launch_context_still_loads() {
     // A real, validly-shaped `Tree<PaneId>` — its serde form carries internal
     // fields (`id`, `height`, `width`) with no `#[serde(default)]`, so it must
     // come from the type itself rather than a hand-typed JSON fragment.
-    let mut tree: egui_tiles::Tree<crate::host::model::PaneId> =
+    let mut tree: egui_tiles::Tree<plexi_host_model::model::PaneId> =
         egui_tiles::Tree::empty("legacy-migration");
     let tile = tree.tiles.insert_pane(1);
     tree.root = Some(tile);
     let tree_json = serde_json::to_string(&tree).expect("tree must serialize");
-    let mut strip = crate::strip::Strip::new(1);
+    let mut strip = plexi_host_model::strip::Strip::new(1);
     let column = strip.alloc_column_id();
-    strip.push_column(crate::strip::Column::new(
+    strip.push_column(plexi_host_model::strip::Column::new(
         column,
         1,
-        crate::strip::ColumnWidth::Preset(crate::strip::model::ColumnWidthPreset::Child65),
+        plexi_host_model::strip::ColumnWidth::Preset(plexi_host_model::strip::ColumnWidthPreset::Child65),
     ));
     let strip_json = serde_json::to_string(&strip).expect("strip must serialize");
 
@@ -2598,7 +2598,7 @@ fn pane_slot_read_preserves_error_like_json_content() {
 fn seed_slot(
     h: &mut HostHarness,
     tmp: &std::path::Path,
-    pane: crate::host::model::PaneId,
+    pane: plexi_host_model::model::PaneId,
     slot_name: &str,
     content: &[u8],
     replace: bool,
@@ -13389,7 +13389,7 @@ mod routine_firing {
     use super::*;
     use crate::host::context::{Context, Window};
     use crate::host::pane::{Pane, ViewPane, ViewRuntime};
-    use crate::host::model::PaneId;
+    use plexi_host_model::model::PaneId;
 
     /// Write `routines.toml` into `root`'s workspace channel dir.
     fn write_routines(root: &std::path::Path, body: &str) {
@@ -22986,7 +22986,7 @@ mod program_status_agent {
 mod tiled_navigation_frame_tests {
     use super::*;
     use crate::host::keys::Direction;
-    use crate::host::model::PaneId;
+    use plexi_host_model::model::PaneId;
 
     const COLUMNS: usize = 5;
 
@@ -26900,7 +26900,7 @@ fn palette_assign_shortcut_survives_a_focus_change_after_enter() {
     let assign = |h: &HostHarness| {
         h.app
             .host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .and_then(|picker| picker.selected_action().map(|action| action.id))
     };
     for _ in 0..4 {
@@ -27127,7 +27127,7 @@ fn palette_agent_fixture(
 }
 
 fn open_agents_stop(h: &mut HostHarness) {
-    use crate::host::picker::PickerCommand;
+    use plexi_host_model::picker::PickerCommand;
     h.app.open_command_palette("");
     h.app.apply_palette_command(PickerCommand::NextStop);
     h.app.apply_palette_command(PickerCommand::NextStop);
@@ -27149,7 +27149,7 @@ fn agents_sort_by_last_interaction_not_state_change() {
 #[test]
 fn answer_opens_the_decision_overlay_and_never_resolves_in_the_palette() {
     use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
-    use crate::host::picker::PickerCommand;
+    use plexi_host_model::picker::PickerCommand;
     let mut h = HostHarness::new();
     let pane = palette_agent_fixture(&mut h, "reviewer", 200, 10);
     let monitor = PermissionMonitor::for_profile(h.profile_dir()).unwrap();
@@ -27192,7 +27192,7 @@ fn agents_snapshot_loads_off_thread_and_arrives_through_logic() {
     let has_definition = |h: &HostHarness| {
         h.app
             .host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .unwrap()
             .rows()
             .iter()
@@ -27234,7 +27234,7 @@ fn wait_for_palette_agents_load(h: &mut HostHarness) {
 
 #[test]
 fn agents_source_does_not_read_disk_per_query() {
-    use crate::host::picker::PickerCommand;
+    use plexi_host_model::picker::PickerCommand;
     let mut h = HostHarness::new();
     let pane = palette_agent_fixture(&mut h, "reviewer", 200, 10);
     open_agents_stop(&mut h);
@@ -27264,7 +27264,7 @@ fn agents_source_does_not_read_disk_per_query() {
     let picker = h
         .app
         .host
-        .picker(crate::host::picker::PickerId::Palette)
+        .picker(plexi_host_model::picker::PickerId::Palette)
         .unwrap();
     assert_eq!(picker.selected_row().unwrap().actions[0].id, "answer");
 }

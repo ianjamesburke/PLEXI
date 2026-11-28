@@ -6,7 +6,7 @@ use crate::host::command::Placement;
 use crate::host::context::{replace_child, Window};
 use crate::host::keys::Direction;
 use crate::host::pane::{Pane, TerminalPane};
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::{Container, Tile, TileId};
 use std::collections::{HashMap, HashSet};

@@ -58,6 +58,9 @@ jobs:
       - name: Test plexi-protocol
         run: python3 scripts/cargo-channel-inputs.py test -p plexi-protocol
 
+      - name: Test plexi-host-model
+        run: python3 scripts/cargo-channel-inputs.py test -p plexi-host-model
+
       - name: Test host PTY
         # The `#[ignore = "requires-pty"]` tests (stint 1563). The runner can
         # open PTYs and spawn shells, so they run here. Every other ignored

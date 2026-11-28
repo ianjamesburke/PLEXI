@@ -872,7 +872,7 @@ fn screenshot_terminals_settle_after_window_drag() {
         h.run_steps(2);
     }
 
-    let terminals: Vec<crate::host::model::PaneId> = h.with_app(|app| {
+    let terminals: Vec<plexi_host_model::model::PaneId> = h.with_app(|app| {
         app.windows[app.active_window]
             .panes
             .iter()
@@ -920,7 +920,7 @@ fn screenshot_terminals_settle_after_window_drag() {
 /// shows real reflowed content instead of an empty grid. Bounded: an
 /// unresponsive shell degrades the visual evidence, never the assertions,
 /// so this returns rather than failing the test.
-fn seed_wrapping_text(h: &mut PlexiUiHarness, terminals: &[crate::host::model::PaneId]) {
+fn seed_wrapping_text(h: &mut PlexiUiHarness, terminals: &[plexi_host_model::model::PaneId]) {
     let line = "the quick brown fox jumps over the lazy dog. ".repeat(6);
     h.with_app_mut(|app| {
         for id in terminals {
@@ -964,7 +964,7 @@ fn seed_wrapping_text(h: &mut PlexiUiHarness, terminals: &[crate::host::model::P
 }
 
 /// Widest committed PTY grid among `terminals`, in columns.
-fn max_terminal_cols(app: &mut PlexiApp, terminals: &[crate::host::model::PaneId]) -> u16 {
+fn max_terminal_cols(app: &mut PlexiApp, terminals: &[plexi_host_model::model::PaneId]) -> u16 {
     terminals
         .iter()
         .filter_map(|id| {

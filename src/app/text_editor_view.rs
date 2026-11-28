@@ -5627,7 +5627,7 @@ mod position_memory_tests {
     use super::*;
     use crate::editor::view::ScrollAnchor;
     use crate::editor::{Cursor, Selection};
-    use crate::host::model::PaneId;
+    use plexi_host_model::model::PaneId;
     use crate::testing::HostHarness;
 
     const TOP_LINE: usize = 120;

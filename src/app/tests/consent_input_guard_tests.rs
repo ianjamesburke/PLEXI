@@ -9,7 +9,7 @@
 
 use super::pane_lifecycle_consumers::{pump_until, subscriptions, wait_request, Connection};
 use crate::broker::consent::ARM_DELAY;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::testing::HostHarness;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput};
 

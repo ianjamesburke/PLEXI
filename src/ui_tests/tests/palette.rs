@@ -225,7 +225,7 @@ fn config_chooser_disables_repo_row_outside_workspace() {
         .query_by_label("Open config: this repo")
         .is_some());
     h.with_app(|app| {
-        let picker = app.host.picker(crate::host::picker::PickerId::Palette).unwrap();
+        let picker = app.host.picker(plexi_host_model::picker::PickerId::Palette).unwrap();
         let row = picker
             .rows()
             .iter()
@@ -376,11 +376,11 @@ fn palette_finds_agent_pane_by_name_with_default_config() {
         h.with_app_mut(|app| {
             let rows = app
                 .host
-                .picker(crate::host::picker::PickerId::Palette)
+                .picker(plexi_host_model::picker::PickerId::Palette)
                 .map_or(0, |picker| picker.rows().len());
             for _ in 0..rows {
-                app.apply_palette_command(crate::host::picker::PickerCommand::Move(
-                    crate::host::picker::Step::Up,
+                app.apply_palette_command(plexi_host_model::picker::PickerCommand::Move(
+                    plexi_host_model::picker::Step::Up,
                 ));
             }
         });
@@ -416,7 +416,7 @@ fn commands_stop_never_lists_files_or_agents() {
     h.with_app(|app| {
         let picker = app
             .host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .expect("palette picker");
         assert_eq!(picker.active_stop().id, "commands");
     });
@@ -758,7 +758,7 @@ fn palette_picker(h: &PlexiUiHarness) -> (String, &'static str, Option<String>) 
     h.with_app(|app| {
         let picker = app
             .host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .expect("palette picker");
         (
             picker.query().to_owned(),
@@ -868,7 +868,7 @@ fn palette_activations() -> Vec<String> {
 fn palette_row_keys(h: &PlexiUiHarness) -> Vec<String> {
     h.with_app(|app| {
         app.host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .map(|picker| {
                 picker
                     .rows()
@@ -883,7 +883,7 @@ fn palette_row_keys(h: &PlexiUiHarness) -> Vec<String> {
 fn palette_row_title(h: &PlexiUiHarness, index: usize) -> String {
     h.with_app(|app| {
         app.host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .expect("palette picker")
             .rows()[index]
             .title
@@ -1382,9 +1382,9 @@ fn wait_for_palette(h: &mut PlexiUiHarness, what: &str, done: impl Fn(&PlexiApp)
     }
 }
 
-fn palette_preview(app: &PlexiApp) -> Option<crate::host::picker::PreviewStatus> {
+fn palette_preview(app: &PlexiApp) -> Option<plexi_host_model::picker::PreviewStatus> {
     app.host
-        .picker(crate::host::picker::PickerId::Palette)
+        .picker(plexi_host_model::picker::PickerId::Palette)
         .and_then(|picker| picker.preview().cloned())
 }
 
@@ -1425,7 +1425,7 @@ fn seed_files_workspace(root: &std::path::Path) {
 /// below the compact modal width.
 #[test]
 fn palette_files_stop_with_preview() {
-    use crate::host::picker::{PreviewBody, PreviewStatus};
+    use plexi_host_model::picker::{PreviewBody, PreviewStatus};
     let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
     let root = root_context_in_workspace(&mut h);
     seed_files_workspace(&root);
@@ -1467,7 +1467,7 @@ fn palette_files_stop_with_preview() {
     h.with_app_mut(|app| app.set_palette_query("zzzqqq"));
     wait_for_palette(&mut h, "empty answer", |app| {
         app.host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .is_some_and(|picker| !picker.is_loading() && picker.rows().is_empty())
     });
     h.harness().get_by_label("No matching files");
@@ -1502,7 +1502,7 @@ fn palette_files_stop_with_preview() {
 
 #[test]
 fn palette_files_read_shows_root_readme_first() {
-    use crate::host::picker::{PickerId, PreviewBody, PreviewStatus};
+    use plexi_host_model::picker::{PickerId, PreviewBody, PreviewStatus};
 
     let mut h = PlexiUiHarness::new_sized(1168.0, 800.0);
     let root = root_context_in_workspace(&mut h);

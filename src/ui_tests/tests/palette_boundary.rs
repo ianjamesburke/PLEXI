@@ -189,7 +189,7 @@ fn queue_then_palette_escapes_back_through_the_queue() {
     assert_eq!(
         h.with_app(|app| app
             .host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .map(|picker| picker.query().to_owned())),
         Some("abc".to_owned()),
         "the palette owns the field"
@@ -260,7 +260,7 @@ fn empty_focus_approval_leaves_the_palette_in_charge() {
     assert_eq!(
         h.with_app(|app| app
             .host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .map(|picker| picker.query().to_owned())),
         Some("x".to_owned())
     );

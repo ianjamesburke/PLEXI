@@ -1,6 +1,6 @@
 //! Publish pane facts through the same timeline used by plugin event streams.
 use crate::app::PlexiApp;
-use crate::host::model::PaneLifecycleState;
+use plexi_host_model::model::PaneLifecycleState;
 use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance};
 
 impl PlexiApp {

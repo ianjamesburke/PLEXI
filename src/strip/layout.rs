@@ -1,8 +1,8 @@
 //! Pane geometry snapshot types retained for host and CLI compatibility.
 //! The renderer fills these from the active window's tile tree.
 
-use crate::host::model::PaneId;
-use crate::strip::model::{ColumnId, Strip};
+use plexi_host_model::model::PaneId;
+use plexi_host_model::strip::{ColumnId, Strip};
 use crate::ui::style;
 use egui::{Pos2, Rect, Vec2};
 use std::collections::HashMap;

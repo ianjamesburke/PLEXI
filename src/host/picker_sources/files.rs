@@ -6,7 +6,7 @@
 
 use super::preview::classify;
 use super::usage::UsageBook;
-use crate::host::picker::{
+use plexi_host_model::picker::{
     usage_rank_key, FileMatchRank, PreviewRef, RowKey, UsageEntry, FILES_SOURCE, MAX_SOURCE_ROWS,
 };
 use crate::search::{normalize_rel_path, score_candidate, CandidateInput, MatchScore, WalkConfig};

@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::host::pane::{Pane, ViewRuntime};
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::ui_tests::PlexiUiHarness;
 
 pub const SCENE_REPORT_SCHEMA_VERSION: u32 = 4;

@@ -87,6 +87,7 @@ jobs:
             cargo test --bin plexi
           fi
           cargo test -p plexi-protocol
+          cargo test -p plexi-host-model
           cargo clippy --bin plexi -- -D warnings
       - name: Install Linux display dependencies
         if: runner.os == 'Linux'

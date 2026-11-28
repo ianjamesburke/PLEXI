@@ -1,6 +1,6 @@
 //! Legacy workspace metadata compatibility and persistence regressions.
 
-use crate::strip::ColumnWidth;
+use plexi_host_model::strip::ColumnWidth;
 use crate::testing::HostHarness;
 
 #[test]

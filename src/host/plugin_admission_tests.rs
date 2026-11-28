@@ -405,7 +405,7 @@ fn an_explicit_path_launch_of_a_bundled_id_needs_only_folder_trust() {
 }
 
 /// The plugin tree a Python pane runs, canonical.
-fn pane_tree(h: &crate::testing::HostHarness, pane: crate::host::model::PaneId) -> PathBuf {
+fn pane_tree(h: &crate::testing::HostHarness, pane: plexi_host_model::model::PaneId) -> PathBuf {
     h.app
         .windows
         .iter()
@@ -1166,7 +1166,7 @@ fn a_wasm_dev_copy_and_the_bundled_singleton_keep_their_own_panes() {
             .and_then(|tile| win.tree.tiles.get_pane(&tile).copied())
     };
     let new_pane = |h: &mut crate::testing::HostHarness,
-                    before: &[crate::host::model::PaneId]| {
+                    before: &[plexi_host_model::model::PaneId]| {
         h.state()
             .open_panes
             .into_iter()
@@ -1470,7 +1470,7 @@ fn a_changed_bundled_copy_reports_its_repair_and_can_be_uninstalled() {
 /// The view pane `pane` names, wherever it is.
 fn view_pane(
     h: &crate::testing::HostHarness,
-    pane: crate::host::model::PaneId,
+    pane: plexi_host_model::model::PaneId,
 ) -> &crate::host::pane::ViewPane {
     h.app
         .windows
@@ -1483,7 +1483,7 @@ fn view_pane(
 /// The guest origin of `pane`; panics for a builtin.
 fn guest_origin(
     h: &crate::testing::HostHarness,
-    pane: crate::host::model::PaneId,
+    pane: plexi_host_model::model::PaneId,
 ) -> GuestOrigin {
     match view_pane(h, pane).runtime.origin() {
         crate::host::pane::PaneOrigin::Guest(origin) => origin.clone(),
@@ -1495,7 +1495,7 @@ fn guest_origin(
 fn opened_by(
     h: &mut crate::testing::HostHarness,
     launch: impl FnOnce(&mut crate::testing::HostHarness),
-) -> crate::host::model::PaneId {
+) -> plexi_host_model::model::PaneId {
     let before = h.state().open_panes;
     launch(h);
     h.state()
@@ -1506,7 +1506,7 @@ fn opened_by(
 }
 
 /// Path-launch the plugin folder `dir` in the harness workspace.
-fn open_path(h: &mut crate::testing::HostHarness, dir: &Path) -> crate::host::model::PaneId {
+fn open_path(h: &mut crate::testing::HostHarness, dir: &Path) -> plexi_host_model::model::PaneId {
     let workspace = h.workspace_root();
     opened_by(h, |h| {
         h.app
@@ -1517,7 +1517,7 @@ fn open_path(h: &mut crate::testing::HostHarness, dir: &Path) -> crate::host::mo
 
 /// Open `id` by id in the harness workspace, in a split so it gets its own
 /// pane id (an overlay reuses the id of the pane it covers).
-fn open_id(h: &mut crate::testing::HostHarness, id: &str) -> crate::host::model::PaneId {
+fn open_id(h: &mut crate::testing::HostHarness, id: &str) -> plexi_host_model::model::PaneId {
     let workspace = h.workspace_root();
     opened_by(h, |h| {
         h.app
@@ -1919,7 +1919,7 @@ fn a_failed_instantiation_after_review_leaves_no_import_grants() {
 }
 
 /// The pane holding window focus.
-fn focused_pane(h: &crate::testing::HostHarness) -> crate::host::model::PaneId {
+fn focused_pane(h: &crate::testing::HostHarness) -> plexi_host_model::model::PaneId {
     let window = &h.app.windows[h.app.active_window];
     window
         .focused_pane

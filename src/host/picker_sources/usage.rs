@@ -3,7 +3,7 @@
 //! the UI thread, debounced, by atomic replace (`docs/palette-picker.md`,
 //! Files).
 
-use crate::host::picker::UsageEntry;
+use plexi_host_model::picker::UsageEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;

@@ -247,7 +247,7 @@ impl PlexiApp {
     /// `fallback_win`.
     fn redirect_focus_to_spawn_origin(
         &mut self,
-        from_pane_id: Option<crate::host::model::PaneId>,
+        from_pane_id: Option<plexi_host_model::model::PaneId>,
         kind: &str,
         fallback_win: usize,
     ) -> (usize, Option<egui_tiles::TileId>) {
@@ -370,7 +370,7 @@ impl PlexiApp {
     fn foreign_report(
         &self,
         origin: &crate::broker::caller::RequestOrigin,
-        target: crate::host::model::PaneId,
+        target: plexi_host_model::model::PaneId,
     ) -> Option<String> {
         use crate::broker::caller::SocketCaller;
         match origin.socket_caller()? {
@@ -397,7 +397,7 @@ impl PlexiApp {
     /// later pane reusing its number, can read it back (stint 1285).
     fn file_pane_needs_you(
         &self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
         kind: crate::broker::gate::NeedsYouKind,
         summary: String,
         session_id: Option<String>,
@@ -569,7 +569,7 @@ impl PlexiApp {
     pub(crate) fn agent_spawn_reply_admitted(
         &mut self,
         origin: &crate::broker::caller::RequestOrigin,
-        host_parent: Option<crate::host::model::PaneId>,
+        host_parent: Option<plexi_host_model::model::PaneId>,
         request: &plexi_protocol::HostRequest,
         _admitted: super::agent_open::AdmittedAgentMeshRoute,
         prepared: Option<&crate::pane_ops::create::ConfiguredAgentLaunch>,

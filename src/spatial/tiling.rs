@@ -1,4 +1,4 @@
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::host::pane::{Pane, TerminalPane, ViewRuntime};
 use plexi_protocol::AgentState;
 use crate::render;

@@ -12,7 +12,7 @@
 //!    content grep with line numbers and snippets) integrated with [`UiWake`].
 
 use crate::app::ui_mailbox::UiWake;
-use crate::host::picker::MAX_SOURCE_ROWS;
+use plexi_host_model::picker::MAX_SOURCE_ROWS;
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;

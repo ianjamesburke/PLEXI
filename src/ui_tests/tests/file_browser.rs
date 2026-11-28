@@ -183,7 +183,7 @@ fn explorer_with_one_file(
     PlexiUiHarness,
     tempfile::TempDir,
     std::path::PathBuf,
-    crate::host::model::PaneId,
+    plexi_host_model::model::PaneId,
 ) {
     explorer_with_one_file_after(width, height, |_| {})
 }
@@ -198,7 +198,7 @@ fn explorer_with_one_file_after(
     PlexiUiHarness,
     tempfile::TempDir,
     std::path::PathBuf,
-    crate::host::model::PaneId,
+    plexi_host_model::model::PaneId,
 ) {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join(format!(

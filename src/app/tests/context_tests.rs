@@ -2711,7 +2711,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
 /// not at the end — even when another sibling context (child2) already exists.
 #[test]
 fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
-    fn push_ipc(h: &mut crate::testing::HostHarness, pane_id: crate::host::model::PaneId) {
+    fn push_ipc(h: &mut crate::testing::HostHarness, pane_id: plexi_host_model::model::PaneId) {
         let req: plexi_protocol::HostRequest = serde_json::from_value(serde_json::json!({
             "type": "push_pane_to_subcontext",
             "pane_id": pane_id,
@@ -4809,8 +4809,8 @@ fn context_targets_invalid_view_context_never_spawns_in_active() {
 /// (stint 1440). Pane ids, since settling may re-id tiles.
 fn panes_beside_portal(
     window: &crate::host::context::Window,
-    portal: crate::host::model::PaneId,
-) -> Vec<crate::host::model::PaneId> {
+    portal: plexi_host_model::model::PaneId,
+) -> Vec<plexi_host_model::model::PaneId> {
     let tiles = &window.tree.tiles;
     let mut child = tiles.find_pane(&portal).expect("portal tile in tree");
     let linear = loop {
