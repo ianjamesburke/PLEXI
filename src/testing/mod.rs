@@ -57,7 +57,7 @@ use crate::app::PlexiApp;
 use crate::config::set_test_profile_dir;
 use crate::host::pane::{Pane, ViewPane, ViewRuntime};
 use plexi_protocol::HostRequest;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
 use std::sync::{atomic::AtomicU64, Arc};

@@ -272,7 +272,7 @@ def cargo_base(root):
 
 PACKAGE_PREFIX = "package:"
 # Workspace member crates whose tests `cargo test --bin plexi` does not run.
-MEMBER_TEST_PACKAGES = ("plexi-protocol",)
+MEMBER_TEST_PACKAGES = ("plexi-protocol", "plexi-host-model")
 
 
 def run_package(root, package):

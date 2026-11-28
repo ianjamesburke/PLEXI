@@ -1,0 +1,16 @@
+[package]
+name = "plexi-host-model"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+
+[features]
+# Test-only mutators that bypass the reducer. Enabled by the host's dev-dependencies.
+test-support = []
+
+[dev-dependencies]
+serde_json = "1"

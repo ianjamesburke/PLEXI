@@ -31,7 +31,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::app::ui_mailbox::{MailboxReceiver, UiMailbox, UiWake};
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 
 /// Debounce window — bursts of save events within this much of each other
 /// coalesce into a single reload request.

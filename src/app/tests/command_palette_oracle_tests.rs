@@ -13,9 +13,9 @@
 //! such a command waits for the next frame's field. A mismatch is shrunk to
 //! a minimal history before it is reported.
 
-use crate::host::picker::PickerId;
+use plexi_host_model::picker::PickerId;
 use crate::overlays::command_palette::palette_test_log;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::testing::HostHarness;
 use egui::{Event, Key, Modifiers, RawInput};
 use std::cell::Cell;

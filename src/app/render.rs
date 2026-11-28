@@ -1,7 +1,7 @@
 //! Rendering helpers extracted from the main `eframe::App::update()` loop.
 
 use super::{ClickFlash, PlexiApp};
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::spatial::tiling::PlexiBehavior;
 use egui::{Stroke, StrokeKind};
 use egui_tiles::Tile;
@@ -368,14 +368,14 @@ impl PlexiApp {
                 // have zero portal panes; when the list is empty ALL portal work
                 // below is skipped (#2023).
                 let active_win = self.active_window;
-                let portal_panes: Vec<(crate::host::model::PaneId, u64)> = self.windows[active_win]
+                let portal_panes: Vec<(plexi_host_model::model::PaneId, u64)> = self.windows[active_win]
                     .panes
                     .iter()
                     .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
                     .collect();
 
                 // Build portal preview data before taking the mutable ctx borrow.
-                let portal_info: std::collections::HashMap<crate::host::model::PaneId, crate::spatial::tiling::PortalPreview> = {
+                let portal_info: std::collections::HashMap<plexi_host_model::model::PaneId, crate::spatial::tiling::PortalPreview> = {
                     let mut map = std::collections::HashMap::new();
                     for &(pane_id, child_ctx_id) in &portal_panes {
                         let ctx_entry = self.router.iter().find(|c| c.context_id == child_ctx_id);

@@ -1185,7 +1185,7 @@ fn spawn_real_terminal_pane(
     grid_x: u32,
     grid_y: u32,
     context_id: u64,
-) -> Option<(crate::host::model::PaneId, u32, u64, u64)> {
+) -> Option<(plexi_host_model::model::PaneId, u32, u64, u64)> {
     let before = h.app.windows.len();
     let launch = h.app.test_terminal_launch(context_id, None, None);
     h.app.create_page_at(grid_x, grid_y, context_id, launch);

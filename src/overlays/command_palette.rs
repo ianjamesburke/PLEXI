@@ -3,8 +3,8 @@ use crate::app::PlexiApp;
 use crate::host::keys::{
     palette_commands, Action as PaletteCommand, CommandArguments, CommandRequirement, CommandTarget,
 };
-use crate::host::model::{HostAction, HostEffect};
-use crate::host::picker::{
+use plexi_host_model::model::{HostAction, HostEffect};
+use plexi_host_model::picker::{
     ActivationInput, InputOrigin, PickerCommand, PickerEffect, PickerId, PickerRow, PreviewStatus,
     RowAction, RowKey, AGENTS_SOURCE, COMMANDS_SOURCE, FILES_SOURCE, PALETTE_STOPS,
 };
@@ -467,7 +467,7 @@ pub(crate) struct PaletteFocusTarget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PaletteInvocation {
     pub(crate) focus: PaletteFocusTarget,
-    pub(crate) selection: Option<crate::host::model::PaneSelection>,
+    pub(crate) selection: Option<plexi_host_model::model::PaneSelection>,
     pub(crate) context_root: std::path::PathBuf,
     pub(crate) commands_workspace: Option<std::path::PathBuf>,
     pub(crate) config_workspace: Option<std::path::PathBuf>,
@@ -804,7 +804,7 @@ impl PlexiApp {
         &self,
         command: &PaletteCommand,
         config_workspace: Option<&std::path::Path>,
-        selection: Option<&crate::host::model::PaneSelection>,
+        selection: Option<&plexi_host_model::model::PaneSelection>,
     ) -> Option<&'static str> {
         match command.palette_entry()?.requirement {
             CommandRequirement::Workspace if config_workspace.is_none() => {
@@ -1486,7 +1486,7 @@ impl PlexiApp {
 
     /// Ask the preview worker for `row`'s preview. Its path comes from the
     /// answer the row belongs to.
-    fn load_palette_preview(&mut self, row: RowKey, kind: crate::host::picker::PreviewRef) {
+    fn load_palette_preview(&mut self, row: RowKey, kind: plexi_host_model::picker::PreviewRef) {
         let path = self
             .palette_answer
             .as_ref()
@@ -1506,7 +1506,7 @@ impl PlexiApp {
                     log::warn!("palette: {error}");
                     self.apply_palette_command(PickerCommand::Preview {
                         row,
-                        body: crate::host::picker::PreviewBody::Note(format!(
+                        body: plexi_host_model::picker::PreviewBody::Note(format!(
                             "Could not read: {error}"
                         )),
                     });
@@ -3865,7 +3865,7 @@ fn is_palette_input(event: &egui::Event) -> bool {
 /// in order, and how often the Commands source answered. Per test thread.
 #[cfg(test)]
 pub(crate) mod palette_test_log {
-    use crate::host::picker::RowKey;
+    use plexi_host_model::picker::RowKey;
     use std::cell::{Cell, RefCell};
 
     thread_local! {
@@ -3922,7 +3922,7 @@ pub(crate) mod palette_test_log {
 mod tests {
     use super::*;
     use crate::host::pane::{Pane, PortalPane};
-    use crate::host::picker::PickerState;
+    use plexi_host_model::picker::PickerState;
     use crate::ui::list::ListRowPips;
 
     #[test]
@@ -4758,7 +4758,7 @@ mod tests {
             .expect("palette picker")
             .rows_stamp();
         h.app.apply_palette_command(PickerCommand::Click(
-            crate::host::picker::Hit { stamp, key },
+            plexi_host_model::picker::Hit { stamp, key },
             Default::default(),
         ));
     }
@@ -4924,7 +4924,7 @@ mod tests {
             "file",
         );
         // The user moves to the incidental Todo row.
-        state.apply(PickerCommand::Move(crate::host::picker::Step::Down));
+        state.apply(PickerCommand::Move(plexi_host_model::picker::Step::Down));
         // A rebuild with the same query, collected in a different order.
         answer(
             &mut state,

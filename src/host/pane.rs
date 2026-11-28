@@ -1,6 +1,6 @@
 use crate::app::permissions::PluginPermissions;
 use crate::app::view_trait::{View, ViewCommand, ViewRenderContext};
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::collections::HashMap;
 use std::path::PathBuf;

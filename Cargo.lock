@@ -4314,6 +4314,7 @@ dependencies = [
  "plexi-daw-engine",
  "plexi-daw-model",
  "plexi-distribution",
+ "plexi-host-model",
  "plexi-protocol",
  "pollster",
  "proc-macro2",
@@ -4412,6 +4413,15 @@ dependencies = [
  "windows-sys 0.59.0",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "plexi-host-model"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::{Align, Layout, RichText, Stroke};

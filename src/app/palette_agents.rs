@@ -10,11 +10,11 @@ use super::attention_queue::QueueCategory;
 use super::PlexiApp;
 use crate::agent::fleet::{self, AgentInput, BlockedOn, DisplayState};
 use crate::broker::gate::{NeedsYouRecord, PermissionMonitor};
-use crate::host::picker::{
+use plexi_host_model::picker::{
     AttentionRank, PickerRow, PreviewBody, RowAction, RowKey, AGENTS_SOURCE,
 };
 use plexi_protocol::AgentState;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 
 const FOCUS: RowAction = RowAction {
     id: "focus",

@@ -1,5 +1,5 @@
 //! Close every selected pane (stint 1458). The batch lives in
-//! [`crate::host::model::PaneCloseBatch`]; this file drives it: each pane goes
+//! [`plexi_host_model::model::PaneCloseBatch`]; this file drives it: each pane goes
 //! through the steps a single Cmd+W runs on the focused pane, in selection
 //! order: the view's close veto and unsaved-changes dialog, `confirm_close`,
 //! the context-close dialog for a portal, then overlay restore or
@@ -16,10 +16,10 @@
 use std::collections::HashSet;
 
 use crate::app::PlexiApp;
-use crate::host::model::{
+use plexi_host_model::model::{
     CloseBatchWait, PaneCloseBatch, PaneSelection, PaneTargetSource, PaneTargets,
 };
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 
 /// What a paused batch learned from its pane's dialog this pass.
 enum WaitOutcome {
@@ -33,7 +33,7 @@ enum WaitOutcome {
 
 impl PlexiApp {
     /// The panes `action` applies to in the active window: the selection, else
-    /// the focused pane. See [`crate::host::model::HostModel::resolve_pane_targets`].
+    /// the focused pane. See [`plexi_host_model::model::HostModel::resolve_pane_targets`].
     pub(crate) fn resolve_pane_targets(&mut self, action: &str) -> Option<PaneTargets> {
         self.reconcile_pane_selections();
         let window = &self.windows[self.active_window];

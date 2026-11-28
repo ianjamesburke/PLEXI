@@ -10,7 +10,7 @@
 //! frame instead of being hand-managed by each widget.
 
 use crate::app::input_owner::OverlaySurface;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use egui::Id;
 
 const TEXT_SURFACE_REGISTRY_ID: &str = "plexi_text_surface_registry";

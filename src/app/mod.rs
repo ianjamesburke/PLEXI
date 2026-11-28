@@ -156,7 +156,7 @@ use crate::config;
 use crate::host::context::Window;
 use crate::host::keys::{self, Action};
 use crate::host::pane::Pane;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::ui::theme::{self, Colors};
 use crate::workspace::router::ContextMove;
 use crate::workspace::WorkspaceFile;
@@ -484,7 +484,7 @@ pub struct PlexiApp {
     /// Set to true during step_focus_history_back/forward to suppress recording
     /// the history-driven focus change as a new history entry.
     pub(crate) navigating_history: bool,
-    pub(crate) host: crate::host::model::HostModel<crate::host::context::PaneCwd>,
+    pub(crate) host: plexi_host_model::model::HostModel<crate::host::context::PaneCwd>,
     /// The renderer's published strip snapshots, per context.
     pub(crate) published_strips: crate::strip::layout::PublishedStrips,
     /// Directed inter-plugin pipes (#286): the sole JSON-pipe delivery path,
@@ -654,19 +654,19 @@ pub struct PlexiApp {
     /// presentation (`present_pane`), which paints a tiled pane and the
     /// zoomed pane alike (PR #3094) — see `crate::host::pane::PendingPaneClick`.
     pub(crate) pending_pane_clicks:
-        HashMap<crate::host::model::PaneId, crate::host::pane::PendingPaneClick>,
+        HashMap<plexi_host_model::model::PaneId, crate::host::pane::PendingPaneClick>,
     /// Synthetic key/text input queued by pane IPC until the target pane's next
     /// production render. Egui 0.34 rebuilds `InputState` at `begin_pass`, so
     /// writing directly into `Context::input_mut` from IPC dispatch can be
     /// acknowledged and then discarded before the widget sees it.
-    pub(crate) pending_pane_inputs: HashMap<crate::host::model::PaneId, Vec<egui::RawInput>>,
+    pub(crate) pending_pane_inputs: HashMap<plexi_host_model::model::PaneId, Vec<egui::RawInput>>,
     /// Per-frame drag samples for canvas/process/WASM panes queued by
     /// `HostRequest::DragPane` (stint 0510). One sample is promoted into
     /// `pending_pane_clicks` per rendered frame so the target pane sees
     /// press → move… → release across consecutive real frames, resolved
     /// against each frame's live canvas rect.
     pub(crate) pending_pane_drags: HashMap<
-        crate::host::model::PaneId,
+        plexi_host_model::model::PaneId,
         std::collections::VecDeque<crate::host::pane::PendingPaneClick>,
     >,
     /// Per-frame pointer batches for builtin (egui-widget) panes queued by
@@ -676,7 +676,7 @@ pub struct PlexiApp {
     /// trajectory and resolves real drag state on whatever widget owns the
     /// positions.
     pub(crate) pending_pane_pointer_frames:
-        HashMap<crate::host::model::PaneId, std::collections::VecDeque<egui::RawInput>>,
+        HashMap<plexi_host_model::model::PaneId, std::collections::VecDeque<egui::RawInput>>,
     pub zoom: zoom::ZoomState,
     pub attention_queue: attention_queue::AttentionQueueState,
     claude_questions: claude_question::ClaudeQuestions,
@@ -1867,7 +1867,7 @@ impl PlexiApp {
                     terminal_spawner: Some((&cc.egui_ctx, &tx)),
                 },
             ) {
-                let mut host = crate::host::model::HostModel::new();
+                let mut host = plexi_host_model::model::HostModel::new();
                 host.seed_next_pane_id(restored.next_pane_id);
                 host.replace_strips(restored.strips.clone());
                 let mut app = Self {
@@ -2311,7 +2311,7 @@ impl PlexiApp {
             navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
             scheduler: crate::host::scheduler::Scheduler::new(),
-            host: crate::host::model::HostModel::new(),
+            host: plexi_host_model::model::HostModel::new(),
             published_strips: Default::default(),
             directed_pipes: Default::default(),
             hot_reload: hr_watcher,
@@ -2416,7 +2416,7 @@ impl PlexiApp {
     /// a Standby pane wakes up.
     pub(crate) fn resume_standby_pane(
         &mut self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
     ) -> Result<bool, String> {
         let resumed = self.windows.iter_mut()
             .find_map(|win| win.panes.get_mut(&pane_id))
@@ -2431,7 +2431,7 @@ impl PlexiApp {
     /// Returns (window_index, tile_id). O(n*m) but n is typically 1-3.
     pub(crate) fn find_pane_in_any_window(
         &self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
     ) -> Option<(usize, egui_tiles::TileId)> {
         self.windows
             .iter()
@@ -2446,7 +2446,7 @@ impl PlexiApp {
     /// a terminal never changes how its process is authorized (stint 1632).
     pub(crate) fn terminal_incarnation(
         &self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
     ) -> Option<&crate::host::pane::TerminalPane> {
         let (win_idx, _) = self.find_pane_in_any_window(pane_id)?;
         self.windows[win_idx]
@@ -2459,7 +2459,7 @@ impl PlexiApp {
     /// overlay or not.
     pub(crate) fn pane_authority(
         &self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
     ) -> Option<std::sync::Arc<crate::broker::pane_authority::LivePaneAuthority>> {
         self.terminal_incarnation(pane_id)?.authority().cloned()
     }
@@ -2484,7 +2484,7 @@ impl PlexiApp {
     /// terminal without an established grant is refused.
     pub(crate) fn pane_ceiling(
         &self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
     ) -> Result<Option<crate::broker::PermissionPosture>, String> {
         match self.terminal_incarnation(pane_id) {
             Some(terminal) => terminal
@@ -2499,7 +2499,7 @@ impl PlexiApp {
     #[cfg(test)]
     pub(crate) fn pane_ceiling_or_none(
         &self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
     ) -> Option<crate::broker::PermissionPosture> {
         self.pane_ceiling(pane_id).ok().flatten()
     }
@@ -2533,7 +2533,7 @@ impl PlexiApp {
     /// Canonical context root that bounds a pane's authority.
     pub(crate) fn pane_context_authority_root(
         &self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
     ) -> Option<std::path::PathBuf> {
         let origin = self.origin_for_pane(pane_id)?;
         Some(Self::authority_root_for(&origin.context_root))
@@ -2567,7 +2567,7 @@ impl PlexiApp {
     /// including when B is a nested context or nested workspace inside A's directory.
     pub(crate) fn pane_may_access_context_root(
         &self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
         target_path: &std::path::Path,
     ) -> bool {
         let Some(pane_root) = self.pane_context_authority_root(pane_id) else {
@@ -2641,7 +2641,7 @@ impl PlexiApp {
     /// never be resolved against another context's active state.
     pub(crate) fn origin_for_pane(
         &self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
     ) -> Option<crate::host::scope::ScopeOrigin> {
         let (window_index, _tile_id) = self.find_pane_in_any_window(pane_id)?;
         let window = &self.windows[window_index];
@@ -2800,7 +2800,7 @@ impl PlexiApp {
 
     fn complete_wasm_host_effect(
         &mut self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
         event: crate::host::wasm_view::InputEvent,
     ) {
         let Some((window_index, _)) = self.find_pane_in_any_window(pane_id) else {
@@ -2824,7 +2824,7 @@ impl PlexiApp {
 
     fn queue_event_to_view_pane_anywhere(
         &mut self,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
         event: plexi_protocol::PlexiEvent,
     ) {
         let Some((window_index, _)) = self.find_pane_in_any_window(pane_id) else {
@@ -3280,7 +3280,7 @@ impl PlexiApp {
             user_command_runs: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
-            host: crate::host::model::HostModel::new(),
+            host: plexi_host_model::model::HostModel::new(),
             published_strips: Default::default(),
             directed_pipes: Default::default(),
             hot_reload: hr_watcher,
@@ -4551,7 +4551,7 @@ impl PlexiApp {
         &mut self,
         action: Action,
         ctx: &egui::Context,
-        origin: crate::host::picker::InputOrigin,
+        origin: plexi_host_model::picker::InputOrigin,
     ) {
         // Earlier shortcuts in this delivery may have changed focus or hidden
         // a selection. Capture the target from the state they left behind.
@@ -4566,7 +4566,7 @@ impl PlexiApp {
         action: Action,
         ctx: &egui::Context,
         invocation: &crate::overlays::command_palette::PaletteInvocation,
-        input: crate::host::picker::ActivationInput<crate::host::context::PaneCwd>,
+        input: plexi_host_model::picker::ActivationInput<crate::host::context::PaneCwd>,
     ) {
         #[cfg(test)]
         if HOST_ACTION_PROBE.with(|probe| {
@@ -5059,7 +5059,7 @@ impl PlexiApp {
 
     pub(crate) fn resolve_active_or_remembered_pane_id(
         &mut self,
-    ) -> Option<crate::host::model::PaneId> {
+    ) -> Option<plexi_host_model::model::PaneId> {
         match self.zoom.level {
             crate::app::zoom::ZoomLevel::Columns => {
                 let ctx = &self.windows[self.active_window];
@@ -5090,7 +5090,7 @@ impl PlexiApp {
     pub(crate) fn resolve_remembered_pane_for_context(
         &mut self,
         ctx_id: u64,
-    ) -> Option<crate::host::model::PaneId> {
+    ) -> Option<plexi_host_model::model::PaneId> {
         // 1. Ghost marker if it matches this context and pane is alive.
         if let Some(ghost) = &self.zoom.ghost {
             if ghost.context_id == ctx_id && self.find_pane_in_any_window(ghost.pane_id).is_some() {
@@ -5127,7 +5127,7 @@ impl PlexiApp {
         None
     }
 
-    fn apply_pane_font_size_delta(&mut self, pane_id: crate::host::model::PaneId, delta: f32) {
+    fn apply_pane_font_size_delta(&mut self, pane_id: plexi_host_model::model::PaneId, delta: f32) {
         if let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                 if let Some(t) = pane.as_terminal_mut() {
@@ -5149,7 +5149,7 @@ impl PlexiApp {
         }
     }
 
-    fn apply_pane_font_size_reset(&mut self, pane_id: crate::host::model::PaneId) {
+    fn apply_pane_font_size_reset(&mut self, pane_id: plexi_host_model::model::PaneId) {
         if let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                 if let Some(t) = pane.as_terminal_mut() {
@@ -5947,12 +5947,12 @@ pub(crate) struct WorkspaceRestoreCollaborators<'a> {
 /// Reconstructed workspace state returned by [`restore_workspace`].
 pub(crate) struct RestoredWorkspace {
     pub conjoined_contexts: HashMap<u64, u64>,
-    pub strips: HashMap<u64, crate::strip::Strip>,
+    pub strips: HashMap<u64, plexi_host_model::strip::Strip>,
     pub router: crate::workspace::router::WorkspaceRouter,
     pub windows: Vec<Window>,
     pub active_window: usize,
     pub sidebar_visible: bool,
-    pub pane_heartbeats: HashMap<crate::host::model::PaneId, PaneHeartbeat>,
+    pub pane_heartbeats: HashMap<plexi_host_model::model::PaneId, PaneHeartbeat>,
     pub context_active_window: HashMap<u64, u64>,
     pub minimap_visible: bool,
     pub next_pane_id: u64,

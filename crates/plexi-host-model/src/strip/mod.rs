@@ -1,7 +1,7 @@
 //! Compatibility model for persisted strip-era workspace data and context summaries.
 //! Pane geometry and split shares are owned by each window's tile tree.
 
-use crate::host::model::PaneId;
+use crate::model::PaneId;
 
 /// Canvas width assumed for strip shares when the real width is not known yet.
 pub const STRIP_FALLBACK_CANVAS_W: f32 = 1200.0;
@@ -210,7 +210,6 @@ impl Strip {
     }
 
     /// Total number of panes across all columns.
-    #[cfg(test)]
     pub fn pane_count(&self) -> usize {
         self.columns.iter().map(|c| c.panes.len()).sum()
     }
@@ -455,7 +454,7 @@ impl Strip {
     }
 
     /// Set a custom width on column `col_idx`.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_column_width(&mut self, col_idx: usize, width: ColumnWidth) -> bool {
         if let Some(col) = self.columns.get_mut(col_idx) {
             col.width = width;
@@ -465,3 +464,6 @@ impl Strip {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

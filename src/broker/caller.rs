@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::broker::pane_authority::LivePaneAuthority;
 use crate::broker::principal::{PluginInstance, Principal};
 use crate::platform::process::{ProcInfo, ProcStart};
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 
 /// How the host's walk up a socket peer's process ancestry ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

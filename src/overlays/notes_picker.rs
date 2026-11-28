@@ -299,7 +299,7 @@ pub(crate) fn default_notes_trash() -> std::sync::Arc<dyn NotesTrash> {
 impl PlexiApp {
     fn text_editor_path_for_pane(
         window: &crate::host::context::Window,
-        pane_id: crate::host::model::PaneId,
+        pane_id: plexi_host_model::model::PaneId,
     ) -> Option<std::path::PathBuf> {
         let pane = window.panes.get(&pane_id)?;
         let view_pane = pane.as_view()?;
@@ -319,7 +319,7 @@ impl PlexiApp {
         &self,
         window_idx: usize,
         path: &std::path::Path,
-    ) -> Option<(egui_tiles::TileId, crate::host::model::PaneId)> {
+    ) -> Option<(egui_tiles::TileId, plexi_host_model::model::PaneId)> {
         let window = self.windows.get(window_idx)?;
         let identity = note_path_identity(path);
         window.tree.tiles.iter().find_map(|(tile_id, tile)| {
@@ -339,7 +339,7 @@ impl PlexiApp {
     pub(crate) fn find_open_text_editor_pane_any_window(
         &self,
         path: &std::path::Path,
-    ) -> Option<crate::host::model::PaneId> {
+    ) -> Option<plexi_host_model::model::PaneId> {
         (0..self.windows.len()).find_map(|idx| {
             self.find_open_text_editor_tile(idx, path)
                 .map(|(_, pane)| pane)

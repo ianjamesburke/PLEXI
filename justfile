@@ -80,7 +80,7 @@ test-host +args:
 
 # Run the host tests that cover one source file, chosen from scripts/scoped-tests.table.
 # A file with no table entry falls back to its own module tests and says so.
-#   just test-for src/host/model.rs
+#   just test-for crates/plexi-host-model/src/model.rs
 test-for path:
     {{TEST_ENV_SCRUB}} python3 scripts/run_logged.py --tee test-for -- python3 scripts/filter_check.py for {{path}} < /dev/null
 

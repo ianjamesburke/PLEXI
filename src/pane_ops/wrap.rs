@@ -251,7 +251,7 @@ impl PlexiApp {
         let window_id = self.windows[self.active_window].window_id;
         // Wrap's own rule: it needs a selection of two or more panes.
         let targets = self.resolve_pane_targets("wrap").filter(|t| {
-            t.source == crate::host::model::PaneTargetSource::Selection && t.panes.len() >= 2
+            t.source == plexi_host_model::model::PaneTargetSource::Selection && t.panes.len() >= 2
         });
         self.host.clear_pane_selection(window_id);
         if let Some(targets) = targets {

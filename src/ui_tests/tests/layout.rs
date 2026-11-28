@@ -1434,7 +1434,7 @@ fn screenshot_saved_workspace_tiles_and_windows() {
         let strip = app.ensure_authoritative_strip(context);
         for (pane, width) in [(first_editor, 480.0), (second_editor, 680.0)] {
             let column = strip.find_column_for_pane(pane).expect("editor column");
-            strip.columns[column].width = crate::strip::ColumnWidth::CustomPixels(width);
+            strip.columns[column].width = plexi_host_model::strip::ColumnWidth::CustomPixels(width);
         }
         strip.focus_pane(second_editor);
     });

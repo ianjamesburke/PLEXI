@@ -55,7 +55,7 @@ fn draft(h: &PlexiUiHarness) -> String {
 fn query(h: &PlexiUiHarness) -> String {
     h.with_app(|app| {
         app.host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .map(|picker| picker.query().to_owned())
             .unwrap_or_default()
     })
@@ -303,7 +303,7 @@ fn palette_arrowing_past_the_fold_keeps_the_selection_visible() {
     open_palette(&mut h);
     let rows = h.with_app(|app| {
         app.host
-            .picker(crate::host::picker::PickerId::Palette)
+            .picker(plexi_host_model::picker::PickerId::Palette)
             .map_or(0, |picker| picker.rows().len())
     });
     assert!(rows > 20, "the list overflows: {rows} rows");

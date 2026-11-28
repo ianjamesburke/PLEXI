@@ -6,7 +6,7 @@ use crate::broker::permit::{ContextRootProof, SetContextRoot};
 use crate::host::context::{ContextName, Window};
 use crate::host::pane::TerminalPane;
 use crate::host::shell;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::workspace::WorkspaceFile;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1214,7 +1214,7 @@ impl PlexiApp {
                 self.record_closed_agent_pane(window.context_id, &window.path, pane);
             }
         }
-        let doomed_pane_ids: Vec<crate::host::model::PaneId> = self
+        let doomed_pane_ids: Vec<plexi_host_model::model::PaneId> = self
             .windows
             .iter()
             .filter(|window| deleted.contains(&window.context_id))
@@ -1258,7 +1258,7 @@ impl PlexiApp {
 
         // 4. Remove Portal tiles in surviving windows that point to any deleted ctx.
         for win in &mut self.windows {
-            let portal_pane_ids: Vec<crate::host::model::PaneId> = win
+            let portal_pane_ids: Vec<plexi_host_model::model::PaneId> = win
                 .panes
                 .iter()
                 .filter(|(_, p)| {

@@ -2,9 +2,9 @@
 //! Each delivery is one egui pass holding the listed events in order.
 
 use crate::host::pane::{Pane, ViewRuntime};
-use crate::host::picker::PickerId;
+use plexi_host_model::picker::PickerId;
 use crate::overlays::command_palette::palette_test_log;
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::testing::HostHarness;
 use egui::{Event, Key, Modifiers, RawInput};
 

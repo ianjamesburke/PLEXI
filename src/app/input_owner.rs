@@ -13,7 +13,7 @@
 //! `request_focus`/`surrender_focus` (enforced by clippy `disallowed_methods`).
 
 use crate::app::{FocusKind, PlexiApp};
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 use crate::ui::focus::{SurfaceKey, SurfaceRegistry};
 use egui::Id;
 

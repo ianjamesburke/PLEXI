@@ -27,7 +27,7 @@ use super::launch_spec::PaneLaunchSpec;
 use super::PlexiApp;
 use crate::host::worktree::ManagedWorktree;
 use crate::pane_ops::create::{AgentOrigin, SubcontextTarget};
-use crate::host::model::PaneId;
+use plexi_host_model::model::PaneId;
 
 /// A window as the caller selected it, at its tree generation then.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

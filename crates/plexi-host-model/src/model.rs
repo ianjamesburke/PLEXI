@@ -5,7 +5,7 @@ use std::collections::{HashMap, VecDeque};
 pub type PaneId = u64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PaneSelection {
+pub struct PaneSelection {
     pub anchor: PaneId,
     pub panes: Vec<PaneId>,
     /// The pane the last selection step focused. Focus anywhere else means a
@@ -16,13 +16,13 @@ pub(crate) struct PaneSelection {
 
 /// Where a [`PaneTargets`] set came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PaneTargetSource {
+pub enum PaneTargetSource {
     Selection,
     Focused,
 }
 
 impl PaneTargetSource {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Selection => "selection",
             Self::Focused => "focused",
@@ -33,7 +33,7 @@ impl PaneTargetSource {
 /// The panes a pane action applies to: a stable snapshot of pane ids, in
 /// selection order, that survives closes made while the action runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PaneTargets {
+pub struct PaneTargets {
     pub anchor: PaneId,
     pub panes: Vec<PaneId>,
     pub source: PaneTargetSource,
@@ -41,7 +41,7 @@ pub(crate) struct PaneTargets {
 
 /// What a paused close batch waits for: the normal dialog of one pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CloseBatchWait {
+pub enum CloseBatchWait {
     /// A view vetoed the close and shows its unsaved-changes dialog.
     Unsaved(PaneId),
     /// `confirm_close` is on; `confirmed` is set by the dialog's Close button.
@@ -51,7 +51,7 @@ pub(crate) enum CloseBatchWait {
 }
 
 impl CloseBatchWait {
-    pub(crate) fn pane(self) -> PaneId {
+    pub fn pane(self) -> PaneId {
         match self {
             Self::Unsaved(pane) | Self::ContextClose(pane) => pane,
             Self::ConfirmClose { pane, .. } => pane,
@@ -63,7 +63,7 @@ impl CloseBatchWait {
 /// and dialog. Owns its snapshot, so closes that clear the window's selection
 /// do not end it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PaneCloseBatch {
+pub struct PaneCloseBatch {
     pub window: u64,
     pub anchor: PaneId,
     pub queue: VecDeque<PaneId>,
@@ -74,7 +74,7 @@ pub(crate) struct PaneCloseBatch {
 
 impl PaneCloseBatch {
     /// The panes not closed yet, the paused one first.
-    pub(crate) fn remaining(&self) -> Vec<PaneId> {
+    pub fn remaining(&self) -> Vec<PaneId> {
         self.waiting
             .map(CloseBatchWait::pane)
             .into_iter()
@@ -91,37 +91,51 @@ pub struct HostModel<C> {
     pane_lifecycle: HashMap<PaneId, PaneLifecycleState>,
     /// Authoritative continuous-strip state per context (`context_id -> Strip`).
     strips: HashMap<u64, crate::strip::Strip>,
-    pickers: crate::host::picker::Pickers<C>,
+    pickers: crate::picker::Pickers<C>,
 }
 
 /// A command into the model's reducers.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum HostAction<C> {
-    Picker(
-        crate::host::picker::PickerId,
-        crate::host::picker::PickerCommand<C>,
-    ),
+pub enum HostAction<C> {
+    Picker(crate::picker::PickerId, crate::picker::PickerCommand<C>),
 }
 
 /// What the model asks the host to do after an action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum HostEffect<C> {
-    Picker(
-        crate::host::picker::PickerId,
-        crate::host::picker::PickerEffect<C>,
-    ),
+pub enum HostEffect<C> {
+    Picker(crate::picker::PickerId, crate::picker::PickerEffect<C>),
 }
 
 /// What the host remembers about a pane it announced on the lifecycle stream.
 #[derive(Debug, Default)]
-pub(crate) struct PaneLifecycleState {
+pub struct PaneLifecycleState {
     pub context_id: u64,
     pub parent_pane_id: Option<u64>,
     pub booted: bool,
 }
 
+impl<C> HostModel<C> {
+    pub fn new() -> Self {
+        Self {
+            pane_selections: HashMap::new(),
+            pane_close_batch: None,
+            // Pane id 0 is the bootstrap pane.
+            next_pane_id: 1,
+            pane_lifecycle: HashMap::new(),
+            strips: HashMap::new(),
+            pickers: Default::default(),
+        }
+    }
+}
+
+impl<C> Default for HostModel<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<C: Clone + Eq + std::fmt::Debug> HostModel<C> {
-    pub(crate) fn apply(&mut self, action: HostAction<C>) -> Vec<HostEffect<C>> {
+    pub fn apply(&mut self, action: HostAction<C>) -> Vec<HostEffect<C>> {
         match action {
             HostAction::Picker(id, command) => self
                 .pickers
@@ -132,18 +146,15 @@ impl<C: Clone + Eq + std::fmt::Debug> HostModel<C> {
         }
     }
 
-    pub(crate) fn picker(
-        &self,
-        id: crate::host::picker::PickerId,
-    ) -> Option<&crate::host::picker::PickerState<C>> {
+    pub fn picker(&self, id: crate::picker::PickerId) -> Option<&crate::picker::PickerState<C>> {
         self.pickers.get(id)
     }
 
-    pub(crate) fn pane_selection(&self, window: u64) -> Option<&PaneSelection> {
+    pub fn pane_selection(&self, window: u64) -> Option<&PaneSelection> {
         self.pane_selections.get(&window)
     }
 
-    pub(crate) fn extend_pane_selection(&mut self, window: u64, start: PaneId, next: PaneId) {
+    pub fn extend_pane_selection(&mut self, window: u64, start: PaneId, next: PaneId) {
         let selection = self
             .pane_selections
             .entry(window)
@@ -165,7 +176,7 @@ impl<C: Clone + Eq + std::fmt::Debug> HostModel<C> {
 
     /// Cmd+Shift+click: add `pane`, or take it out when it is already
     /// selected. A selection left empty ends.
-    pub(crate) fn toggle_pane_selection(&mut self, window: u64, start: PaneId, pane: PaneId) {
+    pub fn toggle_pane_selection(&mut self, window: u64, start: PaneId, pane: PaneId) {
         let selected = self
             .pane_selections
             .get(&window)
@@ -192,18 +203,18 @@ impl<C: Clone + Eq + std::fmt::Debug> HostModel<C> {
 
     /// A focus move that keeps the selection (a file drag hovering a pane)
     /// moves its cursor along.
-    pub(crate) fn set_pane_selection_cursor(&mut self, window: u64, pane: PaneId) {
+    pub fn set_pane_selection_cursor(&mut self, window: u64, pane: PaneId) {
         if let Some(selection) = self.pane_selections.get_mut(&window) {
             selection.cursor = pane;
         }
     }
 
     /// Windows that currently hold a selection.
-    pub(crate) fn pane_selection_windows(&self) -> Vec<u64> {
+    pub fn pane_selection_windows(&self) -> Vec<u64> {
         self.pane_selections.keys().copied().collect()
     }
 
-    pub(crate) fn clear_pane_selection(&mut self, window: u64) -> Option<PaneSelection> {
+    pub fn clear_pane_selection(&mut self, window: u64) -> Option<PaneSelection> {
         let selection = self.pane_selections.remove(&window);
         if selection.is_some() {
             log::info!("pane_selection: cleared window={window}");
@@ -213,7 +224,7 @@ impl<C: Clone + Eq + std::fmt::Debug> HostModel<C> {
 
     /// Replace a window's selection, e.g. with the panes a cancelled close
     /// batch left open. An empty set clears it.
-    pub(crate) fn set_pane_selection(
+    pub fn set_pane_selection(
         &mut self,
         window: u64,
         anchor: PaneId,
@@ -244,7 +255,7 @@ impl<C: Clone + Eq + std::fmt::Debug> HostModel<C> {
     /// still holds a live pane, else the focused pane. Ids `is_live` rejects
     /// (closed, moved to another window) are dropped and logged. Minimum set
     /// sizes are the caller's rule, not the resolver's.
-    pub(crate) fn resolve_pane_targets(
+    pub fn resolve_pane_targets(
         &self,
         action: &str,
         window: u64,
@@ -289,32 +300,20 @@ impl<C: Clone + Eq + std::fmt::Debug> HostModel<C> {
         targets
     }
 
-    pub(crate) fn pane_close_batch(&self) -> Option<&PaneCloseBatch> {
+    pub fn pane_close_batch(&self) -> Option<&PaneCloseBatch> {
         self.pane_close_batch.as_ref()
     }
 
-    pub(crate) fn pane_close_batch_mut(&mut self) -> Option<&mut PaneCloseBatch> {
+    pub fn pane_close_batch_mut(&mut self) -> Option<&mut PaneCloseBatch> {
         self.pane_close_batch.as_mut()
     }
 
-    pub(crate) fn start_pane_close_batch(&mut self, batch: PaneCloseBatch) {
+    pub fn start_pane_close_batch(&mut self, batch: PaneCloseBatch) {
         self.pane_close_batch = Some(batch);
     }
 
-    pub(crate) fn take_pane_close_batch(&mut self) -> Option<PaneCloseBatch> {
+    pub fn take_pane_close_batch(&mut self) -> Option<PaneCloseBatch> {
         self.pane_close_batch.take()
-    }
-
-    pub fn new() -> Self {
-        Self {
-            pane_selections: HashMap::new(),
-            pane_close_batch: None,
-            // Pane id 0 is the bootstrap pane.
-            next_pane_id: 1,
-            pane_lifecycle: HashMap::new(),
-            strips: HashMap::new(),
-            pickers: Default::default(),
-        }
     }
 
     /// Allocate a new pane ID. `HostModel` is the sole ID allocator: every
@@ -348,20 +347,20 @@ impl<C: Clone + Eq + std::fmt::Debug> HostModel<C> {
     }
 
     /// Every pane the lifecycle stream has announced.
-    pub(crate) fn lifecycle_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
+    pub fn lifecycle_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
         self.pane_lifecycle.keys().copied()
     }
 
-    pub(crate) fn pane_lifecycle(&self, pane: PaneId) -> Option<&PaneLifecycleState> {
+    pub fn pane_lifecycle(&self, pane: PaneId) -> Option<&PaneLifecycleState> {
         self.pane_lifecycle.get(&pane)
     }
 
-    pub(crate) fn pane_lifecycle_mut(&mut self, pane: PaneId) -> Option<&mut PaneLifecycleState> {
+    pub fn pane_lifecycle_mut(&mut self, pane: PaneId) -> Option<&mut PaneLifecycleState> {
         self.pane_lifecycle.get_mut(&pane)
     }
 
     /// Start tracking `pane` after its `Spawned` fact was published.
-    pub(crate) fn track_pane_lifecycle(&mut self, pane: PaneId, state: PaneLifecycleState) {
+    pub fn track_pane_lifecycle(&mut self, pane: PaneId, state: PaneLifecycleState) {
         self.pane_lifecycle.insert(pane, state);
     }
 
@@ -460,23 +459,6 @@ mod tests {
             .unwrap();
         assert_eq!(one.source, PaneTargetSource::Selection);
         assert_eq!(one.panes, vec![5]);
-    }
-
-    /// Stint 1318: the one checkable clause of the HostModel rule. `HostModel`
-    /// has no UI toolkit dependency; the needle is split so this test does not match
-    /// itself.
-    #[test]
-    fn host_model_source_has_no_ui_toolkit_reference() {
-        let needle = ["eg", "ui"].concat();
-        let source = include_str!("model.rs");
-        let hits: Vec<&str> = source
-            .lines()
-            .filter(|line| line.contains(needle.as_str()))
-            .collect();
-        assert!(
-            hits.is_empty(),
-            "src/host/model.rs must not reference {needle}; move UI work to PlexiApp: {hits:?}"
-        );
     }
 
     // ── HostModel pane id invariants ──────────────────────────────────────────

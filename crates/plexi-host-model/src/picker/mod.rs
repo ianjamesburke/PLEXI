@@ -24,7 +24,7 @@
 
 /// Which picker a command addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum PickerId {
+pub enum PickerId {
     /// The Cmd+P palette.
     Palette,
 }
@@ -39,7 +39,7 @@ impl PickerId {
 
 /// How a stop orders the rows its source returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RankingPreset {
+pub enum RankingPreset {
     /// Pinned rows first. Every group stays one contiguous run so a header
     /// sits on its own rows. An empty query keeps group order and source
     /// order inside a group. A typed query orders groups by their best
@@ -57,7 +57,7 @@ pub(crate) enum RankingPreset {
 /// The order `RankingPreset::Usage` sorts by, as a key: lower sorts first.
 /// A source that must cut its answer to `MAX_SOURCE_ROWS` cuts by this same
 /// key, so the reducer and the source never disagree on the top rows.
-pub(crate) fn usage_rank_key(
+pub fn usage_rank_key(
     file_match: Option<FileMatchRank>,
     score: Option<i64>,
     usage: Option<UsageEntry>,
@@ -74,7 +74,7 @@ pub(crate) fn usage_rank_key(
 
 /// How a query matches the filename, before recency and usage are compared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct FileMatchRank {
+pub struct FileMatchRank {
     exact_name_or_stem: bool,
     basename_tier: u8,
     depth: std::cmp::Reverse<usize>,
@@ -82,7 +82,7 @@ pub(crate) struct FileMatchRank {
 }
 
 impl FileMatchRank {
-    pub(crate) fn new(
+    pub fn new(
         exact_name_or_stem: bool,
         basename_tier: u8,
         depth: usize,
@@ -99,14 +99,14 @@ impl FileMatchRank {
 
 /// How often and how lately the person picked a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct UsageEntry {
+pub struct UsageEntry {
     pub count: u32,
     pub last_pick: u64,
 }
 
 /// One stop of a picker: data defined in code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Stop {
+pub struct Stop {
     pub id: &'static str,
     /// Chip label.
     pub label: &'static str,
@@ -122,16 +122,16 @@ pub(crate) struct Stop {
 }
 
 /// Source id of the palette's Commands stop.
-pub(crate) const COMMANDS_SOURCE: &str = "commands";
+pub const COMMANDS_SOURCE: &str = "commands";
 
 /// Source id of the palette's Files stop.
-pub(crate) const FILES_SOURCE: &str = "files";
+pub const FILES_SOURCE: &str = "files";
 
 /// Source id of the palette's Agents stop.
-pub(crate) const AGENTS_SOURCE: &str = "agents";
+pub const AGENTS_SOURCE: &str = "agents";
 
 /// The palette's stops, in Tab order.
-pub(crate) const PALETTE_STOPS: &[Stop] = &[
+pub const PALETTE_STOPS: &[Stop] = &[
     Stop {
         id: "commands",
         label: "Commands",
@@ -162,49 +162,48 @@ pub(crate) const PALETTE_STOPS: &[Stop] = &[
 ];
 
 /// The most rows one answer shows; ranking decides which.
-pub(crate) const MAX_SOURCE_ROWS: usize = 250;
+pub const MAX_SOURCE_ROWS: usize = 250;
 
 /// A row's identity: `<source id>:<stable id>`, split on the first `:`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct RowKey(String);
+pub struct RowKey(String);
 
 impl RowKey {
-    pub(crate) fn new(source: &str, stable_id: &str) -> Self {
+    pub fn new(source: &str, stable_id: &str) -> Self {
         Self(format!("{source}:{stable_id}"))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    pub(crate) fn source(&self) -> &str {
+    pub fn source(&self) -> &str {
         self.0.split_once(':').map_or(self.0.as_str(), |(s, _)| s)
     }
 
     /// The id within its source; tests read activations by it.
-    #[cfg(test)]
-    pub(crate) fn stable_id(&self) -> &str {
+    pub fn stable_id(&self) -> &str {
         self.0.split_once(':').map_or("", |(_, id)| id)
     }
 }
 
 /// One thing a row can do. The first action of a row is Enter's.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RowAction {
+pub struct RowAction {
     pub id: &'static str,
     pub label: &'static str,
     pub chord: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct AttentionRank {
+pub struct AttentionRank {
     pub waiting_on_you: bool,
     pub last_interaction_at: u64,
 }
 
 /// A result row. Holds no egui types or host enums.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PickerRow {
+pub struct PickerRow {
     pub key: RowKey,
     pub title: String,
     pub secondary: String,
@@ -237,7 +236,7 @@ pub(crate) struct PickerRow {
 /// A row's preview reference: the kind its source loads. The painter draws
 /// by kind and never guesses from a name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PreviewRef {
+pub enum PreviewRef {
     Text,
     Image,
     /// No preview, with the one dim line that says why.
@@ -247,7 +246,7 @@ pub(crate) enum PreviewRef {
 /// A loaded preview. An image's pixels stay with the host that uploaded
 /// them; the reducer keeps only what it needs to lay them out.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PreviewBody {
+pub enum PreviewBody {
     Text {
         text: String,
         truncated: bool,
@@ -263,7 +262,7 @@ pub(crate) enum PreviewBody {
 
 /// The preview of one row: loading, or what loaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PreviewStatus {
+pub enum PreviewStatus {
     Loading,
     Ready(PreviewBody),
 }
@@ -273,7 +272,7 @@ pub(crate) enum PreviewStatus {
 /// within it. A pointer hit carries the stamp of the rows it was painted
 /// from, so it can never act on rows the person did not see.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct Stamp {
+pub struct Stamp {
     pub generation: u64,
     pub revision: u64,
 }
@@ -281,7 +280,7 @@ pub(crate) struct Stamp {
 /// One arrow (or Cmd+J/K) press. Moves are kept one by one: clamping makes
 /// Up, Down differ from a summed delta of zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Step {
+pub enum Step {
     Up,
     Down,
 }
@@ -289,14 +288,14 @@ pub(crate) enum Step {
 /// A presented row under the pointer, bound when the pointer event was hit
 /// tested against what the person saw.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Hit {
+pub struct Hit {
     pub stamp: Stamp,
     pub key: RowKey,
 }
 
 /// Provenance of the input that requested an activation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InputOrigin {
+pub enum InputOrigin {
     #[default]
     Human,
     Synthetic(Option<u64>),
@@ -307,9 +306,9 @@ pub(crate) enum InputOrigin {
 ///
 /// `C` is the host's capture of the focused pane's root, carried untouched.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ActivationInput<C> {
-    pub(crate) origin: InputOrigin,
-    pub(crate) pane_root: Option<C>,
+pub struct ActivationInput<C> {
+    pub origin: InputOrigin,
+    pub pane_root: Option<C>,
 }
 
 impl<C> Default for ActivationInput<C> {
@@ -334,7 +333,7 @@ impl<C> std::fmt::Debug for ActivationInput<C> {
 /// Commands are applied one at a time, in input order; each binds to the
 /// state the commands before it left.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum PickerCommand<C> {
+pub enum PickerCommand<C> {
     /// Open on `stop` with an initial query.
     Open {
         stop: &'static str,
@@ -373,7 +372,7 @@ pub(crate) enum PickerCommand<C> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PickerEffect<C> {
+pub enum PickerEffect<C> {
     /// Ask the stop's source for rows.
     Query {
         source: &'static str,
@@ -426,7 +425,7 @@ struct ActionsStep {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PickerState<C> {
+pub struct PickerState<C> {
     stops: &'static [Stop],
     active: usize,
     open: bool,
@@ -454,7 +453,7 @@ pub(crate) struct PickerState<C> {
 }
 
 impl<C: Clone + Eq + std::fmt::Debug> PickerState<C> {
-    pub(crate) fn new(stops: &'static [Stop]) -> Self {
+    pub fn new(stops: &'static [Stop]) -> Self {
         assert!(!stops.is_empty(), "a picker needs at least one stop");
         Self {
             stops,
@@ -479,42 +478,42 @@ impl<C: Clone + Eq + std::fmt::Debug> PickerState<C> {
         }
     }
 
-    pub(crate) fn is_open(&self) -> bool {
+    pub fn is_open(&self) -> bool {
         self.open
     }
 
-    pub(crate) fn stops(&self) -> &'static [Stop] {
+    pub fn stops(&self) -> &'static [Stop] {
         self.stops
     }
 
-    pub(crate) fn active_stop(&self) -> &'static Stop {
+    pub fn active_stop(&self) -> &'static Stop {
         &self.stops[self.active]
     }
 
-    pub(crate) fn query(&self) -> &str {
+    pub fn query(&self) -> &str {
         &self.query
     }
 
-    pub(crate) fn showing_actions(&self) -> bool {
+    pub fn showing_actions(&self) -> bool {
         self.actions.is_some()
     }
 
-    pub(crate) fn actions_opening(&self) -> Option<u64> {
+    pub fn actions_opening(&self) -> Option<u64> {
         self.actions.as_ref().map(|step| step.opening)
     }
 
-    pub(crate) fn field_text(&self) -> &str {
+    pub fn field_text(&self) -> &str {
         self.actions
             .as_ref()
             .map_or(&self.query, |step| &step.filter)
     }
 
-    pub(crate) fn selected_row(&self) -> Option<&PickerRow> {
+    pub fn selected_row(&self) -> Option<&PickerRow> {
         let key = self.selected()?;
         self.rows.iter().find(|row| row.key == *key)
     }
 
-    pub(crate) fn visible_actions(&self) -> Vec<&RowAction> {
+    pub fn visible_actions(&self) -> Vec<&RowAction> {
         let Some(step) = &self.actions else {
             return Vec::new();
         };
@@ -527,42 +526,42 @@ impl<C: Clone + Eq + std::fmt::Debug> PickerState<C> {
             .collect()
     }
 
-    pub(crate) fn selected_action(&self) -> Option<&RowAction> {
+    pub fn selected_action(&self) -> Option<&RowAction> {
         let selected = self.actions.as_ref()?.selected?;
         self.visible_actions()
             .into_iter()
             .find(|action| action.id == selected)
     }
 
-    pub(crate) fn rows(&self) -> &[PickerRow] {
+    pub fn rows(&self) -> &[PickerRow] {
         &self.rows
     }
 
     /// The stamp of the presented rows, for the painter's hit map.
-    pub(crate) fn rows_stamp(&self) -> Stamp {
+    pub fn rows_stamp(&self) -> Stamp {
         self.rows_stamp
     }
 
-    pub(crate) fn generation(&self) -> u64 {
+    pub fn generation(&self) -> u64 {
         self.generation
     }
 
-    pub(crate) fn is_loading(&self) -> bool {
+    pub fn is_loading(&self) -> bool {
         self.loading
     }
 
     /// The presented rows are the current query's, and more may follow.
-    pub(crate) fn is_partial(&self) -> bool {
+    pub fn is_partial(&self) -> bool {
         self.answered && self.loading
     }
 
-    pub(crate) fn reveal_epoch(&self) -> u64 {
+    pub fn reveal_epoch(&self) -> u64 {
         self.reveal
     }
 
     /// The selected row's preview. `None` when the stop has no preview or
     /// nothing is selected.
-    pub(crate) fn preview(&self) -> Option<&PreviewStatus> {
+    pub fn preview(&self) -> Option<&PreviewStatus> {
         let selected = self.selected()?;
         self.preview
             .as_ref()
@@ -570,14 +569,14 @@ impl<C: Clone + Eq + std::fmt::Debug> PickerState<C> {
             .map(|(_, status)| status)
     }
 
-    pub(crate) fn selected(&self) -> Option<&RowKey> {
+    pub fn selected(&self) -> Option<&RowKey> {
         match &self.selection {
             Selection::Key(key) => Some(key),
             Selection::Initial(_) | Selection::Cleared => None,
         }
     }
 
-    pub(crate) fn apply(&mut self, command: PickerCommand<C>) -> Vec<PickerEffect<C>> {
+    pub fn apply(&mut self, command: PickerCommand<C>) -> Vec<PickerEffect<C>> {
         let mut effects = self.apply_command(command);
         // Before `Activate` and `Closed` would be wrong: a closing picker
         // loads nothing, and `sync_preview` sees it closed.
@@ -1188,7 +1187,7 @@ fn rank(preset: RankingPreset, query: &str, mut rows: Vec<PickerRow>) -> Vec<Pic
 
 /// The per-picker store `HostModel` keeps.
 #[derive(Debug)]
-pub(crate) struct Pickers<C> {
+pub struct Pickers<C> {
     states: std::collections::HashMap<PickerId, PickerState<C>>,
 }
 
@@ -1201,15 +1200,11 @@ impl<C> Default for Pickers<C> {
 }
 
 impl<C: Clone + Eq + std::fmt::Debug> Pickers<C> {
-    pub(crate) fn get(&self, id: PickerId) -> Option<&PickerState<C>> {
+    pub fn get(&self, id: PickerId) -> Option<&PickerState<C>> {
         self.states.get(&id)
     }
 
-    pub(crate) fn apply(
-        &mut self,
-        id: PickerId,
-        command: PickerCommand<C>,
-    ) -> Vec<PickerEffect<C>> {
+    pub fn apply(&mut self, id: PickerId, command: PickerCommand<C>) -> Vec<PickerEffect<C>> {
         self.states
             .entry(id)
             .or_insert_with(|| PickerState::new(id.stops()))

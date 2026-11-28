@@ -7,4 +7,5 @@ bash scripts/cargo-with-lease.sh cargo build --release --bin plexi < /dev/null
 bash scripts/cargo-with-lease.sh cargo test --all-targets --no-run < /dev/null
 bash scripts/cargo-with-lease.sh cargo test --bin plexi < /dev/null
 bash scripts/cargo-with-lease.sh cargo test -p plexi-protocol < /dev/null
+bash scripts/cargo-with-lease.sh cargo test -p plexi-host-model < /dev/null
 bash scripts/cargo-with-lease.sh cargo clippy --bin plexi -- -D warnings < /dev/null

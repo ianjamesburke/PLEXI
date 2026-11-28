@@ -6,8 +6,8 @@ use crate::app::input_router::PlexiInput;
 use crate::app::view_trait::KeyDisposition;
 use crate::app::PlexiApp;
 use crate::host::keys::Direction;
-use crate::host::model::PaneId;
-use crate::strip::model::ColumnWidthPreset;
+use plexi_host_model::model::PaneId;
+use plexi_host_model::strip::ColumnWidthPreset;
 use crate::ui::card_block::{layout_card, paint_card, wrap_text, CardForm, CardSpec, CardState};
 use crate::ui::style;
 use egui::{
@@ -41,11 +41,11 @@ impl ZoomLevel {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StripColumn {
     pub index: usize,
-    pub column_id: crate::strip::ColumnId,
+    pub column_id: plexi_host_model::strip::ColumnId,
     pub context_id: u64,
     pub panes: Vec<PaneId>,
     pub preset: ColumnWidthPreset,
-    pub width: crate::strip::ColumnWidth,
+    pub width: plexi_host_model::strip::ColumnWidth,
     pub last_focused: Option<PaneId>,
 }
 
@@ -286,22 +286,22 @@ impl PlexiApp {
     /// Also arranges the context's `window.tree` to match (`Horizontal` root of `Vertical` stacks).
     #[cfg(test)]
     pub fn set_context_columns(&mut self, context_id: u64, columns: Vec<Vec<PaneId>>) {
-        let mut strip = crate::strip::Strip::new(context_id);
+        let mut strip = plexi_host_model::strip::Strip::new(context_id);
         for (index, panes) in columns.iter().enumerate() {
             let width = if columns.len() >= 2 && index == 0 {
-                crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35)
+                plexi_host_model::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35)
             } else {
-                crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Child65)
+                plexi_host_model::strip::ColumnWidth::Preset(ColumnWidthPreset::Child65)
             };
             if panes.len() == 1 {
-                strip.push_column(crate::strip::Column::new(
-                    crate::strip::ColumnId(index),
+                strip.push_column(plexi_host_model::strip::Column::new(
+                    plexi_host_model::strip::ColumnId(index),
                     panes[0],
                     width,
                 ));
             } else if !panes.is_empty() {
-                strip.push_column(crate::strip::Column::new_stacked(
-                    crate::strip::ColumnId(index),
+                strip.push_column(plexi_host_model::strip::Column::new_stacked(
+                    plexi_host_model::strip::ColumnId(index),
                     panes.clone(),
                     width,
                 ));
@@ -455,11 +455,11 @@ impl PlexiApp {
                 if parent_ctx_id != context_id {
                     out.push(StripColumn {
                         index: 0,
-                        column_id: crate::strip::ColumnId(usize::MAX),
+                        column_id: plexi_host_model::strip::ColumnId(usize::MAX),
                         context_id: parent_ctx_id,
                         panes: vec![parent_pane_id],
                         preset: ColumnWidthPreset::Parent35,
-                        width: crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35),
+                        width: plexi_host_model::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35),
                         last_focused: Some(parent_pane_id),
                     });
                     base_index = 1;
@@ -472,7 +472,7 @@ impl PlexiApp {
         for (i, column) in strip.columns.iter().enumerate() {
             let idx = base_index + i;
             let preset = match column.width {
-                crate::strip::ColumnWidth::Preset(preset) => preset,
+                plexi_host_model::strip::ColumnWidth::Preset(preset) => preset,
                 _ if total >= 2 && idx == 0 => ColumnWidthPreset::Parent35,
                 _ => ColumnWidthPreset::Child65,
             };
@@ -499,7 +499,7 @@ impl PlexiApp {
             }
         }
         crate::strip::StripViewport::new(
-            Rect::from_min_size(Pos2::ZERO, Vec2::new(crate::strip::model::STRIP_FALLBACK_CANVAS_W, 800.0)),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(plexi_host_model::strip::STRIP_FALLBACK_CANVAS_W, 800.0)),
             gap,
         )
     }
@@ -534,7 +534,7 @@ impl PlexiApp {
             strip
                 .find_column_for_pane(pane)
                 .map(|index| strip.columns[index].id)
-                .unwrap_or(crate::strip::ColumnId(usize::MAX))
+                .unwrap_or(plexi_host_model::strip::ColumnId(usize::MAX))
         };
         let focused = self.active_focused_pane_id();
         let panes: Vec<_> = window
@@ -1591,18 +1591,18 @@ impl PlexiApp {
     #[cfg(test)]
     pub fn set_column_width_ratio(&mut self, context_id: u64, col_idx: usize, ratio: f32) {
         let r = ratio.clamp(0.05, 0.95);
-        let width = crate::strip::ColumnWidth::CustomRatio(r);
+        let width = plexi_host_model::strip::ColumnWidth::CustomRatio(r);
         let strip = self.ensure_authoritative_strip(context_id);
         strip.set_column_width(col_idx, width);
         if strip.column_count() == 2 {
             let other_idx = if col_idx == 0 { 1 } else { 0 };
-            strip.set_column_width(other_idx, crate::strip::ColumnWidth::CustomRatio(1.0 - r));
+            strip.set_column_width(other_idx, plexi_host_model::strip::ColumnWidth::CustomRatio(1.0 - r));
         }
         log::info!("strip: column width updated context={context_id} col={col_idx} ratio={r:.3}");
     }
 
     /// Build or reconcile the authoritative `Strip` model for `context_id` against live windows.
-    pub fn strip_for_context(&self, context_id: u64) -> crate::strip::Strip {
+    pub fn strip_for_context(&self, context_id: u64) -> plexi_host_model::strip::Strip {
         let raw_cols = self.raw_window_columns_for_context(context_id);
         let existing = self.host.strip(context_id);
 
@@ -1637,7 +1637,7 @@ impl PlexiApp {
             }
         }
 
-        let mut strip = crate::strip::Strip::new(context_id);
+        let mut strip = plexi_host_model::strip::Strip::new(context_id);
         if let Some(prev) = existing {
             strip.next_column_id = prev.next_column_id;
             strip.reference_width_px = prev.reference_width_px;
@@ -1648,7 +1648,7 @@ impl PlexiApp {
             strip.focused_pane = prev.focused_pane;
         }
 
-        let mut available_old: Vec<crate::strip::Column> =
+        let mut available_old: Vec<plexi_host_model::strip::Column> =
             existing.map(|s| s.columns.clone()).unwrap_or_default();
         let old_count = available_old.len();
         let total = raw_cols.len();
@@ -1670,9 +1670,9 @@ impl PlexiApp {
                 if total >= 2
                     && old_count == 1
                     && col_idx == 0
-                    && width == crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Child65)
+                    && width == plexi_host_model::strip::ColumnWidth::Preset(ColumnWidthPreset::Child65)
                 {
-                    width = crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35);
+                    width = plexi_host_model::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35);
                 }
                 let resolved_heights = panes
                     .iter()
@@ -1690,7 +1690,7 @@ impl PlexiApp {
                     .last_focused
                     .filter(|p| panes.contains(p))
                     .or_else(|| panes.first().copied());
-                strip.push_column(crate::strip::Column {
+                strip.push_column(plexi_host_model::strip::Column {
                     id: old_col.id,
                     width,
                     panes,
@@ -1705,16 +1705,16 @@ impl PlexiApp {
                     ColumnWidthPreset::Child65
                 };
                 let mut col = if panes.len() > 1 {
-                    crate::strip::Column::new_stacked(
+                    plexi_host_model::strip::Column::new_stacked(
                         id,
                         panes,
-                        crate::strip::ColumnWidth::Preset(default_preset),
+                        plexi_host_model::strip::ColumnWidth::Preset(default_preset),
                     )
                 } else {
-                    crate::strip::Column::new(
+                    plexi_host_model::strip::Column::new(
                         id,
                         panes[0],
-                        crate::strip::ColumnWidth::Preset(default_preset),
+                        plexi_host_model::strip::ColumnWidth::Preset(default_preset),
                     )
                 };
                 col.heights = heights;
@@ -1757,7 +1757,7 @@ impl PlexiApp {
     /// Return the authoritative `Strip` in `HostModel` for `context_id`, reconciling with
     /// the live window trees so every context (including legacy and restored contexts) is
     /// always backed by `HostModel`.
-    pub fn ensure_authoritative_strip(&mut self, context_id: u64) -> &mut crate::strip::Strip {
+    pub fn ensure_authoritative_strip(&mut self, context_id: u64) -> &mut plexi_host_model::strip::Strip {
         let reconciled = self.strip_for_context(context_id);
         self.host.insert_strip(context_id, reconciled);
         self.host

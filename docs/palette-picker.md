@@ -60,7 +60,7 @@ workspace scoping and use the existing `[keys]` configuration.
 
 Built properly once, so the Explorer, Notes and plugins can move onto it later without a rewrite.
 
-The picker is a pure reducer in a new `src/host/picker` module with no egui types. `HostModel` holds one `PickerState` per `PickerId` (`Palette` in 0.6; `Pane(pane_id)` and `PluginNode(pane_id, node_id)` are reserved for Later), reached through `HostAction::Picker(id, PickerCommand)` and answered with `HostEffect::Picker(id, PickerEffect)`. Today the palette is `PlexiApp.palette_*` fields mutated inside `draw_command_palette`, and `command_palette_handle_key` is an empty stub. `PickerState`: the stop list and active stop; one `query`; `step` (`Results`, or `Actions` with the row's action list); ranked rows; `selected` as a row key, never an index; a query generation; loading and preview status.
+The picker is a pure reducer in the `picker` module of `crates/plexi-host-model` with no egui types. `HostModel` holds one `PickerState` per `PickerId` (`Palette` in 0.6; `Pane(pane_id)` and `PluginNode(pane_id, node_id)` are reserved for Later), reached through `HostAction::Picker(id, PickerCommand)` and answered with `HostEffect::Picker(id, PickerEffect)`. Today the palette is `PlexiApp.palette_*` fields mutated inside `draw_command_palette`, and `command_palette_handle_key` is an empty stub. `PickerState`: the stop list and active stop; one `query`; `step` (`Results`, or `Actions` with the row's action list); ranked rows; `selected` as a row key, never an index; a query generation; loading and preview status.
 
 | Commands in | Effects out |
 |---|---|
@@ -86,7 +86,7 @@ A row carries: `key` (`<source id>:<stable id>`, split on the first `:`), title,
 - One index per context root, kept by the host and refreshed in the background when the palette opens. A file row's stable id is its canonical absolute path. The Explorer keeps its own `SearchSession` until it moves onto the picker.
 - Exact filenames and stems lead. Within the same basename match tier, shallower paths lead, and shorter completions lead among prefixes at the same depth.
 - Every `Activate` records usage for the row key. "Reset ranking" removes one row's entry.
-- Usage lives in one file, `palette-usage.json` in `shared_dir()` (`~/.plexi`, channel-neutral, as `src/host/AGENTS.md` requires of user data), holding row key, pick count and last pick time; entries unused for `USAGE_FORGET_AFTER` drop out. Only `src/host/picker` reads or writes it, off the UI thread, debounced, by atomic replace. Two channels running at once can overwrite each other's latest picks; that only changes order.
+- Usage lives in one file, `palette-usage.json` in `shared_dir()` (`~/.plexi`, channel-neutral, as `src/host/AGENTS.md` requires of user data), holding row key, pick count and last pick time; entries unused for `USAGE_FORGET_AFTER` drop out. Only `src/host/picker_sources` reads or writes it, off the UI thread, debounced, by atomic replace. Two channels running at once can overwrite each other's latest picks; that only changes order.
 
 ## Preview
 

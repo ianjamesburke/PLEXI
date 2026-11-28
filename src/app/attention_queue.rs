@@ -137,8 +137,8 @@ pub struct DecisionVerdict {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttentionDestination {
     DecisionOverlay(String),
-    LiveParent(crate::host::model::PaneId),
-    SourcePane(crate::host::model::PaneId),
+    LiveParent(plexi_host_model::model::PaneId),
+    SourcePane(plexi_host_model::model::PaneId),
     ResultArtifact(PathBuf),
 }
 
